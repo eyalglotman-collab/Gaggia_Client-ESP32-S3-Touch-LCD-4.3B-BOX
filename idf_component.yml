@@ -1,0 +1,6 @@
+version: "1.0.0"
+description: "Eyal Espresso ESP32-S3-Touch with LVGL UI and toggle button"
+
+dependencies:
+  lvgl/lvgl: "^9.0"
+

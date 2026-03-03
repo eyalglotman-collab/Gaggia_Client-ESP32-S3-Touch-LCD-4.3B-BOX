@@ -1,0 +1,22 @@
+CMakeLists.txt
+esp_idf_project_configuration.json
+pytest_Eyal_espresso_ESP32.py
+README.md
+sdkconfig
+sdkconfig.ci
+sdkconfig.old
+sdkconfig.defaults              ✨ NEW: Hardware configuration
+idf_component.yml               ✨ Updated: LVGL + touch dependencies
+build/
+main/
+  CMakeLists.txt
+  Eyal_espresso_ESP32_main.c
+  lvgl_port.h                    (LVGL framework)
+  lvgl_port.c
+  ui_screen.h                    (UI with toggle button)
+  ui_screen.c
+  hardware_init.h                ✨ NEW: LCD + touch drivers
+  hardware_init.c                ✨ NEW: Complete hardware setup
+  
+Documentation:
+  LVGL_INTEGRATION.md            ✨ Complete hardware guide

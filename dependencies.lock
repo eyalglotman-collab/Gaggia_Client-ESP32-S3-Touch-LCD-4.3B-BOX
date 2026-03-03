@@ -1,0 +1,25 @@
+dependencies:
+  espressif/esp_lcd_touch:
+    dependencies: []
+    source:
+      path: C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_client\components\espressif__esp_lcd_touch
+      type: local
+    version: 1.1.2
+  idf:
+    source:
+      type: idf
+    version: 5.5.2
+  lvgl/lvgl:
+    component_hash: 184e532558c1c45fefed631f3e235423d22582aafb4630f3e8885c35281a49ae
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 9.5.0
+direct_dependencies:
+- espressif/esp_lcd_touch
+- idf
+- lvgl/lvgl
+manifest_hash: 9b6e39af59ec7d378587a48a489f994202269235f7aa9614053928956fdac196
+target: esp32s3
+version: 2.0.0
