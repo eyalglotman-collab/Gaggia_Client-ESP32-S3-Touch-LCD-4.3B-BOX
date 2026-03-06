@@ -2,12 +2,16 @@ CMakeLists.txt
 esp_idf_project_configuration.json
 pytest_Eyal_espresso_ESP32.py
 README.md
+AGENTS.md
+VERSION
 sdkconfig
 sdkconfig.ci
 sdkconfig.old
 sdkconfig.defaults              ✨ NEW: Hardware configuration
 idf_component.yml               ✨ Updated: LVGL + touch dependencies
 build/
+.idfbuild/                      ✨ NEW: Recommended local build directory
+.cache/                         ✨ NEW: Recommended local ESP-IDF cache
 main/
   CMakeLists.txt
   Eyal_espresso_ESP32_main.c
@@ -20,3 +24,12 @@ main/
   
 Documentation:
   LVGL_INTEGRATION.md            ✨ Complete hardware guide
+  docs/ESP32_S3_TOUCH_LCD_4_3B_SETUP.md
+  docs/VERSIONING.md
+  docs/REVISION_HISTORY.doc
+
+Scripts:
+  scripts/setup_idf_env.sh
+  scripts/build_flash_prompt.sh
+  scripts/bump_subversion.sh
+  scripts/import_waveshare_examples.sh

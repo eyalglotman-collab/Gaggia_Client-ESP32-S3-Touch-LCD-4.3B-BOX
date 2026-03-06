@@ -13,6 +13,7 @@
 #include "esp_flash.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_lcd_panel_rgb.h"
 #include "lvgl.h"
 #include "lvgl_port.h"
 #include "ui_screen.h"
@@ -21,7 +22,27 @@
 static const char *TAG = "espresso";
 
 /**
- * @brief Initialize LCD and touch hardware
+ * @brief Forward RGB VSYNC events to LVGL port synchronization.
+ *
+ * @details Called by the ESP LCD RGB panel ISR context to unblock LVGL flush
+ * completion waiting logic implemented in demo-based `lvgl_port.c`.
+ */
+IRAM_ATTR static bool rgb_lcd_on_vsync_event(esp_lcd_panel_handle_t panel,
+                                             const esp_lcd_rgb_panel_event_data_t *edata,
+                                             void *user_ctx)
+{
+    (void)panel;
+    (void)edata;
+    (void)user_ctx;
+    return lvgl_port_notify_rgb_vsync();
+}
+
+/**
+ * @brief Initialize display and touch hardware resources.
+ *
+ * @details Delegates board-specific peripheral setup to `hardware_init()`.
+ * This keeps application startup orchestration local while isolating pin and
+ * panel-controller logic in the hardware abstraction module.
  */
 static esp_err_t lcd_and_touch_init(esp_lcd_panel_handle_t *lcd_handle, 
                                      esp_lcd_touch_handle_t *tp_handle)
@@ -29,9 +50,17 @@ static esp_err_t lcd_and_touch_init(esp_lcd_panel_handle_t *lcd_handle,
     return hardware_init(lcd_handle, tp_handle);
 }
 
+/**
+ * @brief Application entry point for firmware startup.
+ *
+ * @details Reports chip/runtime diagnostics, initializes display + LVGL stack,
+ * constructs the initial UI, and keeps the main task alive for background
+ * framework processing.
+ */
 void app_main(void)
 {
     ESP_LOGI(TAG, "Eyal_espresso_ESP32!");
+    esp_log_level_set("GT911", ESP_LOG_ERROR);
 
     /* Print chip information */
     esp_chip_info_t chip_info;
@@ -66,9 +95,17 @@ void app_main(void)
         /* Initialize LVGL */
         if (lvgl_port_init(lcd_handle, tp_handle) == ESP_OK) {
             ESP_LOGI(TAG, "LVGL initialized successfully");
+
+            esp_lcd_rgb_panel_event_callbacks_t cbs = {
+                .on_vsync = rgb_lcd_on_vsync_event,
+            };
+            esp_err_t cb_ret = esp_lcd_rgb_panel_register_event_callbacks(lcd_handle, &cbs, NULL);
+            if (cb_ret != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to register RGB VSYNC callback: %s", esp_err_to_name(cb_ret));
+            }
             
             /* Create UI screen */
-            if (lvgl_port_lock(0)) {
+            if (lvgl_port_lock(-1)) {
                 ui_screen_create();
                 lvgl_port_unlock();
             }

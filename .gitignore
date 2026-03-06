@@ -19,6 +19,8 @@
 # Build artifacts and directories
 **/build/
 build/
+.idfbuild/
+.cache/
 *.o
 *.a
 *.out
@@ -38,6 +40,7 @@ sdkconfig
 **/components/.idf/
 # For modern ESP-IDF component manager
 managed_components/
+external_examples/
 # If ESP-IDF tools are installed/referenced locally to the project
 .espressif/
 

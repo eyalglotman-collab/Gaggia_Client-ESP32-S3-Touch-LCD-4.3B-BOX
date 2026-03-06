@@ -12,6 +12,9 @@ extern "C" {
 
 /**
  * @brief Create the UI screen with toggle button
+ *
+ * @details Builds the active screen object tree for the brew control user
+ * interface and registers control callbacks.
  */
 void ui_screen_create(void);
 

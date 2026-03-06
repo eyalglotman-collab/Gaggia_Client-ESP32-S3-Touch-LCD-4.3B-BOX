@@ -4,17 +4,18 @@
     "board/esp32s3-builtin.cfg"
   ],
   "idf.portWin": "COM9",
-  "idf.currentSetup": "C:\\Espressif\\.espressif\\v5.5.2\\esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32s3",
     "ADF_PATH": "C:\\Espressif"
   },
-  "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=c:\\Espressif\\Eyal_Projects_ESP32_S3\\Eyal_espresso_client\\build"
+    "--compile-commands-dir=c:\\Espressif\\Eyal_Projects_ESP32_S3\\Eyal_espresso_client\\.idfbuild"
   ],
   "idf.flashType": "UART",
-  "idf.monitorPort": "COM9"
+  "idf.monitorPortWin": "COM9",
+  "idf.currentSetup": "C:\\Espressif\\.espressif\\v5.5.2\\esp-idf",
+  "idf.monitorPort": "COM9",
+  "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe"
 }

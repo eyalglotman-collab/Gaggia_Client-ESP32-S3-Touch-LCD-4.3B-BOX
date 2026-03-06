@@ -1,0 +1,105 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Calibri;}}
+\f0\fs22
+\b Eyal Espresso Firmware Revision History\b0\par
+\par
+\b Current Version\b0\par
+0.1.2\par
+\par
+\b Latest Version Feature List\b0\par
+- ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
+- LVGL 9.x display and input integration.\par
+- Demo-based LVGL porting layer imported from `08_lvgl_Porting` and adapted to project layout.\par
+- Demo-style RGB panel timing/alignment fields applied in hardware initialization.\par
+- Basic Brew Control UI with on-screen toggle and state label.\par
+- Build/flash workflow helper with commit + sub-version prompt.\par
+- Project migrated from devcontainer workflow to local ESP-IDF workflow.\par
+\par
+\b Revision Sections (Grouped by X.Y)\b0\par
+\par
+\b X=0, Y=0\b0\par
+\b 2026-03-05\b0\par
+- Version: 0.0.Z\par
+- Summary: Removed devcontainer assets and switched project setup/docs to local environment usage.\par
+- Notes: Updated VS Code settings to workspace-relative build paths and removed `/opt/esp` assumptions.\par
+\par
+\i Entry template:\i0\par
+- Version: 0.0.Z\par
+- Date:\par
+- Summary:\par
+- Notes:\par
+\par
+\b X=0, Y=1\b0\par
+\b 2026-03-05\b0\par
+- Version: 0.1.Z\par
+- Summary: Replaced main/LVGL path with demo-based implementation from `08_lvgl_Porting` while keeping project file layout.\par
+- Notes: Imported `lvgl_port.c/.h`, aligned RGB panel config to demo fields, and registered RGB VSYNC callback in `app_main`.\par
+\par
+\b 2026-03-05\b0\par
+- Version: 0.1.Z\par
+- Summary: Fixed LVGL integration issues after demo import by switching to LVGL9-native port API.\par
+- Notes: Replaced `main/lvgl_port.c` with LVGL9 display/indev implementation, kept compatibility callback symbol, and cleaned VSYNC callback parameters.\par
+\par
+\b 2026-03-05\b0\par
+- Version: 0.1.Z\par
+- Summary: Fixed GT911 touch init failure caused by invalid I2C device clock configuration.\par
+- Notes: Set explicit `scl_speed_hz` for GT911 panel IO, added fallback address probe (`0x5D`/`0x14`), and enabled display-only startup if touch init fails.\par
+\par
+\b 2026-03-05\b0\par
+- Version: 0.1.Z\par
+- Summary: Adjusted LVGL RGB rendering path to full-frame double buffering to resolve black-screen behavior after panel init.\par
+- Notes: Updated `main/lvgl_port.c` to use RGB565 full-screen buffers (`LV_DISPLAY_RENDER_MODE_FULL`) and added first-flush runtime logging.\par
+\par
+\b 2026-03-05\b0\par
+- Version: 0.1.Z\par
+- Summary: Added deterministic LCD reset and hardware prefill frame to isolate black-screen root cause.\par
+- Notes: In `main/hardware_init.c`, pulsed LCD reset via CH422G and wrote a white full-screen framebuffer before LVGL startup.\par
+\par
+\b 2026-03-05\b0\par
+- Version: 0.1.Z\par
+- Summary: Fixed LVGL UI creation race by aligning mutex lock semantics with demo usage.\par
+- Notes: Changed `lvgl_port_lock()` to treat `<=0` as blocking forever and updated `app_main` to call `lvgl_port_lock(-1)` before `ui_screen_create()`.\par
+\par
+\b 2026-03-05\b0\par
+- Version: 0.1.1\par
+- Summary: Display bring-up stabilized and verified working on target LCD after demo alignment and LVGL/touch/init fixes.\par
+- Notes: Generated sub-version release after successful build+flash validation with functional screen output.\par
+\par
+\b 2026-03-05\b0\par
+- Version: 0.1.1\par
+- Summary: Suppressed benign GT911 startup warning in runtime logs.\par
+- Notes: Set GT911 tag log level to `ESP_LOG_ERROR` in `app_main` to hide non-fatal address-init warning.\par
+\par
+\b 2026-03-05\b0\par
+- Version: 0.1.Z\par
+- Summary: Reworked UI into a workflow-style multi-page interface inspired by Gaggiuino docs patterns.\par
+- Notes: Added dashboard, brew controls, profiles selection, settings tuning, bottom navigation, and live header status updates in `main/ui_screen.c`.\par
+\par
+\b 2026-03-05\b0\par
+- Version: 0.1.Z\par
+- Summary: Fixed UI compile errors by aligning font usage with enabled LVGL font set.\par
+- Notes: Replaced unsupported Montserrat sizes (`18/22/24/26`) with enabled sizes (`16/20/28`) in `main/ui_screen.c`.\par
+\par
+\b 2026-03-06\b0\par
+- Version: 0.1.2\par
+- Summary: Clean build baseline release for upcoming feature and integration changes.\par
+- Notes: Performed full clean, reconfigure, and successful local `idf.py build`; release created as reference baseline.\par
+\par
+\i Entry template:\i0\par
+- Version: 0.1.Z\par
+- Date:\par
+- Summary:\par
+- Notes:\par
+\par
+\b X=1, Y=0\b0\par
+\i Entry template:\i0\par
+- Version: 1.0.Z\par
+- Date:\par
+- Summary:\par
+- Notes:\par
+\par
+\b Change Classification Reminder\b0\par
+- Bump X for major functionality/re-architecture/refactor changes.\par
+- Bump Y for bug-fix and incremental functionality changes.\par
+- Bump Z for each successful build + flash (sub-version).\par
+}

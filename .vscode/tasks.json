@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ESP-IDF: Reconfigure (S3)",
+      "type": "shell",
+      "command": ".\\scripts\\idfw.cmd -DIDF_TARGET=esp32s3 reconfigure",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true,
+        "revealProblems": "onProblem"
+      }
+    },
+    {
+      "label": "ESP-IDF: Build",
+      "type": "shell",
+      "command": ".\\scripts\\idfw.cmd build",
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true,
+        "revealProblems": "onProblem"
+      }
+    },
+    {
+      "label": "ESP-IDF: Flash Monitor (COM9)",
+      "type": "shell",
+      "command": ".\\scripts\\idfw.cmd -p COM9 flash monitor",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true,
+        "revealProblems": "onProblem"
+      }
+    }
+  ]
+}
