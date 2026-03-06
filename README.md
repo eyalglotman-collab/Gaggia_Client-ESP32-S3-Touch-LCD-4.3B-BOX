@@ -9,13 +9,30 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
 
 ## Session Release Notes
 
-- Last verified release in git: `0.1.2`
-- Release commit: `83364c9` (`Release v0.1.2 - clean build baseline`)
-- Current HEAD documentation commits:
-  - `eeedac3` docs rule update for version-revision commit enforcement
-  - `53c4bb6` docs rule update requiring immediate README commits
-- Work stopped previously after establishing the `0.1.2` clean-build baseline and tightening repository workflow rules in `README.md`.
-- Next required local verification for this session: run `ESP-IDF: Reconfigure (S3)` and `ESP-IDF: Build`, then resolve any reported problems before reporting build-ready.
+- Last released version in git: `0.1.4`
+- Release commit: `71136de` (`Release v0.1.4 - fix UI drift on RGB panel`)
+- Current unresolved defect:
+  - `DEF-20260306-181051` from `0.1.4`
+  - Title: `Screen UI moves right every touch on screen`
+  - Current state: the large right-shift defect was reduced, but the display path is still unstable. The screen can flicker black on redraws and later showed periodic flicker tied to UI refresh activity.
+- What was tried in this session:
+  - compared the project against the Waveshare `08_lvgl_Porting` example and aligned the RGB path with the demo where possible
+  - enabled `CONFIG_LCD_RGB_RESTART_IN_VSYNC=y` in `sdkconfig.defaults`
+  - added `psram_trans_align = 64` to the RGB panel config in `main/hardware_init.c`
+  - tested LVGL direct-mode and full-refresh buffer modes in `main/lvgl_port.h`
+  - corrected LVGL flush handoff in `main/lvgl_port.c` to use the active LVGL framebuffer in full-frame modes
+  - tried on-demand RGB refresh earlier; it caused a black screen and was reverted
+  - tried disabling UI scrolling earlier; it did not fix the defect and was reverted
+- Current technical reading:
+  - initial X-offset and redraw corruption point to RGB framebuffer handoff / timing, not normal touch callback logic
+  - the remaining visible symptom is redraw flicker, especially on touch or periodic UI updates, so the defect is still open
+- What to know when starting fresh next time:
+  - start from this README note and inspect `DEF-20260306-181051` in `DefectRegister.rtf`
+  - verify the active render mode in `main/lvgl_port.h` before changing flush logic again
+  - re-check `main/lvgl_port.c` flush behavior against LVGL v9 buffer ownership rules and the Waveshare example
+  - if flicker remains, temporarily disable the 1-second heartbeat in `main/ui_screen.c` to separate UI-timer redraws from RGB sync faults
+  - compare panel timing values in `main/hardware_init.c` against the exact board example and test porch/burst changes one at a time
+  - after every flash, capture the first 5 seconds of logs and remember there is still an existing startup warning about flash-size mismatch
 
 ## How to use example
 
