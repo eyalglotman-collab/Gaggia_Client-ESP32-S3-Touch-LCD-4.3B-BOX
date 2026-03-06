@@ -69,6 +69,15 @@ We will get back to you as soon as possible.
 - `Y`: minor bug-fix and incremental functionality changes.
 - `Z`: sub-version increment for successful build+flash cycles.
 - After a successful build+flash, confirm whether to commit and bump `Z`.
+- Maintain `DefectRegister.rtf` in the repository root as the running defect log.
+- For every defect found by Eyal or Codex, add a new entry to `DefectRegister.rtf`.
+- Each defect entry must include:
+  - a UID in the format `DEF-YYYYMMDD-HHMMSS`
+  - the project version from `VERSION` when the defect was found
+  - a title
+  - a description
+  - a status
+- New defects must be recorded with status `Open` unless explicitly changed later.
 - Before informing Eyal to run a build, review the VS Code `PROBLEMS` panel and resolve all reported issues.
 - After every code change, Codex must perform local update/verification itself before reporting ready:
   - refresh project metadata (`reconfigure` / `compile_commands.json`)
