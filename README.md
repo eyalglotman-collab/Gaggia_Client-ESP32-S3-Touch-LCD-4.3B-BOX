@@ -65,6 +65,8 @@ We will get back to you as soon as possible.
   - run a local build
   - fix all detected issues before asking Eyal to build
 - When Eyal asks to create another revision/version, Codex must always commit it to git and verify the commit was created successfully.
+- At the start of every coding session, Codex must first load the latest project version from git, then write/update release notes in this README so Eyal can see exactly where work stopped.
+- Every time README is changed, Codex must commit README to git immediately, even if there is no project version change.
   
 
 ### Codex and VS Code `PROBLEMS` (Session Rule)
