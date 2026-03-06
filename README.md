@@ -64,6 +64,7 @@ We will get back to you as soon as possible.
   - refresh project metadata (`reconfigure` / `compile_commands.json`)
   - run a local build
   - fix all detected issues before asking Eyal to build
+- When Eyal asks to create another revision/version, Codex must always commit it to git and verify the commit was created successfully.
   
 
 ### Codex and VS Code `PROBLEMS` (Session Rule)
