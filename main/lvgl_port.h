@@ -61,7 +61,7 @@ extern "C" {
  * Avoid tering related configurations, can be adjusted by users.
  *
  */
-#define LVGL_PORT_AVOID_TEAR_ENABLE         (0)
+#define LVGL_PORT_AVOID_TEAR_ENABLE         (1)
 #if LVGL_PORT_AVOID_TEAR_ENABLE
 /**
  * Set the avoid tearing mode:

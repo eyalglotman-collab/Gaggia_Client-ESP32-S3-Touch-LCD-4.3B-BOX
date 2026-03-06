@@ -39,15 +39,27 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area, uint8_t *p
     esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t)lv_display_get_user_data(disp);
     assert(panel_handle);
 
+    if (!lv_display_flush_is_last(disp)) {
+        lv_display_flush_ready(disp);
+        return;
+    }
+
     esp_err_t ret = esp_lcd_panel_draw_bitmap(panel_handle,
-                                              area->x1,
-                                              area->y1,
-                                              area->x2 + 1,
-                                              area->y2 + 1,
+                                              0,
+                                              0,
+                                              LVGL_PORT_H_RES,
+                                              LVGL_PORT_V_RES,
                                               px_map);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Flush failed: %s", esp_err_to_name(ret));
-    } else if (!s_logged_first_flush) {
+        lv_display_flush_ready(disp);
+        return;
+    }
+
+    ulTaskNotifyValueClear(NULL, ULONG_MAX);
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+    if (!s_logged_first_flush) {
         ESP_LOGI(TAG, "First LVGL flush submitted");
         s_logged_first_flush = true;
     }
@@ -72,12 +84,17 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle)
     const size_t pixel_size = sizeof(lv_color_t);
     const size_t frame_pixels = LVGL_PORT_H_RES * LVGL_PORT_V_RES;
     const size_t buffer_size = frame_pixels * pixel_size;
+    void *buf1 = NULL;
+    void *buf2 = NULL;
 
-    /* Full-frame double buffering is more robust on ESP RGB panels than partial buffers. */
-    void *buf1 = heap_caps_malloc(buffer_size, LVGL_PORT_BUFFER_MALLOC_CAPS | MALLOC_CAP_8BIT);
-    void *buf2 = heap_caps_malloc(buffer_size, LVGL_PORT_BUFFER_MALLOC_CAPS | MALLOC_CAP_8BIT);
+#if LVGL_PORT_DIRECT_MODE || LVGL_PORT_FULL_REFRESH
+    ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(panel_handle, 2, &buf1, &buf2));
+#else
+    buf1 = heap_caps_malloc(buffer_size, LVGL_PORT_BUFFER_MALLOC_CAPS | MALLOC_CAP_8BIT);
+    buf2 = heap_caps_malloc(buffer_size, LVGL_PORT_BUFFER_MALLOC_CAPS | MALLOC_CAP_8BIT);
     assert(buf1);
     assert(buf2);
+#endif
 
     ESP_LOGI(TAG, "LVGL framebuffer size: %uKB x2", (unsigned)(buffer_size / 1024));
 
@@ -86,7 +103,13 @@ static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle)
     lv_display_set_user_data(disp, panel_handle);
 
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
-    lv_display_set_buffers(disp, buf1, buf2, buffer_size, LV_DISPLAY_RENDER_MODE_FULL);
+    lv_display_set_buffers(disp, buf1, buf2, buffer_size,
+#if LVGL_PORT_DIRECT_MODE
+                           LV_DISPLAY_RENDER_MODE_DIRECT
+#else
+                           LV_DISPLAY_RENDER_MODE_FULL
+#endif
+    );
     lv_display_set_flush_cb(disp, flush_callback);
 
     return disp;
@@ -286,5 +309,9 @@ void lvgl_port_unlock(void)
  */
 bool lvgl_port_notify_rgb_vsync(void)
 {
-    return false;
+    BaseType_t need_yield = pdFALSE;
+    if (lvgl_task_handle != NULL) {
+        xTaskNotifyFromISR(lvgl_task_handle, ULONG_MAX, eNoAction, &need_yield);
+    }
+    return need_yield == pdTRUE;
 }
