@@ -69,6 +69,8 @@ We will get back to you as soon as possible.
 - `Y`: minor bug-fix and incremental functionality changes.
 - `Z`: sub-version increment for successful build+flash cycles.
 - After a successful build+flash, confirm whether to commit and bump `Z`.
+- After every flash, Codex must monitor the target and read at least the first 5 seconds of serial log output.
+- Codex must verify that the first 5 seconds of post-flash logs contain no warnings or errors before reporting success.
 - Maintain `DefectRegister.rtf` in the repository root as the running defect log.
 - For every defect found by Eyal or Codex, add a new entry to `DefectRegister.rtf`.
 - Each defect entry must include:
