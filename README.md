@@ -78,6 +78,7 @@ We will get back to you as soon as possible.
   - a description
   - a status
 - New defects must be recorded with status `Open` unless explicitly changed later.
+- For every released version, the release notes must include a list of defects resolved in that version.
 - Before informing Eyal to run a build, review the VS Code `PROBLEMS` panel and resolve all reported issues.
 - After every code change, Codex must perform local update/verification itself before reporting ready:
   - refresh project metadata (`reconfigure` / `compile_commands.json`)
