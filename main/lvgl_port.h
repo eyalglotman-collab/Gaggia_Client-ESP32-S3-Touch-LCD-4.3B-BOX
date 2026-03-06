@@ -71,7 +71,7 @@ extern "C" {
  *      - 3: LCD double-buffer & LVGL direct-mode (recommended)
  *
  */
-#define LVGL_PORT_AVOID_TEAR_MODE           (3)
+#define LVGL_PORT_AVOID_TEAR_MODE           (1)
 
 /**
  * Set the rotation degree of the LCD panel when the avoid tearing function is enabled:

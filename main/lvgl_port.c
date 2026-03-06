@@ -37,6 +37,12 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area, uint8_t *p
 {
     static bool s_logged_first_flush = false;
     esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t)lv_display_get_user_data(disp);
+    lv_draw_buf_t *active_buf = lv_display_get_buf_active(disp);
+    uint8_t *frame_ptr = px_map;
+    int x1 = area->x1;
+    int y1 = area->y1;
+    int x2 = area->x2 + 1;
+    int y2 = area->y2 + 1;
     assert(panel_handle);
 
     if (!lv_display_flush_is_last(disp)) {
@@ -44,20 +50,32 @@ static void flush_callback(lv_display_t *disp, const lv_area_t *area, uint8_t *p
         return;
     }
 
+#if LVGL_PORT_DIRECT_MODE || LVGL_PORT_FULL_REFRESH
+    assert(active_buf && active_buf->data);
+    frame_ptr = active_buf->data;
+    x1 = 0;
+    y1 = 0;
+    x2 = LVGL_PORT_H_RES;
+    y2 = LVGL_PORT_V_RES;
+    lv_draw_buf_flush_cache(active_buf, NULL);
+#endif
+
     esp_err_t ret = esp_lcd_panel_draw_bitmap(panel_handle,
-                                              0,
-                                              0,
-                                              LVGL_PORT_H_RES,
-                                              LVGL_PORT_V_RES,
-                                              px_map);
+                                              x1,
+                                              y1,
+                                              x2,
+                                              y2,
+                                              frame_ptr);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Flush failed: %s", esp_err_to_name(ret));
         lv_display_flush_ready(disp);
         return;
     }
 
+#if !LVGL_PORT_DIRECT_MODE
     ulTaskNotifyValueClear(NULL, ULONG_MAX);
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+#endif
 
     if (!s_logged_first_flush) {
         ESP_LOGI(TAG, "First LVGL flush submitted");
