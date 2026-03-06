@@ -7,6 +7,16 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
 
 (See the README.md file in the upper level 'examples' directory for more information about examples.)
 
+## Session Release Notes
+
+- Last verified release in git: `0.1.2`
+- Release commit: `83364c9` (`Release v0.1.2 - clean build baseline`)
+- Current HEAD documentation commits:
+  - `eeedac3` docs rule update for version-revision commit enforcement
+  - `53c4bb6` docs rule update requiring immediate README commits
+- Work stopped previously after establishing the `0.1.2` clean-build baseline and tightening repository workflow rules in `README.md`.
+- Next required local verification for this session: run `ESP-IDF: Reconfigure (S3)` and `ESP-IDF: Build`, then resolve any reported problems before reporting build-ready.
+
 ## How to use example
 
 Follow detailed instructions provided specifically for this example.
