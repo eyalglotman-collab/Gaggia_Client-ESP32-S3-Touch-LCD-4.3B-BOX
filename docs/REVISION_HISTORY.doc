@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.1.2\par
+0.1.3\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -84,6 +84,11 @@
 - Version: 0.1.2\par
 - Summary: Clean build baseline release for upcoming feature and integration changes.\par
 - Notes: Performed full clean, reconfigure, and successful local `idf.py build`; release created as reference baseline.\par
+\par
+\b 2026-03-06\b0\par
+- Version: 0.1.3\par
+- Summary: Fixed post-startup black-screen behavior caused by LVGL task stack overflow.\par
+- Notes: Increased LVGL worker stack to 12KB, added stack watermark runtime logging, removed deprecated RGB panel union initializer overlap, and verified successful build + flash on COM9 without reboot loop.\par
 \par
 \i Entry template:\i0\par
 - Version: 0.1.Z\par

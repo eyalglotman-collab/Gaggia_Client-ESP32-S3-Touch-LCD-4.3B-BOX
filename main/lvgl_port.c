@@ -188,6 +188,7 @@ static void lvgl_port_task(void *arg)
     (void)arg;
 
     uint32_t task_delay_ms = LVGL_PORT_TASK_MAX_DELAY_MS;
+    UBaseType_t low_stack_words = UINT32_MAX;
     while (1) {
         if (lvgl_port_lock(-1)) {
             task_delay_ms = lv_timer_handler();
@@ -198,6 +199,12 @@ static void lvgl_port_task(void *arg)
             task_delay_ms = LVGL_PORT_TASK_MAX_DELAY_MS;
         } else if (task_delay_ms < LVGL_PORT_TASK_MIN_DELAY_MS) {
             task_delay_ms = LVGL_PORT_TASK_MIN_DELAY_MS;
+        }
+
+        UBaseType_t current_high_water = uxTaskGetStackHighWaterMark(NULL);
+        if (current_high_water < low_stack_words) {
+            low_stack_words = current_high_water;
+            ESP_LOGI(TAG, "LVGL task stack low watermark: %u bytes free", (unsigned)(low_stack_words * sizeof(StackType_t)));
         }
 
         vTaskDelay(pdMS_TO_TICKS(task_delay_ms));

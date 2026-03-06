@@ -245,7 +245,6 @@ static esp_err_t lcd_init(esp_lcd_panel_handle_t *lcd_handle)
         .num_fbs = LVGL_PORT_LCD_RGB_BUFFER_NUMS,
         .bounce_buffer_size_px = 0,
         .sram_trans_align = 4,
-        .psram_trans_align = 64,
         .dma_burst_size = 64,
         .hsync_gpio_num = LCD_PIN_HSYNC,
         .vsync_gpio_num = LCD_PIN_VSYNC,

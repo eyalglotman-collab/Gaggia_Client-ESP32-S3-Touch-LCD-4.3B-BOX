@@ -40,7 +40,7 @@ extern "C" {
  */
 #define LVGL_PORT_TASK_MAX_DELAY_MS         (500)
 #define LVGL_PORT_TASK_MIN_DELAY_MS         (1)
-#define LVGL_PORT_TASK_STACK_SIZE           (4096)
+#define LVGL_PORT_TASK_STACK_SIZE           (12288)
 #define LVGL_PORT_TASK_PRIORITY             (3)
 #define LVGL_PORT_TASK_CORE                 (-1)
 /**
