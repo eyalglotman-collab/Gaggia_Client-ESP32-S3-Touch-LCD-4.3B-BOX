@@ -8,6 +8,13 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $PidFile = Join-Path $ProjectRoot ".cache\wait_sound.pid"
 $SoundFile = Join-Path $ProjectRoot "sounds\WaitSound.mp3"
 
+# @brief Check whether VS Code is still running on the host.
+# @details The wait-sound worker exits automatically if no `Code` process is
+# found, which prevents orphaned sound loops after the editor is closed.
+function Test-VsCodeRunning {
+    return [bool](Get-Process -Name Code -ErrorAction SilentlyContinue)
+}
+
 # @brief Play the configured wait sound once.
 # @details Uses WPF MediaPlayer so MP3 playback works on the local Windows host.
 # The helper waits briefly for metadata before stopping the player.
@@ -40,6 +47,11 @@ function Start-WaitLoop {
 
     while ($true) {
         Start-Sleep -Seconds $IntervalSeconds
+        if (-not (Test-VsCodeRunning)) {
+            Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
+            break
+        }
+
         if (-not (Test-Path $PidFile)) {
             break
         }
@@ -57,6 +69,10 @@ function Start-WaitLoop {
 # @details Persists the worker PID in `.cache/wait_sound.pid` so a separate
 # stop helper can terminate it as soon as user interaction resumes.
 function Start-WaitWorker {
+    if (-not (Test-VsCodeRunning)) {
+        throw "VS Code is not running, so the wait sound worker will not be started."
+    }
+
     if (Test-Path $PidFile) {
         $existingPid = (Get-Content $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
         if ($existingPid) {
