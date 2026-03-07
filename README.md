@@ -117,6 +117,10 @@ We will get back to you as soon as possible.
 - The stored project playback file is a 1.5x faster version of the selected monkey clip so the pitch is higher and the cue is shorter.
 - When waiting for Eyal to do anything required to continue, including replying to a prompt, answering a question, or approving a request, play the project wait sound from `sounds/WaitSound.mp3`.
 - For any such waiting state, if 3 minutes pass without a response from Eyal, play `sounds/WaitSound.mp3` again, and keep repeating it every additional 3 minutes until a response arrives or the task resumes.
+- Session hook for the wait sound:
+  - at session start, run `.\scripts\stop_wait_sound.ps1` once to clear any stale wait-sound worker from a previous session
+  - immediately before sending a prompt, question, or approval request that requires Eyal to respond, run `.\scripts\start_wait_sound.ps1`
+  - immediately after Eyal responds, run `.\scripts\stop_wait_sound.ps1`
 - Important inconsistencies, mismatches, or stale notes discovered during work must be explicitly pointed out in project notes before they are forgotten.
   
 
@@ -145,6 +149,8 @@ References:
 - `.\scripts\setup_idf_env.ps1`: Windows PowerShell environment activation helper.
 - `.\scripts\build_flash_prompt.ps1`: Windows build+flash wrapper with commit/sub-version prompt.
 - `.\scripts\bump_subversion.ps1`: Windows patch-version bump helper.
+- `.\scripts\start_wait_sound.ps1`: starts the hidden repeating wait-sound worker and writes its PID handle to `.cache\wait_sound.pid`.
+- `.\scripts\stop_wait_sound.ps1`: stops the hidden wait-sound worker referenced by `.cache\wait_sound.pid`.
 - `./scripts/import_waveshare_examples.sh <path>`: imports external Waveshare ESP-IDF demo examples.
 - `docs/REVISION_HISTORY.doc`: Word-compatible revision and latest-features tracker.
 
