@@ -30,7 +30,7 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
   - start from this README note and inspect `DEF-20260306-181051` in `DefectRegister.rtf`
   - verify the active render mode in `main/lvgl_port.h` before changing flush logic again
   - re-check `main/lvgl_port.c` flush behavior against LVGL v9 buffer ownership rules and the Waveshare example
-  - if flicker remains, temporarily disable the 1-second heartbeat in `main/ui_screen.c` to separate UI-timer redraws from RGB sync faults
+  - do not disable the 1-second heartbeat timer in `main/ui_screen.c` again as an isolation step; that test resulted in a totally white screen
   - compare panel timing values in `main/hardware_init.c` against the exact board example and test porch/burst changes one at a time
   - after every flash, capture the first 5 seconds of logs and remember there is still an existing startup warning about flash-size mismatch
 
