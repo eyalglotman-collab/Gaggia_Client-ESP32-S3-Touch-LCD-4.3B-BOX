@@ -67,6 +67,19 @@ esp_err_t peripherals_manager_init_rtc_now(void);
  */
 bool peripherals_manager_is_tf_card_ready(void);
 
+/**
+ * @brief Initialize Wi-Fi in station mode and run a scan test.
+ *
+ * @details Brings up NVS, TCP/IP stack, default event loop, and the ESP-IDF
+ * Wi-Fi station interface. After startup it performs a blocking scan and logs
+ * the number of visible access points as a radio-path verification step.
+ *
+ * @return
+ *      - ESP_OK: Wi-Fi initialized and scan test completed successfully
+ *      - ESP_ERR_*: Wi-Fi stack initialization or scan failed
+ */
+esp_err_t peripherals_manager_init_wifi(void);
+
 #ifdef __cplusplus
 }
 #endif

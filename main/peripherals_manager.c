@@ -25,6 +25,10 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_timer.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "esp_wifi.h"
+#include "nvs_flash.h"
 
 #include "hardware_init.h"
 
@@ -74,6 +78,7 @@ static bool s_rs485_ready = false;
 static bool s_twai_ready = false;
 static bool s_sd_ready = false;
 static bool s_rtc_ready = false;
+static bool s_wifi_ready = false;
 static sdmmc_card_t *s_sd_card = NULL;
 static TaskHandle_t s_peripherals_task = NULL;
 
@@ -314,6 +319,116 @@ esp_err_t peripherals_manager_init_rtc_now(void)
              build_tm.tm_min,
              build_tm.tm_sec);
     return rtc_log_now();
+}
+
+/**
+ * @brief Initialize the Wi-Fi support stack once.
+ *
+ * @details Brings up NVS, esp-netif, and the default event loop in an
+ * idempotent way so higher-level Wi-Fi tests can start the STA interface.
+ *
+ * @return
+ *      - ESP_OK: Support stack ready
+ *      - ESP_ERR_*: One of the required subsystems failed to initialize
+ */
+static esp_err_t wifi_stack_init_once(void)
+{
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_RETURN_ON_ERROR(nvs_flash_erase(), TAG, "NVS erase failed");
+        ret = nvs_flash_init();
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "NVS init failed");
+
+    ret = esp_netif_init();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "esp_netif init failed");
+        return ret;
+    }
+
+    ret = esp_event_loop_create_default();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Default event loop init failed");
+        return ret;
+    }
+
+    return ESP_OK;
+}
+
+/**
+ * @brief Initialize Wi-Fi in station mode and run a scan test.
+ *
+ * @details Creates the default station network interface if needed, starts the
+ * Wi-Fi driver, performs a blocking access-point scan, and logs the number of
+ * visible networks as a functional bring-up test.
+ *
+ * @return
+ *      - ESP_OK: Wi-Fi initialized and scan completed successfully
+ *      - ESP_ERR_*: Wi-Fi init/start/scan failed
+ */
+esp_err_t peripherals_manager_init_wifi(void)
+{
+    if (s_wifi_ready) {
+        return ESP_OK;
+    }
+
+    ESP_RETURN_ON_ERROR(wifi_stack_init_once(), TAG, "Wi-Fi support stack init failed");
+
+    if (esp_netif_get_handle_from_ifkey("WIFI_STA_DEF") == NULL) {
+        if (esp_netif_create_default_wifi_sta() == NULL) {
+            ESP_LOGW(TAG, "Failed to create default Wi-Fi STA netif");
+            return ESP_FAIL;
+        }
+    }
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_err_t ret = esp_wifi_init(&cfg);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Wi-Fi driver init failed");
+        return ret;
+    }
+
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "Wi-Fi mode set failed");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "Wi-Fi storage set failed");
+
+    ret = esp_wifi_start();
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_CONN) {
+        ESP_LOGW(TAG, "Wi-Fi start failed");
+        return ret;
+    }
+
+    wifi_scan_config_t scan_cfg = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = true,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+    };
+
+    ESP_RETURN_ON_ERROR(esp_wifi_scan_start(&scan_cfg, true), TAG, "Wi-Fi scan failed");
+
+    uint16_t ap_count = 0;
+    ESP_RETURN_ON_ERROR(esp_wifi_scan_get_ap_num(&ap_count), TAG, "Wi-Fi AP count read failed");
+    ESP_LOGI(TAG, "Wi-Fi scan complete: %u APs found", ap_count);
+
+    wifi_ap_record_t ap_records[5] = {0};
+    uint16_t ap_records_count = 5;
+    if (ap_count > 0) {
+        ap_records_count = ap_count < ap_records_count ? ap_count : ap_records_count;
+        if (esp_wifi_scan_get_ap_records(&ap_records_count, ap_records) == ESP_OK) {
+            for (uint16_t i = 0; i < ap_records_count; ++i) {
+                ESP_LOGI(TAG,
+                         "Wi-Fi AP[%u]: SSID='%s' RSSI=%d channel=%u",
+                         i,
+                         (const char *)ap_records[i].ssid,
+                         ap_records[i].rssi,
+                         ap_records[i].primary);
+            }
+        }
+    }
+
+    s_wifi_ready = true;
+    return ESP_OK;
 }
 
 /**

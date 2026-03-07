@@ -107,6 +107,13 @@ void app_main(void)
             ESP_LOGW(TAG, "TF card initialization failed: %s", esp_err_to_name(tf_ret));
         }
 
+        esp_err_t wifi_ret = peripherals_manager_init_wifi();
+        if (wifi_ret == ESP_OK) {
+            ESP_LOGI(TAG, "Wi-Fi initialized successfully");
+        } else {
+            ESP_LOGW(TAG, "Wi-Fi initialization failed: %s", esp_err_to_name(wifi_ret));
+        }
+
         /* Initialize LVGL */
         if (lvgl_port_init(lcd_handle, tp_handle) == ESP_OK) {
             ESP_LOGI(TAG, "LVGL initialized successfully");

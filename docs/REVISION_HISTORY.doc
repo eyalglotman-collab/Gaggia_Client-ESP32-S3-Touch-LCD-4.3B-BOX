@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.1.10\par
+0.1.11\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -21,6 +21,8 @@
 - Initialization splash screen added before the main workflow UI appears.\par
 - RTC initialization added at startup using the current firmware build timestamp.\par
 - TF card startup path corrected so mount and file read verification succeed on the Waveshare board.\par
+- Wi-Fi station initialization and access-point scan test added to normal startup.\par
+- Flash layout updated to match the board's 16MB device and provide a 7MB factory app partition.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par
@@ -143,6 +145,13 @@
 - Version: 0.1.10\par
 - Summary: Added RTC startup initialization and fixed TF card startup verification on the Waveshare board.\par
 - Notes: `main/peripherals_manager.*` now initializes the PCF85063A RTC from the current firmware build timestamp, keeps CH422G-driven SD chip select asserted for SDSPI access, allows first-mount FAT formatting, and uses an 8.3 smoke-test filename so TF mount plus read/write verification succeed during normal startup.\par
+- Resolved Defects:\par
+  - None in this release.\par
+\par
+\b 2026-03-07\b0\par
+- Version: 0.1.11\par
+- Summary: Added Wi-Fi startup initialization and runtime scan verification.\par
+- Notes: `main/peripherals_manager.*` now initializes NVS, `esp_netif`, the Wi-Fi station driver, and performs a blocking AP scan during startup, while `main/Eyal_espresso_ESP32_main.c` logs the result. The project flash configuration was also aligned to the board's 16MB flash with a 7MB factory app partition so the Wi-Fi-enabled firmware fits and boots cleanly.\par
 - Resolved Defects:\par
   - None in this release.\par
 \par
