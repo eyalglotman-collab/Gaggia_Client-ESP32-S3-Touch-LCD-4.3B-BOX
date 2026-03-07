@@ -11,10 +11,10 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
 
 - Last released version in git: `0.1.4`
 - Release commit: `71136de` (`Release v0.1.4 - fix UI drift on RGB panel`)
-- Current unresolved defect:
+- Latest resolved defect:
   - `DEF-20260306-181051` from `0.1.4`
   - Title: `Screen UI moves right every touch on screen`
-  - Current state: the large right-shift defect was reduced, but the display path is still unstable. The screen can flicker black on redraws and later showed periodic flicker tied to UI refresh activity.
+  - Current state: resolved by the stable RGB display recipe used for the first UI-stable release candidate.
 - What was tried in this session:
   - compared the project against the Waveshare `08_lvgl_Porting` example and aligned the RGB path with the demo where possible
   - enabled `CONFIG_LCD_RGB_RESTART_IN_VSYNC=y` in `sdkconfig.defaults`
@@ -25,8 +25,7 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
   - tried on-demand RGB refresh earlier; it caused a black screen and was reverted
   - tried disabling UI scrolling earlier; it did not fix the defect and was reverted
 - Current technical reading:
-  - initial X-offset and redraw corruption point to RGB framebuffer handoff / timing, not normal touch callback logic
-  - the remaining visible symptom is redraw flicker, especially on touch or periodic UI updates, so the defect is still open
+  - initial X-offset and redraw corruption were caused by RGB framebuffer handoff / timing, not normal touch callback logic
   - stable baseline found: `psram_trans_align = 64`, 10-line RGB bounce buffer, and `on_bounce_frame_finish` callback registration together produce a visually stable non-animation UI
 - What to know when starting fresh next time:
   - start from this README note and inspect `DEF-20260306-181051` in `DefectRegister.rtf`
