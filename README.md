@@ -9,8 +9,8 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
 
 ## Session Release Notes
 
-- Last released version in git: `0.1.5`
-- Release commit: `19e4cb3` (`Release v0.1.5 - first stable UI version`)
+- Last released version in git: `0.1.6`
+- Release commit: `b9c0fd6` (`Release v0.1.6 - add swipe tab navigation`)
 - Version numbering reminder for release notes:
   - `X`: major architecture or feature-set changes
   - `Y`: minor functionality additions and bug-fix milestones
@@ -29,6 +29,8 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
   - tried on-demand RGB refresh earlier; it caused a black screen and was reverted
   - tried disabling UI scrolling earlier; it did not fix the defect and was reverted
   - changed the dark-theme UI navigation to use `lv_tabview` swipe behavior again by re-enabling horizontal content scrolling in `main/ui_screen.c`
+  - added local wait-sound session helpers in `scripts/start_wait_sound.ps1` and `scripts/stop_wait_sound.ps1`
+  - updated the wait-sound worker to stop itself automatically if `Code.exe` is no longer running
 - Current technical reading:
   - initial X-offset and redraw corruption were caused by RGB framebuffer handoff / timing, not normal touch callback logic
   - stable baseline found: `psram_trans_align = 64`, 10-line RGB bounce buffer, and `on_bounce_frame_finish` callback registration together produce a visually stable non-animation UI
@@ -39,6 +41,7 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
   - do not disable the 1-second heartbeat timer in `main/ui_screen.c` again as an isolation step; that test resulted in a totally white screen
   - compare panel timing values in `main/hardware_init.c` against the exact board example and test porch/burst changes one at a time
   - after every flash, capture the first 5 seconds of logs and remember there is still an existing startup warning about flash-size mismatch
+  - for waits that need user input, use `.\scripts\start_wait_sound.ps1` before asking and `.\scripts\stop_wait_sound.ps1` after the next user reply
 
 ## How to use example
 
