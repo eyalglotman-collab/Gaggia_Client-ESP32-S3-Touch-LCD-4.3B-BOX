@@ -19,6 +19,7 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
   - compared the project against the Waveshare `08_lvgl_Porting` example and aligned the RGB path with the demo where possible
   - enabled `CONFIG_LCD_RGB_RESTART_IN_VSYNC=y` in `sdkconfig.defaults`
   - added `psram_trans_align = 64` to the RGB panel config in `main/hardware_init.c`
+  - enabled a 10-line RGB bounce buffer in `main/hardware_init.c`; this removed the steady idle flicker and made the screen look stable outside touch/scroll animation
   - tested LVGL direct-mode and full-refresh buffer modes in `main/lvgl_port.h`
   - corrected LVGL flush handoff in `main/lvgl_port.c` to use the active LVGL framebuffer in full-frame modes
   - tried on-demand RGB refresh earlier; it caused a black screen and was reverted
