@@ -96,8 +96,13 @@ void app_main(void)
         if (lvgl_port_init(lcd_handle, tp_handle) == ESP_OK) {
             ESP_LOGI(TAG, "LVGL initialized successfully");
 
+            /* With bounce buffering enabled, signal LVGL after bounce-frame completion. */
             esp_lcd_rgb_panel_event_callbacks_t cbs = {
+#if HARDWARE_LCD_RGB_BOUNCE_BUFFER_HEIGHT > 0
+                .on_bounce_frame_finish = rgb_lcd_on_vsync_event,
+#else
                 .on_vsync = rgb_lcd_on_vsync_event,
+#endif
             };
             esp_err_t cb_ret = esp_lcd_rgb_panel_register_event_callbacks(lcd_handle, &cbs, NULL);
             if (cb_ret != ESP_OK) {

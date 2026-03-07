@@ -243,8 +243,10 @@ static esp_err_t lcd_init(esp_lcd_panel_handle_t *lcd_handle)
         .data_width = 16,
         .bits_per_pixel = 16,
         .num_fbs = LVGL_PORT_LCD_RGB_BUFFER_NUMS,
-        .bounce_buffer_size_px = 0,
+        /* A small bounce buffer removes idle redraw flicker on the 4.3B panel. */
+        .bounce_buffer_size_px = LCD_H_RES * HARDWARE_LCD_RGB_BOUNCE_BUFFER_HEIGHT,
         .sram_trans_align = 4,
+        /* 64-byte PSRAM alignment matches the vendor example and the stable path. */
         .psram_trans_align = 64,
         .dma_burst_size = 64,
         .hsync_gpio_num = LCD_PIN_HSYNC,

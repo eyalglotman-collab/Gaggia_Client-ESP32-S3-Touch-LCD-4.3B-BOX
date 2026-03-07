@@ -16,6 +16,9 @@
 extern "C" {
 #endif
 
+/* The 10-line bounce buffer matches the stable Waveshare display path for this board. */
+#define HARDWARE_LCD_RGB_BOUNCE_BUFFER_HEIGHT (10)
+
 /**
  * @brief Initialize LCD and touch hardware for ESP32-S3-Touch-LCD-4.3B.
  *

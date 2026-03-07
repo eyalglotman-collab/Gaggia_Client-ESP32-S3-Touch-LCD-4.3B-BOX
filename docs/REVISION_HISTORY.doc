@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.1.4\par
+0.1.5\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -14,6 +14,7 @@
 - Basic Brew Control UI with on-screen toggle and state label.\par
 - Build/flash workflow helper with commit + sub-version prompt.\par
 - Project migrated from devcontainer workflow to local ESP-IDF workflow.\par
+- Stable RGB display recipe validated for the first UI-stable release.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par
@@ -96,6 +97,13 @@
 - Notes: Enabled tear-avoidance direct mode with panel-owned double buffers, completed flushes only on the last frame update after VSYNC notification, and verified successful local build + flash on COM9.\par
 - Resolved Defects:\par
   - DEF-20260306-180132: UI moving to the right on screen.\par
+\par
+\b 2026-03-07\b0\par
+- Version: 0.1.5\par
+- Summary: First UI-stable release with RGB bounce-buffer display path stabilized for the Waveshare 4.3B panel.\par
+- Notes: Kept `psram_trans_align = 64`, enabled a 10-line RGB bounce buffer, and registered completion on `on_bounce_frame_finish`; this removed steady-state flicker and produced stable non-animation UI behavior.\par
+- Resolved Defects:\par
+  - DEF-20260306-181051: Screen UI moves right every touch on screen.\par
 \par
 \i Entry template:\i0\par
 - Version: 0.1.Z\par
