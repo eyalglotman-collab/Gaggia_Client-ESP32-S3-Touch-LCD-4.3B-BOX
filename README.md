@@ -125,6 +125,8 @@ We will get back to you as soon as possible.
   - immediately before sending a prompt, question, or approval request that requires Eyal to respond, run `.\scripts\start_wait_sound.ps1`
   - immediately after Eyal responds, run `.\scripts\stop_wait_sound.ps1`
   - if VS Code closes, the wait-sound worker must terminate itself automatically so no orphan background sound process remains
+  - the current working implementation uses `sounds/WaitSound.wav` for runtime playback and a dedicated playback helper in `.\scripts\play_wait_sound.ps1`
+  - the repeat path was verified locally with a 20-second test interval before returning to the normal 3-minute rule
 - Important inconsistencies, mismatches, or stale notes discovered during work must be explicitly pointed out in project notes before they are forgotten.
   
 
@@ -155,6 +157,7 @@ References:
 - `.\scripts\bump_subversion.ps1`: Windows patch-version bump helper.
 - `.\scripts\start_wait_sound.ps1`: plays `sounds/WaitSound.wav` once immediately, then starts the hidden repeating wait-sound worker and writes its PID handle to `.cache\wait_sound.pid`.
 - `.\scripts\start_wait_sound.ps1`: also exits automatically if no `Code.exe` process remains, which covers VS Code shutdown.
+- `.\scripts\play_wait_sound.ps1`: one-shot WAV playback helper used by the repeating wait worker for reliable replay.
 - `.\scripts\stop_wait_sound.ps1`: stops the hidden wait-sound worker referenced by `.cache\wait_sound.pid`.
 - `./scripts/import_waveshare_examples.sh <path>`: imports external Waveshare ESP-IDF demo examples.
 - `docs/REVISION_HISTORY.doc`: Word-compatible revision and latest-features tracker.
