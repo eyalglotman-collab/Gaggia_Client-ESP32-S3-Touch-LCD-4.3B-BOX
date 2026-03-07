@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "lvgl.h"
+#include "hardware_init.h"
 
 static const char *TAG = "ui_screen";
 
@@ -36,6 +37,7 @@ typedef struct {
     lv_obj_t *settings_target_value;
     lv_obj_t *settings_preinf_slider;
     lv_obj_t *settings_preinf_value;
+    lv_obj_t *settings_backlight_toggle;
     lv_timer_t *heartbeat_timer;
     lv_timer_t *init_timer;
     ui_page_t active_page;
@@ -62,6 +64,7 @@ static ui_state_t s_ui = {
     .settings_target_value = NULL,
     .settings_preinf_slider = NULL,
     .settings_preinf_value = NULL,
+    .settings_backlight_toggle = NULL,
     .heartbeat_timer = NULL,
     .init_timer = NULL,
     .active_page = UI_PAGE_HOME,
@@ -458,6 +461,31 @@ static void ui_build_page_brew(void)
 }
 
 /**
+ * @brief Handle settings backlight toggle state changes.
+ *
+ * @details Writes the board backlight enable bit through the hardware layer.
+ * A later touch anywhere on the panel will wake the backlight again.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_settings_backlight_toggle_event_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    bool enabled = lv_obj_has_state(obj, LV_STATE_CHECKED);
+    esp_err_t ret = hardware_set_backlight_enabled(enabled);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "settings backlight %s", enabled ? "ON" : "OFF");
+    } else {
+        ESP_LOGW(TAG, "settings backlight change failed: %s", esp_err_to_name(ret));
+        if (enabled) {
+            lv_obj_add_state(obj, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(obj, LV_STATE_CHECKED);
+        }
+    }
+}
+
+/**
  * @brief Construct profile selection page.
  *
  * @details Displays quick profile presets with one-click activation.
@@ -541,6 +569,23 @@ static void ui_build_page_settings(void)
         snprintf(txt, sizeof(txt), "%d s", s_ui.preinf_s);
         lv_label_set_text(s_ui.settings_preinf_value, txt);
     }
+
+    lv_obj_t *bl_lbl = lv_label_create(s_ui.content);
+    lv_label_set_text(bl_lbl, "Display Backlight");
+    lv_obj_set_style_text_font(bl_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(bl_lbl, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(bl_lbl, LV_ALIGN_TOP_LEFT, 20, 292);
+
+    s_ui.settings_backlight_toggle = lv_switch_create(s_ui.content);
+    lv_obj_align(s_ui.settings_backlight_toggle, LV_ALIGN_TOP_RIGHT, -40, 286);
+    ui_style_switch(s_ui.settings_backlight_toggle);
+    if (hardware_get_backlight_enabled()) {
+        lv_obj_add_state(s_ui.settings_backlight_toggle, LV_STATE_CHECKED);
+    }
+    lv_obj_add_event_cb(s_ui.settings_backlight_toggle,
+                        ui_settings_backlight_toggle_event_cb,
+                        LV_EVENT_VALUE_CHANGED,
+                        NULL);
 }
 
 /**
@@ -577,6 +622,7 @@ static void ui_render_active_page(void)
         s_ui.settings_target_value = NULL;
         s_ui.settings_preinf_slider = NULL;
         s_ui.settings_preinf_value = NULL;
+        s_ui.settings_backlight_toggle = NULL;
         ui_build_page_settings();
         break;
     default:

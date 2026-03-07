@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
@@ -112,6 +113,30 @@ esp_err_t hardware_i2c_write_read(uint8_t addr,
                                   size_t wlen,
                                   uint8_t *rdata,
                                   size_t rlen);
+
+/**
+ * @brief Set the LCD backlight enable state.
+ *
+ * @details Drives the stable CH422G output pattern used by this board while
+ * changing only the backlight enable bit.
+ *
+ * @param[in] enabled `true` keeps the backlight enabled, `false` disables it.
+ *
+ * @return
+ *      - ESP_OK: Backlight command applied
+ *      - ESP_ERR_*: Underlying CH422G write failed
+ */
+esp_err_t hardware_set_backlight_enabled(bool enabled);
+
+/**
+ * @brief Get the last requested LCD backlight state.
+ *
+ * @details Returns the software-tracked state for the CH422G backlight enable
+ * bit. This is sufficient for UI logic and wake-on-touch handling.
+ *
+ * @return `true` when the backlight is currently requested on.
+ */
+bool hardware_get_backlight_enabled(void);
 
 #ifdef __cplusplus
 }

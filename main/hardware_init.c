@@ -25,6 +25,7 @@
 #include "lvgl_port.h"
 
 static const char *TAG = "hw_init";
+static bool s_backlight_enabled = true;
 
 /* Shared I2C bus used by GT911 + CH422G (from Waveshare demos). */
 #define BOARD_I2C_SDA           (8)
@@ -295,6 +296,8 @@ static esp_err_t lcd_init(esp_lcd_panel_handle_t *lcd_handle)
     ret = ch422g_set_io(0x1E);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Backlight enable via CH422G failed: %s", esp_err_to_name(ret));
+    } else {
+        s_backlight_enabled = true;
     }
 
     /* Pre-fill RGB framebuffer with white to validate hardware path before LVGL. */
@@ -435,4 +438,40 @@ esp_err_t hardware_i2c_write_read(uint8_t addr,
         .rx_len = rlen,
     };
     return i2c_with_device(addr, i2c_txrx_op, &ctx);
+}
+
+/**
+ * @brief Set the LCD backlight state through CH422G.
+ *
+ * @details Uses the known-good board masks: `0x1E` keeps the backlight on and
+ * `0x1A` disables only the backlight while preserving LCD reset, touch reset,
+ * and SD chip-select high.
+ *
+ * @param[in] enabled `true` to enable the backlight.
+ *
+ * @return
+ *      - ESP_OK: CH422G accepted the command
+ *      - ESP_ERR_*: CH422G write failed
+ */
+esp_err_t hardware_set_backlight_enabled(bool enabled)
+{
+    const uint8_t mask = enabled ? 0x1E : 0x1A;
+    esp_err_t ret = ch422g_set_io(mask);
+    if (ret == ESP_OK) {
+        s_backlight_enabled = enabled;
+    }
+    return ret;
+}
+
+/**
+ * @brief Return the software-tracked backlight state.
+ *
+ * @details Exposes the most recent requested backlight state so UI and touch
+ * logic can avoid redundant writes and wake the screen on touch.
+ *
+ * @return `true` when the backlight is currently requested on.
+ */
+bool hardware_get_backlight_enabled(void)
+{
+    return s_backlight_enabled;
 }

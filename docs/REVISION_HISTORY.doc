@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.1.11\par
+0.2.0\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -23,6 +23,8 @@
 - TF card startup path corrected so mount and file read verification succeed on the Waveshare board.\par
 - Wi-Fi station initialization and access-point scan test added to normal startup.\par
 - Flash layout updated to match the board's 16MB device and provide a 7MB factory app partition.\par
+- Settings-page backlight control added through CH422G with touch-to-wake recovery.\par
+- Automatic backlight-off after 30 seconds without touch added with 1-second timer resolution.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par
@@ -157,6 +159,20 @@
 \par
 \i Entry template:\i0\par
 - Version: 0.1.Z\par
+- Date:\par
+- Summary:\par
+- Notes:\par
+\par
+\b X=0, Y=2\b0\par
+\b 2026-03-07\b0\par
+- Version: 0.2.0\par
+- Summary: Added CH422G backlight control with manual settings toggle, touch-to-wake, and 30-second automatic backlight timeout.\par
+- Notes: `main/ui_screen.c` now exposes a `Display Backlight` switch on the Settings page, `main/hardware_init.*` provides fixed known-good CH422G masks for backlight on/off, and `main/lvgl_port.c` restores the backlight on touch while a 1-second software timer turns it off after 30 seconds without touch. The minor digit was increased from `0.1.11` to `0.2.0` because this is a new user-visible behavior set rather than a simple patch release.\par
+- Resolved Defects:\par
+  - None in this release.\par
+\par
+\i Entry template:\i0\par
+- Version: 0.2.Z\par
 - Date:\par
 - Summary:\par
 - Notes:\par

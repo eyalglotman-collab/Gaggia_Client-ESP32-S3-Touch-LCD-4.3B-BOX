@@ -18,10 +18,83 @@
 #include "esp_timer.h"
 #include "lvgl.h"
 #include "lvgl_port.h"
+#include "hardware_init.h"
 
 static const char *TAG = "lv_port";
 static SemaphoreHandle_t lvgl_mux = NULL;
 static TaskHandle_t lvgl_task_handle = NULL;
+static esp_timer_handle_t s_backlight_idle_timer = NULL;
+static volatile uint32_t s_backlight_pending_ticks = 0;
+static bool s_backlight_idle_armed = true;
+static uint32_t s_backlight_timeout_remaining_s = LVGL_PORT_BACKLIGHT_IDLE_TIMEOUT_SEC;
+
+/**
+ * @brief Restore the backlight when a touch is detected.
+ *
+ * @details Keeps the explicit UI-controlled screen-off feature recoverable
+ * without requiring a blind touch on the original settings toggle.
+ */
+static void wake_backlight_on_touch(void)
+{
+    if (hardware_get_backlight_enabled()) {
+        return;
+    }
+
+    esp_err_t ret = hardware_set_backlight_enabled(true);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Backlight restored by touch");
+    } else {
+        ESP_LOGW(TAG, "Failed to restore backlight on touch: %s", esp_err_to_name(ret));
+    }
+}
+
+/**
+ * @brief Reset the software backlight inactivity state on touch.
+ *
+ * @details Uses the requested boolean workflow: touch clears the local armed
+ * flag, and the next 1-second timeout re-arms it before countdown resumes.
+ * The timeout counter is reset to the full configured inactivity window.
+ */
+static void note_backlight_touch_activity(void)
+{
+    s_backlight_idle_armed = false;
+    s_backlight_timeout_remaining_s = LVGL_PORT_BACKLIGHT_IDLE_TIMEOUT_SEC;
+}
+
+/**
+ * @brief Consume one 1-second inactivity timer event.
+ *
+ * @details If no touch has occurred since the previous timeout, the local
+ * boolean remains armed and the timeout counter continues to count down. When
+ * a touch occurs, the boolean is cleared and the next timeout simply re-arms
+ * the logic for the following second.
+ */
+static void handle_backlight_idle_tick(void)
+{
+    if (!hardware_get_backlight_enabled()) {
+        return;
+    }
+
+    if (!s_backlight_idle_armed) {
+        s_backlight_idle_armed = true;
+        return;
+    }
+
+    if (s_backlight_timeout_remaining_s > 0) {
+        s_backlight_timeout_remaining_s--;
+    }
+
+    if (s_backlight_timeout_remaining_s == 0) {
+        esp_err_t ret = hardware_set_backlight_enabled(false);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Backlight turned off after %u seconds without touch",
+                     LVGL_PORT_BACKLIGHT_IDLE_TIMEOUT_SEC);
+        } else {
+            ESP_LOGW(TAG, "Failed to disable backlight on idle timeout: %s", esp_err_to_name(ret));
+        }
+        s_backlight_timeout_remaining_s = LVGL_PORT_BACKLIGHT_IDLE_TIMEOUT_SEC;
+    }
+}
 
 /**
  * @brief Flush LVGL render area to RGB panel.
@@ -155,6 +228,8 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
     bool touchpad_pressed = esp_lcd_touch_get_coordinates(tp, &touchpad_x, &touchpad_y, NULL, &touchpad_cnt, 1);
 
     if (touchpad_pressed && touchpad_cnt > 0) {
+        note_backlight_touch_activity();
+        wake_backlight_on_touch();
         data->point.x = touchpad_x;
         data->point.y = touchpad_y;
         data->state = LV_INDEV_STATE_PRESSED;
@@ -199,6 +274,22 @@ static void tick_increment(void *arg)
 }
 
 /**
+ * @brief Periodic 1-second backlight inactivity timer callback.
+ *
+ * @details Runs in ESP timer context and only records that a timeout elapsed.
+ * The LVGL task later consumes the pending ticks and performs any I2C writes.
+ *
+ * @param[in] arg Unused callback argument.
+ */
+static void backlight_idle_timer_cb(void *arg)
+{
+    (void)arg;
+    if (s_backlight_pending_ticks < UINT32_MAX) {
+        s_backlight_pending_ticks++;
+    }
+}
+
+/**
  * @brief Create periodic LVGL tick timer.
  *
  * @details Starts an ESP timer to feed LVGL runtime tick.
@@ -214,6 +305,26 @@ static esp_err_t tick_init(void)
     esp_timer_handle_t lvgl_tick_timer = NULL;
     ESP_ERROR_CHECK(esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer));
     return esp_timer_start_periodic(lvgl_tick_timer, LVGL_PORT_TICK_PERIOD_MS * 1000);
+}
+
+/**
+ * @brief Create the periodic backlight inactivity timer.
+ *
+ * @details Starts a 1-second software timer used to drive the CH422G
+ * backlight auto-off logic with 1-second resolution.
+ *
+ * @return ESP_OK on success.
+ */
+static esp_err_t backlight_idle_timer_init(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = &backlight_idle_timer_cb,
+        .name = "BL idle"
+    };
+
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_backlight_idle_timer));
+    return esp_timer_start_periodic(s_backlight_idle_timer,
+                                    LVGL_PORT_BACKLIGHT_IDLE_TICK_MS * 1000ULL);
 }
 
 /**
@@ -242,6 +353,11 @@ static void lvgl_port_task(void *arg)
             task_delay_ms = LVGL_PORT_TASK_MIN_DELAY_MS;
         }
 
+        while (s_backlight_pending_ticks > 0) {
+            s_backlight_pending_ticks--;
+            handle_backlight_idle_tick();
+        }
+
         UBaseType_t current_high_water = uxTaskGetStackHighWaterMark(NULL);
         if (current_high_water < low_stack_words) {
             low_stack_words = current_high_water;
@@ -267,6 +383,9 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle, esp_lcd_touch_handle
 {
     lv_init();
     ESP_ERROR_CHECK(tick_init());
+    ESP_ERROR_CHECK(backlight_idle_timer_init());
+    s_backlight_idle_armed = true;
+    s_backlight_timeout_remaining_s = LVGL_PORT_BACKLIGHT_IDLE_TIMEOUT_SEC;
 
     lv_display_t *disp = display_init(lcd_handle);
     assert(disp);
