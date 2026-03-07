@@ -27,6 +27,7 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
 - Current technical reading:
   - initial X-offset and redraw corruption point to RGB framebuffer handoff / timing, not normal touch callback logic
   - the remaining visible symptom is redraw flicker, especially on touch or periodic UI updates, so the defect is still open
+  - stable baseline found: `psram_trans_align = 64`, 10-line RGB bounce buffer, and `on_bounce_frame_finish` callback registration together produce a visually stable non-animation UI
 - What to know when starting fresh next time:
   - start from this README note and inspect `DEF-20260306-181051` in `DefectRegister.rtf`
   - verify the active render mode in `main/lvgl_port.h` before changing flush logic again
@@ -141,6 +142,10 @@ References:
 
 - Hardware/software setup guide: `docs/ESP32_S3_TOUCH_LCD_4_3B_SETUP.md`
 - This project is configured for Waveshare ESP32-S3-Touch-LCD-4.3B (`800x480` RGB + GT911 touch).
+- Known-good RGB display recipe for the first stable UI version:
+  - `psram_trans_align = 64`
+  - `bounce_buffer_size_px = LCD_H_RES * 10`
+  - register RGB completion on `on_bounce_frame_finish` when bounce buffering is enabled
 - Use local cache/build-dir for consistent local builds:
   - `XDG_CACHE_HOME=.cache idf.py -B .idfbuild -DIDF_TARGET=esp32s3 reconfigure`
   - `XDG_CACHE_HOME=.cache idf.py -B .idfbuild build`
