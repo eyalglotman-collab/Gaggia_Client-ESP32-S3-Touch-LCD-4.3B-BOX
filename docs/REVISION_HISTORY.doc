@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.1.7\par
+0.1.8\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -17,6 +17,7 @@
 - Stable RGB display recipe validated for the first UI-stable release.\par
 - Dark tab-based UI with swipe-left and swipe-right page navigation.\par
 - Dedicated requirements and design document template added to the repository.\par
+- TF card initialization and mount verification added to normal startup.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par
@@ -118,6 +119,13 @@
 - Version: 0.1.7\par
 - Summary: Added the dedicated application requirements and design document to the project.\par
 - Notes: Introduced `EyalEspressoRequirements and Design.docx` as the primary requirements/design artifact and linked it from `README.md`. This remains a `Z` increment because it is a project-documentation addition rather than a major architecture or feature-scope change.\par
+- Resolved Defects:\par
+  - None in this release.\par
+\par
+\b 2026-03-07\b0\par
+- Version: 0.1.8\par
+- Summary: Added TF card initialization and read verification to normal application startup.\par
+- Notes: Exposed standalone TF card APIs in `main/peripherals_manager.*`, mounted and smoke-tested the card during startup from `main/Eyal_espresso_ESP32_main.c`, and fixed the SD mount CH422G mask so backlight and LCD control lines stay high during TF initialization.\par
 - Resolved Defects:\par
   - None in this release.\par
 \par

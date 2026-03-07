@@ -311,15 +311,22 @@ static void twai_send_heartbeat(void)
 }
 
 /**
- * @brief Write and read a quick SD card file for verification.
+ * @brief Verify the currently mounted TF card by writing and reading a file.
+ *
+ * @details Reuses the quick SD card file smoke test and converts it to an
+ * `esp_err_t` status for application startup checks.
+ *
+ * @return
+ *      - ESP_OK: File write/read verification passed
+ *      - ESP_FAIL: Verification failed
  */
-static void sd_card_file_test(void)
+static esp_err_t sd_card_verify_file_io(void)
 {
     const char *path = SD_MOUNT_POINT "/peripheral_check.txt";
     FILE *f = fopen(path, "w");
     if (f == NULL) {
         ESP_LOGW(TAG, "SD file write open failed");
-        return;
+        return ESP_FAIL;
     }
 
     fprintf(f, "Eyal espresso SD check\n");
@@ -329,12 +336,18 @@ static void sd_card_file_test(void)
     f = fopen(path, "r");
     if (f == NULL) {
         ESP_LOGW(TAG, "SD file read open failed");
-        return;
+        return ESP_FAIL;
     }
 
-    fgets(line, sizeof(line), f);
+    if (fgets(line, sizeof(line), f) == NULL) {
+        fclose(f);
+        ESP_LOGW(TAG, "SD file read failed");
+        return ESP_FAIL;
+    }
+
     fclose(f);
     ESP_LOGI(TAG, "SD test read: %s", line);
+    return ESP_OK;
 }
 
 /**
@@ -346,6 +359,7 @@ static void sd_card_file_test(void)
 static void sd_card_init(void)
 {
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    const uint8_t display_lines_high = CH422G_IO_TOUCH_RST | CH422G_IO_BACKLIGHT | CH422G_IO_LCD_RST;
 
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = SD_MOSI,
@@ -362,8 +376,8 @@ static void sd_card_init(void)
         return;
     }
 
-    /* Keep touch/LCD control lines high, pull SD CS low via IO4 for mount phase. */
-    if (ch422g_write_io(CH422G_IO_TOUCH_RST | CH422G_IO_LCD_RST) != ESP_OK) {
+    /* Keep display-related lines high while pulling SD CS low for mount. */
+    if (ch422g_write_io(display_lines_high) != ESP_OK) {
         ESP_LOGW(TAG, "CH422G SD CS prep failed");
     }
 
@@ -380,18 +394,57 @@ static void sd_card_init(void)
     esp_err_t ret = esp_vfs_fat_sdspi_mount(SD_MOUNT_POINT, &host, &slot_config, &mount_cfg, &s_sd_card);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "SD mount failed: %s", esp_err_to_name(ret));
+        ch422g_write_io(display_lines_high | CH422G_IO_SD_CS);
         spi_bus_free(host.slot);
         s_sd_ready = false;
         return;
     }
 
-    /* Return IO4 high after mount attempt. */
-    ch422g_write_io(CH422G_IO_TOUCH_RST | CH422G_IO_BACKLIGHT | CH422G_IO_LCD_RST | CH422G_IO_SD_CS);
+    /* Return SD CS high after mount while keeping the display enabled. */
+    ch422g_write_io(display_lines_high | CH422G_IO_SD_CS);
 
     s_sd_ready = true;
     ESP_LOGI(TAG, "SD mounted at %s", SD_MOUNT_POINT);
     sdmmc_card_print_info(stdout, s_sd_card);
-    sd_card_file_test();
+}
+
+/**
+ * @brief Initialize and verify TF card support without starting other peripherals.
+ *
+ * @details Mounts the card if needed and performs a simple file IO smoke test so
+ * callers can fail or warn early during normal application startup.
+ *
+ * @return
+ *      - ESP_OK: TF card mounted and read/write test passed
+ *      - ESP_ERR_*: Mount or verification failed
+ */
+esp_err_t peripherals_manager_init_tf_card(void)
+{
+    if (s_sd_ready && s_sd_card != NULL) {
+        return ESP_OK;
+    }
+
+    sd_card_init();
+    if (!s_sd_ready || s_sd_card == NULL) {
+        return ESP_FAIL;
+    }
+
+    return sd_card_verify_file_io();
+}
+
+/**
+ * @brief Report the current TF card ready state.
+ *
+ * @details Exposes the internal SD mount state for higher-level modules that
+ * want to gate filesystem operations on successful initialization.
+ *
+ * @return
+ *      - true: TF card mounted
+ *      - false: TF card not mounted
+ */
+bool peripherals_manager_is_tf_card_ready(void)
+{
+    return s_sd_ready;
 }
 
 /**

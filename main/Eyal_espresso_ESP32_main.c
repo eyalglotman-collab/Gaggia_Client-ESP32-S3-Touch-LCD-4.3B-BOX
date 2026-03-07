@@ -18,6 +18,7 @@
 #include "lvgl_port.h"
 #include "ui_screen.h"
 #include "hardware_init.h"
+#include "peripherals_manager.h"
 
 static const char *TAG = "espresso";
 
@@ -92,6 +93,13 @@ void app_main(void)
     esp_lcd_touch_handle_t tp_handle = NULL;
     
     if (lcd_and_touch_init(&lcd_handle, &tp_handle) == ESP_OK && lcd_handle != NULL) {
+        esp_err_t tf_ret = peripherals_manager_init_tf_card();
+        if (tf_ret == ESP_OK) {
+            ESP_LOGI(TAG, "TF card initialized successfully");
+        } else {
+            ESP_LOGW(TAG, "TF card initialization failed: %s", esp_err_to_name(tf_ret));
+        }
+
         /* Initialize LVGL */
         if (lvgl_port_init(lcd_handle, tp_handle) == ESP_OK) {
             ESP_LOGI(TAG, "LVGL initialized successfully");
