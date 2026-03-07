@@ -117,6 +117,7 @@ We will get back to you as soon as possible.
 - The stored project playback file is a 1.5x faster version of the selected monkey clip so the pitch is higher and the cue is shorter.
 - When waiting for Eyal to respond or approve a request, play the project wait sound from `sounds/WaitSound.mp3`.
 - If Eyal has not responded yet, repeat `sounds/WaitSound.mp3` every 3 minutes until a response arrives or the task resumes.
+- Important inconsistencies, mismatches, or stale notes discovered during work must be explicitly pointed out in project notes before they are forgotten.
   
 
 ### Codex and VS Code `PROBLEMS` (Session Rule)
