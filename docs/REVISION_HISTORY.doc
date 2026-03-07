@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.1.6\par
+0.1.7\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -16,6 +16,7 @@
 - Project migrated from devcontainer workflow to local ESP-IDF workflow.\par
 - Stable RGB display recipe validated for the first UI-stable release.\par
 - Dark tab-based UI with swipe-left and swipe-right page navigation.\par
+- Dedicated requirements and design document template added to the repository.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par
@@ -110,6 +111,13 @@
 - Version: 0.1.6\par
 - Summary: Updated the UI to dark tab mode with swipe-driven left/right tab changes.\par
 - Notes: `X` denotes major architecture or feature-set changes, `Y` denotes minor functionality additions and bug-fix milestones, and `Z` denotes accepted build+flash sub-version releases. This release keeps `X=0` and `Y=1`, and increments `Z` to capture the new tab interaction behavior in `main/ui_screen.c`.\par
+- Resolved Defects:\par
+  - None in this release.\par
+\par
+\b 2026-03-07\b0\par
+- Version: 0.1.7\par
+- Summary: Added the dedicated application requirements and design document to the project.\par
+- Notes: Introduced `EyalEspressoRequirements and Design.docx` as the primary requirements/design artifact and linked it from `README.md`. This remains a `Z` increment because it is a project-documentation addition rather than a major architecture or feature-scope change.\par
 - Resolved Defects:\par
   - None in this release.\par
 \par
