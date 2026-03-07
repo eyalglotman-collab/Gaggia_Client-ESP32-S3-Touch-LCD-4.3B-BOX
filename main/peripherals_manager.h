@@ -7,6 +7,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <time.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -54,6 +55,22 @@ esp_err_t peripherals_manager_init_tf_card(void);
  *      - ESP_ERR_*: RTC communication or timestamp parsing failed
  */
 esp_err_t peripherals_manager_init_rtc_now(void);
+
+/**
+ * @brief Read the current RTC time into a `struct tm`.
+ *
+ * @details Fetches the current PCF85063A calendar registers, converts them
+ * from BCD to standard calendar fields, and returns the decoded time.
+ *
+ * @param[out] out_tm Destination time structure.
+ *
+ * @return
+ *      - ESP_OK: RTC time read successfully
+ *      - ESP_ERR_INVALID_STATE: RTC has not been initialized yet
+ *      - ESP_ERR_INVALID_ARG: `out_tm` is NULL
+ *      - ESP_ERR_*: Underlying RTC read failed
+ */
+esp_err_t peripherals_manager_get_rtc_time(struct tm *out_tm);
 
 /**
  * @brief Report whether the TF card is currently mounted and ready.

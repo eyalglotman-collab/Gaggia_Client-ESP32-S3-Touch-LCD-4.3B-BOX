@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.0\par
+0.2.1\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -25,6 +25,8 @@
 - Flash layout updated to match the board's 16MB device and provide a 7MB factory app partition.\par
 - Settings-page backlight control added through CH422G with touch-to-wake recovery.\par
 - Automatic backlight-off after 30 seconds without touch added with 1-second timer resolution.\par
+- All workflow text and controls moved fully inside the tab area, with a persistent bottom clock bar occupying the lower 10% of the display.\par
+- Press and toggle controls updated to use button-style surfaces with pressed/check-state colors and press in/out animation.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par
@@ -168,6 +170,13 @@
 - Version: 0.2.0\par
 - Summary: Added CH422G backlight control with manual settings toggle, touch-to-wake, and 30-second automatic backlight timeout.\par
 - Notes: `main/ui_screen.c` now exposes a `Display Backlight` switch on the Settings page, `main/hardware_init.*` provides fixed known-good CH422G masks for backlight on/off, and `main/lvgl_port.c` restores the backlight on touch while a 1-second software timer turns it off after 30 seconds without touch. The minor digit was increased from `0.1.11` to `0.2.0` because this is a new user-visible behavior set rather than a simple patch release.\par
+- Resolved Defects:\par
+  - None in this release.\par
+\par
+\b 2026-03-07\b0\par
+- Version: 0.2.1\par
+- Summary: Reworked the main UI layout so all workflow content lives inside the top tab region with a persistent bottom clock bar.\par
+- Notes: `main/ui_screen.c` now keeps the tabview in the upper 90\% of the screen, renders the RTC clock in a dedicated lower 10\% bar, moves live status text into each tab page, and converts press/toggle controls to button-style widgets with pressed/check-state color changes and motion. `main/peripherals_manager.*` now exposes RTC reads for the shared clock bar.\par
 - Resolved Defects:\par
   - None in this release.\par
 \par

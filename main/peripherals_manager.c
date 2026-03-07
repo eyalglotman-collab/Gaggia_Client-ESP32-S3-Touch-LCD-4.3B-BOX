@@ -240,22 +240,59 @@ static void i2c_scan(void)
  */
 static esp_err_t rtc_log_now(void)
 {
-    uint8_t reg = RTC_REG_SECONDS;
-    uint8_t raw[7] = {0};
-
-    if (hardware_i2c_write_read(RTC_ADDR, &reg, 1, raw, sizeof(raw)) != ESP_OK) {
+    struct tm rtc_tm = {0};
+    esp_err_t ret = peripherals_manager_get_rtc_time(&rtc_tm);
+    if (ret != ESP_OK) {
         ESP_LOGW(TAG, "RTC read failed");
-        return ESP_FAIL;
+        return ret;
     }
 
-    int sec = bcd_to_dec(raw[0] & 0x7F);
-    int min = bcd_to_dec(raw[1] & 0x7F);
-    int hour = bcd_to_dec(raw[2] & 0x3F);
-    int day = bcd_to_dec(raw[3] & 0x3F);
-    int month = bcd_to_dec(raw[5] & 0x1F);
-    int year = bcd_to_dec(raw[6]) + 1970;
+    ESP_LOGI(TAG,
+             "RTC now: %04d-%02d-%02d %02d:%02d:%02d",
+             rtc_tm.tm_year + 1900,
+             rtc_tm.tm_mon + 1,
+             rtc_tm.tm_mday,
+             rtc_tm.tm_hour,
+             rtc_tm.tm_min,
+             rtc_tm.tm_sec);
+    return ESP_OK;
+}
 
-    ESP_LOGI(TAG, "RTC now: %04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, min, sec);
+/**
+ * @brief Read the current RTC calendar registers.
+ *
+ * @details Retrieves the active PCF85063A date/time register set and converts
+ * it into a standard `struct tm` for application-facing consumers.
+ *
+ * @param[out] out_tm Destination time structure.
+ *
+ * @return
+ *      - ESP_OK: RTC time decoded successfully
+ *      - ESP_ERR_INVALID_STATE: RTC has not been initialized
+ *      - ESP_ERR_INVALID_ARG: `out_tm` is NULL
+ *      - ESP_ERR_*: I2C read failed
+ */
+esp_err_t peripherals_manager_get_rtc_time(struct tm *out_tm)
+{
+    ESP_RETURN_ON_FALSE(out_tm != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid RTC output buffer");
+    ESP_RETURN_ON_FALSE(s_rtc_ready, ESP_ERR_INVALID_STATE, TAG, "RTC not initialized");
+
+    uint8_t reg = RTC_REG_SECONDS;
+    uint8_t raw[7] = {0};
+    ESP_RETURN_ON_ERROR(hardware_i2c_write_read(RTC_ADDR, &reg, 1, raw, sizeof(raw)),
+                        TAG,
+                        "RTC read failed");
+
+    memset(out_tm, 0, sizeof(*out_tm));
+    out_tm->tm_sec = bcd_to_dec(raw[0] & 0x7F);
+    out_tm->tm_min = bcd_to_dec(raw[1] & 0x7F);
+    out_tm->tm_hour = bcd_to_dec(raw[2] & 0x3F);
+    out_tm->tm_mday = bcd_to_dec(raw[3] & 0x3F);
+    out_tm->tm_wday = bcd_to_dec(raw[4] & 0x07);
+    out_tm->tm_mon = bcd_to_dec(raw[5] & 0x1F) - 1;
+    out_tm->tm_year = (bcd_to_dec(raw[6]) + 1970) - 1900;
+    out_tm->tm_isdst = -1;
+
     return ESP_OK;
 }
 
