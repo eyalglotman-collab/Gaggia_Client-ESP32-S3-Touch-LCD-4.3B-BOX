@@ -115,8 +115,8 @@ We will get back to you as soon as possible.
 - When a build succeeds, play the project celebration sound from `sounds/build-success-monkey-1p5x.wav`.
 - The selected celebration sound source is `sounds/cartoon_candidates/mixkit-cartoon-monkey-preview.mp3` from Mixkit's monkey/cartoon effects page: `https://mixkit.co/free-sound-effects/monkey/`.
 - The stored project playback file is a 1.5x faster version of the selected monkey clip so the pitch is higher and the cue is shorter.
-- When waiting for Eyal to respond or approve a request, play the project wait sound from `sounds/WaitSound.mp3`.
-- If Eyal has not responded yet, repeat `sounds/WaitSound.mp3` every 3 minutes until a response arrives or the task resumes.
+- When waiting for Eyal to do anything required to continue, including replying to a prompt, answering a question, or approving a request, play the project wait sound from `sounds/WaitSound.mp3`.
+- For any such waiting state, if 3 minutes pass without a response from Eyal, play `sounds/WaitSound.mp3` again, and keep repeating it every additional 3 minutes until a response arrives or the task resumes.
 - Important inconsistencies, mismatches, or stale notes discovered during work must be explicitly pointed out in project notes before they are forgotten.
   
 
