@@ -9,12 +9,16 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
 
 ## Session Release Notes
 
-- Last released version in git: `0.1.4`
-- Release commit: `71136de` (`Release v0.1.4 - fix UI drift on RGB panel`)
+- Last released version in git: `0.1.5`
+- Release commit: `19e4cb3` (`Release v0.1.5 - first stable UI version`)
+- Version numbering reminder for release notes:
+  - `X`: major architecture or feature-set changes
+  - `Y`: minor functionality additions and bug-fix milestones
+  - `Z`: patch/sub-version increments after accepted build+flash cycles
 - Latest resolved defect:
-  - `DEF-20260306-181051` from `0.1.4`
+  - `DEF-20260306-181051` from `0.1.5`
   - Title: `Screen UI moves right every touch on screen`
-  - Current state: resolved by the stable RGB display recipe used for the first UI-stable release candidate.
+  - Current state: resolved by the stable RGB display recipe used for the first UI-stable release.
 - What was tried in this session:
   - compared the project against the Waveshare `08_lvgl_Porting` example and aligned the RGB path with the demo where possible
   - enabled `CONFIG_LCD_RGB_RESTART_IN_VSYNC=y` in `sdkconfig.defaults`
@@ -24,6 +28,7 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
   - corrected LVGL flush handoff in `main/lvgl_port.c` to use the active LVGL framebuffer in full-frame modes
   - tried on-demand RGB refresh earlier; it caused a black screen and was reverted
   - tried disabling UI scrolling earlier; it did not fix the defect and was reverted
+  - changed the dark-theme UI navigation to use `lv_tabview` swipe behavior again by re-enabling horizontal content scrolling in `main/ui_screen.c`
 - Current technical reading:
   - initial X-offset and redraw corruption were caused by RGB framebuffer handoff / timing, not normal touch callback logic
   - stable baseline found: `psram_trans_align = 64`, 10-line RGB bounce buffer, and `on_bounce_frame_finish` callback registration together produce a visually stable non-animation UI
