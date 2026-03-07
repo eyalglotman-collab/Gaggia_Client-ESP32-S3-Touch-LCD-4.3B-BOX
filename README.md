@@ -115,6 +115,8 @@ We will get back to you as soon as possible.
 - When a build succeeds, play the project celebration sound from `sounds/build-success-monkey-1p5x.wav`.
 - The selected celebration sound source is `sounds/cartoon_candidates/mixkit-cartoon-monkey-preview.mp3` from Mixkit's monkey/cartoon effects page: `https://mixkit.co/free-sound-effects/monkey/`.
 - The stored project playback file is a 1.5x faster version of the selected monkey clip so the pitch is higher and the cue is shorter.
+- When waiting for Eyal to respond or approve a request, play the project wait sound from `sounds/WaitSound.mp3`.
+- If Eyal has not responded yet, repeat `sounds/WaitSound.mp3` every 3 minutes until a response arrives or the task resumes.
   
 
 ### Codex and VS Code `PROBLEMS` (Session Rule)
@@ -157,6 +159,10 @@ References:
   - source file: `sounds/cartoon_candidates/mixkit-cartoon-monkey-preview.mp3`
   - project playback file: `sounds/build-success-monkey-1p5x.wav`
   - processing: played faster at `1.5x`, which also raises the pitch
+- Wait sound selection:
+  - source file: `sounds/waiting_candidates/orange-game-start-countdown.mp3`
+  - project playback file: `sounds/WaitSound.mp3`
+  - usage: play while waiting for user approval/response and repeat every 3 minutes
 - Use local cache/build-dir for consistent local builds:
   - `XDG_CACHE_HOME=.cache idf.py -B .idfbuild -DIDF_TARGET=esp32s3 reconfigure`
   - `XDG_CACHE_HOME=.cache idf.py -B .idfbuild build`
