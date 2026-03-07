@@ -120,7 +120,7 @@ We will get back to you as soon as possible.
 - When a build succeeds, play the project celebration sound from `sounds/build-success-monkey-1p5x.wav`.
 - The selected celebration sound source is `sounds/cartoon_candidates/mixkit-cartoon-monkey-preview.mp3` from Mixkit's monkey/cartoon effects page: `https://mixkit.co/free-sound-effects/monkey/`.
 - The stored project playback file is a 1.5x faster version of the selected monkey clip so the pitch is higher and the cue is shorter.
-- When waiting for Eyal to do anything required to continue, including replying to a prompt, answering a question, approving a request, or sending the next instruction after work is finished and Codex is idle, play the project wait sound from `sounds/WaitSound.wav`.
+- When waiting for Eyal to do anything required to continue, including replying to a prompt, answering a question, approving a request, or simply not sending a new instruction while Codex is otherwise idle, play the project wait sound from `sounds/WaitSound.wav`.
 - For any such waiting state, play `sounds/WaitSound.wav` once immediately when the wait begins, then if 3 minutes pass without a response from Eyal, play it again and keep repeating it every additional 3 minutes until a response arrives or the task resumes.
 - Session hook for the wait sound:
   - at session start, run `.\scripts\stop_wait_sound.ps1` once to clear any stale wait-sound worker from a previous session
