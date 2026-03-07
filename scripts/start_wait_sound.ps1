@@ -7,6 +7,7 @@ param(
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $PidFile = Join-Path $ProjectRoot ".cache\wait_sound.pid"
 $SoundFile = Join-Path $ProjectRoot "sounds\WaitSound.wav"
+$PlaybackScript = Join-Path $ProjectRoot "scripts\play_wait_sound.ps1"
 
 # @brief Check whether VS Code is still running on the host.
 # @details The wait-sound worker exits automatically if no `Code` process is
@@ -16,12 +17,19 @@ function Test-VsCodeRunning {
 }
 
 # @brief Play the configured wait sound once.
-# @details Uses `System.Media.SoundPlayer` for reliable WAV playback on the
-# local Windows host.
+# @details Runs a dedicated playback helper process so the hidden wait worker
+# remains alive even if a single playback attempt fails.
 function Play-WaitSound {
-    Add-Type -AssemblyName System
-    $player = New-Object System.Media.SoundPlayer $SoundFile
-    $player.PlaySync()
+    $playProc = Start-Process powershell.exe -ArgumentList @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $PlaybackScript,
+        "-SoundFile", $SoundFile
+    ) -PassThru -Wait
+
+    if ($playProc.ExitCode -ne 0) {
+        throw "Wait sound playback helper failed with exit code $($playProc.ExitCode)."
+    }
 }
 
 # @brief Run the repeating wait-sound loop.
@@ -83,6 +91,9 @@ function Start-WaitWorker {
 
 if (-not (Test-Path $SoundFile)) {
     throw "Wait sound file not found: $SoundFile"
+}
+if (-not (Test-Path $PlaybackScript)) {
+    throw "Wait playback helper not found: $PlaybackScript"
 }
 
 if ($Worker) {
