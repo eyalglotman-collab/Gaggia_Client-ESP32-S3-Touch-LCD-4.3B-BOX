@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.1.9\par
+0.1.10\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -19,6 +19,8 @@
 - Dedicated requirements and design document template added to the repository.\par
 - TF card initialization and mount verification added to normal startup.\par
 - Initialization splash screen added before the main workflow UI appears.\par
+- RTC initialization added at startup using the current firmware build timestamp.\par
+- TF card startup path corrected so mount and file read verification succeed on the Waveshare board.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par
@@ -134,6 +136,13 @@
 - Version: 0.1.9\par
 - Summary: Added a startup initialization state with splash screen before the main UI loads.\par
 - Notes: `main/ui_screen.c` now shows an `Initializing System...` splash for five seconds, then transitions automatically into the existing tabbed workflow UI using a one-shot LVGL timer.\par
+- Resolved Defects:\par
+  - None in this release.\par
+\par
+\b 2026-03-07\b0\par
+- Version: 0.1.10\par
+- Summary: Added RTC startup initialization and fixed TF card startup verification on the Waveshare board.\par
+- Notes: `main/peripherals_manager.*` now initializes the PCF85063A RTC from the current firmware build timestamp, keeps CH422G-driven SD chip select asserted for SDSPI access, allows first-mount FAT formatting, and uses an 8.3 smoke-test filename so TF mount plus read/write verification succeed during normal startup.\par
 - Resolved Defects:\par
   - None in this release.\par
 \par

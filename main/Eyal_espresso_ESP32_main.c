@@ -93,6 +93,13 @@ void app_main(void)
     esp_lcd_touch_handle_t tp_handle = NULL;
     
     if (lcd_and_touch_init(&lcd_handle, &tp_handle) == ESP_OK && lcd_handle != NULL) {
+        esp_err_t rtc_ret = peripherals_manager_init_rtc_now();
+        if (rtc_ret == ESP_OK) {
+            ESP_LOGI(TAG, "RTC initialized successfully");
+        } else {
+            ESP_LOGW(TAG, "RTC initialization failed: %s", esp_err_to_name(rtc_ret));
+        }
+
         esp_err_t tf_ret = peripherals_manager_init_tf_card();
         if (tf_ret == ESP_OK) {
             ESP_LOGI(TAG, "TF card initialized successfully");

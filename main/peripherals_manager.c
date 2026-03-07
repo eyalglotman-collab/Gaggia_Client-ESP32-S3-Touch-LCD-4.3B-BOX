@@ -7,6 +7,7 @@
 #include "peripherals_manager.h"
 
 #include <stdio.h>
+#include <time.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -72,6 +73,7 @@ static const char *TAG = "peripherals";
 static bool s_rs485_ready = false;
 static bool s_twai_ready = false;
 static bool s_sd_ready = false;
+static bool s_rtc_ready = false;
 static sdmmc_card_t *s_sd_card = NULL;
 static TaskHandle_t s_peripherals_task = NULL;
 
@@ -89,6 +91,56 @@ static uint8_t dec_to_bcd(int val)
 static int bcd_to_dec(uint8_t val)
 {
     return (int)((val / 16 * 10) + (val % 16));
+}
+
+/**
+ * @brief Parse the firmware build timestamp into calendar fields.
+ *
+ * @details Converts the compiler `__DATE__` and `__TIME__` macros into a
+ * normalized `struct tm` so the RTC can be initialized to the build time.
+ *
+ * @param[out] out_tm Parsed timestamp structure.
+ *
+ * @return
+ *      - ESP_OK: Build timestamp parsed successfully
+ *      - ESP_ERR_INVALID_STATE: Build timestamp could not be parsed
+ */
+static esp_err_t parse_build_time(struct tm *out_tm)
+{
+    static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    char month_str[4] = {0};
+    int day = 0;
+    int year = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+
+    if (sscanf(__DATE__, "%3s %d %d", month_str, &day, &year) != 3) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (sscanf(__TIME__, "%d:%d:%d", &hour, &minute, &second) != 3) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const char *month_pos = strstr(months, month_str);
+    if (month_pos == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    memset(out_tm, 0, sizeof(*out_tm));
+    out_tm->tm_year = year - 1900;
+    out_tm->tm_mon = (int)((month_pos - months) / 3);
+    out_tm->tm_mday = day;
+    out_tm->tm_hour = hour;
+    out_tm->tm_min = minute;
+    out_tm->tm_sec = second;
+    out_tm->tm_isdst = -1;
+
+    if (mktime(out_tm) == (time_t)-1) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return ESP_OK;
 }
 
 /**
@@ -172,51 +224,23 @@ static void i2c_scan(void)
 }
 
 /**
- * @brief Initialize and configure RTC (PCF85063A) baseline time.
+ * @brief Read and log the current RTC date/time values.
  *
- * @details Mirrors Waveshare RTC example flow by writing CTRL1 CAP_SEL and
- * setting a known starting date/time.
+ * @details Fetches the PCF85063A calendar registers over I2C, converts the
+ * returned BCD fields into decimal values, and prints the resulting timestamp.
+ *
+ * @return
+ *      - ESP_OK: RTC values read and logged successfully
+ *      - ESP_FAIL: RTC read transaction failed
  */
-static void rtc_init_and_set(void)
-{
-    uint8_t ctrl1_data[2] = {
-        RTC_REG_CTRL1,
-        RTC_CTRL1_CAP_SEL,
-    };
-
-    if (hardware_i2c_write_raw(RTC_ADDR, ctrl1_data, sizeof(ctrl1_data)) != ESP_OK) {
-        ESP_LOGW(TAG, "RTC control init failed");
-        return;
-    }
-
-    /* Set a baseline date/time (2026-03-03 12:00:00, weekday=2 Tuesday). */
-    uint8_t dt_data[8] = {
-        RTC_REG_SECONDS,
-        dec_to_bcd(0),
-        dec_to_bcd(0),
-        dec_to_bcd(12),
-        dec_to_bcd(3),
-        dec_to_bcd(2),
-        dec_to_bcd(3),
-        dec_to_bcd(2026 - 1970),
-    };
-
-    if (hardware_i2c_write_raw(RTC_ADDR, dt_data, sizeof(dt_data)) != ESP_OK) {
-        ESP_LOGW(TAG, "RTC datetime set failed");
-    }
-}
-
-/**
- * @brief Read and log RTC date/time values.
- */
-static void rtc_log_now(void)
+static esp_err_t rtc_log_now(void)
 {
     uint8_t reg = RTC_REG_SECONDS;
     uint8_t raw[7] = {0};
 
     if (hardware_i2c_write_read(RTC_ADDR, &reg, 1, raw, sizeof(raw)) != ESP_OK) {
         ESP_LOGW(TAG, "RTC read failed");
-        return;
+        return ESP_FAIL;
     }
 
     int sec = bcd_to_dec(raw[0] & 0x7F);
@@ -227,6 +251,69 @@ static void rtc_log_now(void)
     int year = bcd_to_dec(raw[6]) + 1970;
 
     ESP_LOGI(TAG, "RTC now: %04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, min, sec);
+    return ESP_OK;
+}
+
+/**
+ * @brief Initialize the RTC and set it to the current firmware timestamp.
+ *
+ * @details Configures the PCF85063A control register, writes the parsed
+ * compiler build timestamp from the active build, and logs the resulting clock
+ * value. This is the available "now" source for standalone boot without an
+ * external RTC sync channel.
+ *
+ * @return
+ *      - ESP_OK: RTC configured successfully
+ *      - ESP_ERR_*: RTC communication or timestamp parsing failed
+ */
+esp_err_t peripherals_manager_init_rtc_now(void)
+{
+    struct tm build_tm = {0};
+    esp_err_t ret = parse_build_time(&build_tm);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "RTC build-time parse failed");
+        s_rtc_ready = false;
+        return ret;
+    }
+
+    uint8_t ctrl1_data[2] = {
+        RTC_REG_CTRL1,
+        RTC_CTRL1_CAP_SEL,
+    };
+    ret = hardware_i2c_write_raw(RTC_ADDR, ctrl1_data, sizeof(ctrl1_data));
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "RTC control init failed");
+        s_rtc_ready = false;
+        return ret;
+    }
+
+    uint8_t dt_data[8] = {
+        RTC_REG_SECONDS,
+        dec_to_bcd(build_tm.tm_sec),
+        dec_to_bcd(build_tm.tm_min),
+        dec_to_bcd(build_tm.tm_hour),
+        dec_to_bcd(build_tm.tm_mday),
+        dec_to_bcd(build_tm.tm_wday),
+        dec_to_bcd(build_tm.tm_mon + 1),
+        dec_to_bcd((build_tm.tm_year + 1900) - 1970),
+    };
+    ret = hardware_i2c_write_raw(RTC_ADDR, dt_data, sizeof(dt_data));
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "RTC datetime set failed");
+        s_rtc_ready = false;
+        return ret;
+    }
+
+    s_rtc_ready = true;
+    ESP_LOGI(TAG,
+             "RTC initialized to build time %04d-%02d-%02d %02d:%02d:%02d",
+             build_tm.tm_year + 1900,
+             build_tm.tm_mon + 1,
+             build_tm.tm_mday,
+             build_tm.tm_hour,
+             build_tm.tm_min,
+             build_tm.tm_sec);
+    return rtc_log_now();
 }
 
 /**
@@ -322,7 +409,7 @@ static void twai_send_heartbeat(void)
  */
 static esp_err_t sd_card_verify_file_io(void)
 {
-    const char *path = SD_MOUNT_POINT "/peripheral_check.txt";
+    const char *path = SD_MOUNT_POINT "/CHECK.TXT";
     FILE *f = fopen(path, "w");
     if (f == NULL) {
         ESP_LOGW(TAG, "SD file write open failed");
@@ -354,7 +441,9 @@ static esp_err_t sd_card_verify_file_io(void)
  * @brief Initialize SD over SDSPI using Waveshare demo pinout.
  *
  * @details Uses CH422G to drive board-level SD CS line behavior similarly to
- * vendor example where GPIO CS is not routed directly to ESP pin.
+ * vendor example where GPIO CS is not routed directly to ESP pin. If the card
+ * is present but does not yet contain a FAT filesystem, the mount helper is
+ * allowed to create one so first-boot TF validation can succeed.
  */
 static void sd_card_init(void)
 {
@@ -386,7 +475,7 @@ static void sd_card_init(void)
     slot_config.host_id = host.slot;
 
     esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
-        .format_if_mount_failed = false,
+        .format_if_mount_failed = true,
         .max_files = 5,
         .allocation_unit_size = 16 * 1024,
     };
@@ -400,8 +489,9 @@ static void sd_card_init(void)
         return;
     }
 
-    /* Return SD CS high after mount while keeping the display enabled. */
-    ch422g_write_io(display_lines_high | CH422G_IO_SD_CS);
+    /* Keep SD CS asserted because this board routes CS through CH422G, not a
+     * native ESP GPIO the SDSPI driver can toggle for later file operations. */
+    ch422g_write_io(display_lines_high);
 
     s_sd_ready = true;
     ESP_LOGI(TAG, "SD mounted at %s", SD_MOUNT_POINT);
@@ -475,7 +565,9 @@ static void peripherals_task(void *arg)
         }
 
         if ((now_ms - last_rtc_ms) >= 5000) {
-            rtc_log_now();
+            if (s_rtc_ready) {
+                rtc_log_now();
+            }
             last_rtc_ms = now_ms;
         }
 
@@ -493,7 +585,7 @@ esp_err_t peripherals_manager_start(void)
 {
     i2c_scan();
     io_self_test();
-    rtc_init_and_set();
+    peripherals_manager_init_rtc_now();
     rs485_init();
     sd_card_init();
     twai_init();

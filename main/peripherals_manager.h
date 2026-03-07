@@ -42,6 +42,20 @@ esp_err_t peripherals_manager_start(void);
 esp_err_t peripherals_manager_init_tf_card(void);
 
 /**
+ * @brief Initialize the RTC and set it to the current firmware timestamp.
+ *
+ * @details Configures the PCF85063A control register, parses the C compiler
+ * `__DATE__` and `__TIME__` macros from the current build, writes that
+ * timestamp into the RTC, and logs the resulting clock value. This is the
+ * closest available "now" without adding an external time-sync source.
+ *
+ * @return
+ *      - ESP_OK: RTC initialized and timestamp written successfully
+ *      - ESP_ERR_*: RTC communication or timestamp parsing failed
+ */
+esp_err_t peripherals_manager_init_rtc_now(void);
+
+/**
  * @brief Report whether the TF card is currently mounted and ready.
  *
  * @details Returns the last known TF card readiness state maintained by the
