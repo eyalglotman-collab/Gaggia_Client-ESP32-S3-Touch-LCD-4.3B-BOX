@@ -107,7 +107,9 @@ We will get back to you as soon as possible.
 - When Eyal asks to create another revision/version, Codex must always commit it to git and verify the commit was created successfully.
 - At the start of every coding session, Codex must first load the latest project version from git, then write/update release notes in this README so Eyal can see exactly where work stopped.
 - Every time README is changed, Codex must commit README to git immediately, even if there is no project version change.
-- When a build succeeds, play a celebratory sound cue using a `YEAH!!` + `APPLAUSE!!` style effect, preferably with an old-cartoon feel, and document the selected source/link in the project notes.
+- When a build succeeds, play the project celebration sound from `sounds/build-success-monkey-1p5x.wav`.
+- The selected celebration sound source is `sounds/cartoon_candidates/mixkit-cartoon-monkey-preview.mp3` from Mixkit's monkey/cartoon effects page: `https://mixkit.co/free-sound-effects/monkey/`.
+- The stored project playback file is a 1.5x faster version of the selected monkey clip so the pitch is higher and the cue is shorter.
   
 
 ### Codex and VS Code `PROBLEMS` (Session Rule)
@@ -146,6 +148,10 @@ References:
   - `psram_trans_align = 64`
   - `bounce_buffer_size_px = LCD_H_RES * 10`
   - register RGB completion on `on_bounce_frame_finish` when bounce buffering is enabled
+- Build-success sound selection:
+  - source file: `sounds/cartoon_candidates/mixkit-cartoon-monkey-preview.mp3`
+  - project playback file: `sounds/build-success-monkey-1p5x.wav`
+  - processing: played faster at `1.5x`, which also raises the pitch
 - Use local cache/build-dir for consistent local builds:
   - `XDG_CACHE_HOME=.cache idf.py -B .idfbuild -DIDF_TARGET=esp32s3 reconfigure`
   - `XDG_CACHE_HOME=.cache idf.py -B .idfbuild build`
