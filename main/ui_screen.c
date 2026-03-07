@@ -25,6 +25,7 @@ typedef enum {
 
 typedef struct {
     lv_obj_t *root;
+    lv_obj_t *init_status_label;
     lv_obj_t *tabview;
     lv_obj_t *tab_pages[UI_PAGE_COUNT];
     lv_obj_t *page_status;
@@ -41,7 +42,6 @@ typedef struct {
     lv_obj_t *settings_preinf_value;
     lv_obj_t *settings_backlight_toggle;
     lv_timer_t *heartbeat_timer;
-    lv_timer_t *init_timer;
     ui_page_t active_page;
     bool brewing;
     bool steaming;
@@ -49,10 +49,12 @@ typedef struct {
     int target_temp_c;
     int preinf_s;
     int shot_s;
+    bool reinit_requested;
 } ui_state_t;
 
 static ui_state_t s_ui = {
     .root = NULL,
+    .init_status_label = NULL,
     .tabview = NULL,
     .tab_pages = {NULL},
     .page_status = NULL,
@@ -69,7 +71,6 @@ static ui_state_t s_ui = {
     .settings_preinf_value = NULL,
     .settings_backlight_toggle = NULL,
     .heartbeat_timer = NULL,
-    .init_timer = NULL,
     .active_page = UI_PAGE_HOME,
     .brewing = false,
     .steaming = false,
@@ -77,6 +78,7 @@ static ui_state_t s_ui = {
     .target_temp_c = 93,
     .preinf_s = 4,
     .shot_s = 0,
+    .reinit_requested = false,
 };
 
 #define UI_COLOR_BG            0x070B11
@@ -90,7 +92,6 @@ static ui_state_t s_ui = {
 #define UI_COLOR_ACCENT        0x38BDF8
 #define UI_COLOR_ACCENT_ALT    0x0EA5E9
 #define UI_COLOR_SUCCESS       0x22C55E
-#define UI_INIT_SCREEN_DELAY_MS (5000)
 #define UI_TABVIEW_HEIGHT      (432)
 #define UI_CLOCK_BAR_HEIGHT    (48)
 
@@ -367,6 +368,7 @@ static lv_obj_t *ui_create_toggle_button(lv_obj_t *parent,
  * @param[in] e LVGL event payload.
  */
 static void ui_tabview_event_cb(lv_event_t *e);
+void ui_screen_create(void);
 
 /**
  * @brief Rebuild the currently selected tab page.
@@ -383,16 +385,6 @@ static void ui_render_active_page(void);
  * plus the persistent bottom clock bar.
  */
 static void ui_build_main_screen(void);
-
-/**
- * @brief Transition from the initialization splash to the main workflow UI.
- *
- * @details Triggered by a one-shot LVGL timer so the splash screen stays
- * visible for a fixed boot interval before the normal interface appears.
- *
- * @param[in] timer LVGL timer handle.
- */
-static void ui_init_timer_cb(lv_timer_t *timer);
 
 /**
  * @brief Handle brew toggle button state transitions.
@@ -600,6 +592,25 @@ static void ui_settings_backlight_toggle_event_cb(lv_event_t *e)
 }
 
 /**
+ * @brief Return the client UI to the initialization state.
+ *
+ * @details Rebuilds the splash screen so the client visually returns to the
+ * initialization state without issuing a hardware reset.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_settings_reboot_client_event_cb(lv_event_t *e)
+{
+    (void)e;
+    s_ui.brewing = false;
+    s_ui.steaming = false;
+    s_ui.shot_s = 0;
+    s_ui.reinit_requested = true;
+    ui_screen_create();
+    ESP_LOGI(TAG, "client UI returned to initialization state");
+}
+
+/**
  * @brief Construct profile selection page.
  *
  * @details Displays quick profile presets with one-click activation.
@@ -698,6 +709,17 @@ static void ui_build_page_settings(void)
                                                              500,
                                                              302,
                                                              ui_settings_backlight_toggle_event_cb);
+
+    lv_obj_t *reboot_btn = lv_button_create(s_ui.content);
+    lv_obj_set_size(reboot_btn, 320, 58);
+    lv_obj_align(reboot_btn, LV_ALIGN_TOP_LEFT, 20, 372);
+    ui_style_action_button(reboot_btn);
+    lv_obj_add_event_cb(reboot_btn, ui_settings_reboot_client_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *reboot_lbl = lv_label_create(reboot_btn);
+    lv_label_set_text(reboot_lbl, "Reboot Client");
+    ui_style_button_label(reboot_lbl);
+    lv_obj_center(reboot_lbl);
 }
 
 /**
@@ -867,25 +889,10 @@ static void ui_build_main_screen(void)
 }
 
 /**
- * @brief Swap the splash screen for the full workflow UI.
- *
- * @details Deletes the one-shot init timer handle and delegates construction of
- * the real application interface to `ui_build_main_screen()`.
- *
- * @param[in] timer LVGL timer handle.
- */
-static void ui_init_timer_cb(lv_timer_t *timer)
-{
-    (void)timer;
-    s_ui.init_timer = NULL;
-    ui_build_main_screen();
-}
-
-/**
  * @brief Create the initialization splash screen before the main UI.
  *
- * @details Shows a centered `Initializing System...` message for five seconds,
- * then transitions to the normal workflow UI.
+ * @details Shows a centered `Initializing System...` message and a dynamic
+ * status line while startup checks are running.
  */
 void ui_screen_create(void)
 {
@@ -894,6 +901,7 @@ void ui_screen_create(void)
     lv_obj_clean(scr);
 
     s_ui.root = NULL;
+    s_ui.init_status_label = NULL;
     s_ui.tabview = NULL;
     s_ui.content = NULL;
     s_ui.page_status = NULL;
@@ -912,13 +920,57 @@ void ui_screen_create(void)
     lv_label_set_text(label, "Initializing System...");
     lv_obj_set_style_text_font(label, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_center(label);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, -18);
 
-    if (s_ui.init_timer) {
-        lv_timer_del(s_ui.init_timer);
-    }
-    s_ui.init_timer = lv_timer_create(ui_init_timer_cb, UI_INIT_SCREEN_DELAY_MS, NULL);
-    lv_timer_set_repeat_count(s_ui.init_timer, 1);
+    s_ui.init_status_label = lv_label_create(splash);
+    lv_label_set_text(s_ui.init_status_label, "Preparing startup checks...");
+    lv_obj_set_style_text_font(s_ui.init_status_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(s_ui.init_status_label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+    lv_obj_align(s_ui.init_status_label, LV_ALIGN_CENTER, 0, 24);
 
     ESP_LOGI(TAG, "Initialization splash screen created");
+}
+
+/**
+ * @brief Update the splash screen initialization status line.
+ *
+ * @details Replaces the dynamic status text shown underneath the initialization
+ * title while startup checks are in progress.
+ *
+ * @param[in] status_text New text to show.
+ */
+void ui_screen_set_init_status(const char *status_text)
+{
+    if (!s_ui.init_status_label || status_text == NULL) {
+        return;
+    }
+
+    lv_label_set_text(s_ui.init_status_label, status_text);
+}
+
+/**
+ * @brief Replace the splash screen with the main workflow UI.
+ *
+ * @details Builds the normal tab-based UI after initialization checks and
+ * controller startup handshake complete.
+ */
+void ui_screen_show_main(void)
+{
+    s_ui.init_status_label = NULL;
+    ui_build_main_screen();
+}
+
+/**
+ * @brief Consume any pending client re-initialization request.
+ *
+ * @details Returns the current request flag and clears it so the application
+ * loop can rerun initialization exactly once per button press.
+ *
+ * @return `true` when a re-initialization request was pending.
+ */
+bool ui_screen_take_reinit_request(void)
+{
+    bool requested = s_ui.reinit_requested;
+    s_ui.reinit_requested = false;
+    return requested;
 }

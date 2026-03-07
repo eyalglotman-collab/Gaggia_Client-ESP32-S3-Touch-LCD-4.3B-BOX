@@ -15,6 +15,20 @@ extern "C" {
 #endif
 
 /**
+ * @brief High-level result of controller initialization handshake.
+ *
+ * @details Captures whether the remote machine controller answered the client
+ * initialization request and what the current coarse state is.
+ */
+typedef enum {
+    PERIPHERALS_CONTROLLER_STATUS_UNKNOWN = 0,
+    PERIPHERALS_CONTROLLER_STATUS_READY,
+    PERIPHERALS_CONTROLLER_STATUS_BUSY,
+    PERIPHERALS_CONTROLLER_STATUS_ERROR,
+    PERIPHERALS_CONTROLLER_STATUS_OFFLINE,
+} peripherals_controller_status_t;
+
+/**
  * @brief Initialize and start all non-display board peripherals.
  *
  * @details Applies settings extracted from the Waveshare example set for:
@@ -96,6 +110,34 @@ bool peripherals_manager_is_tf_card_ready(void);
  *      - ESP_ERR_*: Wi-Fi stack initialization or scan failed
  */
 esp_err_t peripherals_manager_init_wifi(void);
+
+/**
+ * @brief Request initialization from the remote machine controller.
+ *
+ * @details Sends a short initialization request over the RS485 path used for
+ * controller communications, waits for a textual response, and maps that
+ * response to a coarse controller status. If no response arrives before the
+ * timeout, the controller is reported as offline.
+ *
+ * @param[out] out_status Destination status value.
+ *
+ * @return
+ *      - ESP_OK: Request sent and a controller status determined
+ *      - ESP_ERR_INVALID_ARG: `out_status` is NULL
+ *      - ESP_ERR_*: RS485 path could not be initialized or used
+ */
+esp_err_t peripherals_manager_request_controller_init(peripherals_controller_status_t *out_status);
+
+/**
+ * @brief Convert controller status enum to printable text.
+ *
+ * @details Returns a short constant string suitable for UI and log messages.
+ *
+ * @param[in] status Controller status enum value.
+ *
+ * @return Constant status text.
+ */
+const char *peripherals_manager_controller_status_to_string(peripherals_controller_status_t status);
 
 #ifdef __cplusplus
 }

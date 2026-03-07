@@ -55,6 +55,7 @@ static const char *TAG = "peripherals";
 #define RS485_TXD                   (44)
 #define RS485_RXD                   (43)
 #define RS485_BUF_SIZE              (1024)
+#define RS485_CONTROLLER_TIMEOUT_MS (750)
 
 /* SD card SPI wiring from demo defaults. */
 #define SD_MOSI                     (11)
@@ -504,6 +505,91 @@ static void rs485_send_heartbeat(void)
         return;
     }
     uart_write_bytes(RS485_UART_PORT, payload, strlen(payload));
+}
+
+/**
+ * @brief Convert controller status enum into printable text.
+ *
+ * @details Centralizes user-visible wording for controller initialization
+ * results so logs and UI share the same labels.
+ *
+ * @param[in] status Controller status enum.
+ *
+ * @return Constant text description for the provided status.
+ */
+const char *peripherals_manager_controller_status_to_string(peripherals_controller_status_t status)
+{
+    switch (status) {
+    case PERIPHERALS_CONTROLLER_STATUS_READY:
+        return "READY";
+    case PERIPHERALS_CONTROLLER_STATUS_BUSY:
+        return "BUSY";
+    case PERIPHERALS_CONTROLLER_STATUS_ERROR:
+        return "ERROR";
+    case PERIPHERALS_CONTROLLER_STATUS_OFFLINE:
+        return "OFFLINE";
+    case PERIPHERALS_CONTROLLER_STATUS_UNKNOWN:
+    default:
+        return "UNKNOWN";
+    }
+}
+
+/**
+ * @brief Request controller initialization over RS485 and decode the reply.
+ *
+ * @details Sends a compact `INIT?` probe to the external controller and waits
+ * briefly for a short textual response. Missing responses are treated as an
+ * offline controller state so the application can continue in a known mode.
+ *
+ * @param[out] out_status Destination status value.
+ *
+ * @return
+ *      - ESP_OK: Request completed and status was determined
+ *      - ESP_ERR_INVALID_ARG: `out_status` is NULL
+ *      - ESP_ERR_*: RS485 transport path could not be initialized or used
+ */
+esp_err_t peripherals_manager_request_controller_init(peripherals_controller_status_t *out_status)
+{
+    ESP_RETURN_ON_FALSE(out_status != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid controller status buffer");
+
+    if (!s_rs485_ready) {
+        rs485_init();
+    }
+    ESP_RETURN_ON_FALSE(s_rs485_ready, ESP_FAIL, TAG, "RS485 not ready");
+
+    static const char *request = "INIT?\r\n";
+    uint8_t rx_buf[64] = {0};
+    *out_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
+
+    uart_flush_input(RS485_UART_PORT);
+    ESP_RETURN_ON_FALSE(uart_write_bytes(RS485_UART_PORT, request, strlen(request)) >= 0,
+                        ESP_FAIL,
+                        TAG,
+                        "Controller init request send failed");
+
+    int rx_len = uart_read_bytes(RS485_UART_PORT,
+                                 rx_buf,
+                                 sizeof(rx_buf) - 1,
+                                 pdMS_TO_TICKS(RS485_CONTROLLER_TIMEOUT_MS));
+    if (rx_len <= 0) {
+        *out_status = PERIPHERALS_CONTROLLER_STATUS_OFFLINE;
+        ESP_LOGW(TAG, "Controller init request timed out");
+        return ESP_OK;
+    }
+
+    rx_buf[rx_len] = '\0';
+    if (strstr((const char *)rx_buf, "READY") != NULL) {
+        *out_status = PERIPHERALS_CONTROLLER_STATUS_READY;
+    } else if (strstr((const char *)rx_buf, "BUSY") != NULL) {
+        *out_status = PERIPHERALS_CONTROLLER_STATUS_BUSY;
+    } else if (strstr((const char *)rx_buf, "ERR") != NULL) {
+        *out_status = PERIPHERALS_CONTROLLER_STATUS_ERROR;
+    } else {
+        *out_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
+    }
+
+    ESP_LOGI(TAG, "Controller init response: %s", (const char *)rx_buf);
+    return ESP_OK;
 }
 
 /**
