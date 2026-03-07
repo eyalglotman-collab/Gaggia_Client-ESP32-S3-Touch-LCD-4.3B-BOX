@@ -90,6 +90,8 @@ We will get back to you as soon as possible.
 
 ## Project Workflow Rules
 
+- Product requirements and application design shall be maintained in `EyalEspressoRequirements and Design.docx`.
+- `README.md` is the workflow/session handoff file; the requirements/design document is the primary place for application requirements, UX intent, architecture decisions, and planned features.
 - Repository version is tracked in root `VERSION` with format `X.Y.Z`.
 - `X`: major functionality/refactoring changes.
 - `Y`: minor bug-fix and incremental functionality changes.
@@ -161,6 +163,7 @@ References:
 - `.\scripts\stop_wait_sound.ps1`: stops the hidden wait-sound worker referenced by `.cache\wait_sound.pid`.
 - `./scripts/import_waveshare_examples.sh <path>`: imports external Waveshare ESP-IDF demo examples.
 - `docs/REVISION_HISTORY.doc`: Word-compatible revision and latest-features tracker.
+- `EyalEspressoRequirements and Design.docx`: primary requirements and design template for the application.
 
 ## ESP32-S3-4.3B Setup Notes
 
