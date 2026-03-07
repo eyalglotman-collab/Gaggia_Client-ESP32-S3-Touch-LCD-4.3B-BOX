@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.1.8\par
+0.1.9\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -18,6 +18,7 @@
 - Dark tab-based UI with swipe-left and swipe-right page navigation.\par
 - Dedicated requirements and design document template added to the repository.\par
 - TF card initialization and mount verification added to normal startup.\par
+- Initialization splash screen added before the main workflow UI appears.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par
@@ -126,6 +127,13 @@
 - Version: 0.1.8\par
 - Summary: Added TF card initialization and read verification to normal application startup.\par
 - Notes: Exposed standalone TF card APIs in `main/peripherals_manager.*`, mounted and smoke-tested the card during startup from `main/Eyal_espresso_ESP32_main.c`, and fixed the SD mount CH422G mask so backlight and LCD control lines stay high during TF initialization.\par
+- Resolved Defects:\par
+  - None in this release.\par
+\par
+\b 2026-03-07\b0\par
+- Version: 0.1.9\par
+- Summary: Added a startup initialization state with splash screen before the main UI loads.\par
+- Notes: `main/ui_screen.c` now shows an `Initializing System...` splash for five seconds, then transitions automatically into the existing tabbed workflow UI using a one-shot LVGL timer.\par
 - Resolved Defects:\par
   - None in this release.\par
 \par

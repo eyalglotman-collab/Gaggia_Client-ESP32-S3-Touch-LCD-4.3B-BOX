@@ -37,6 +37,7 @@ typedef struct {
     lv_obj_t *settings_preinf_slider;
     lv_obj_t *settings_preinf_value;
     lv_timer_t *heartbeat_timer;
+    lv_timer_t *init_timer;
     ui_page_t active_page;
     bool brewing;
     bool steaming;
@@ -62,6 +63,7 @@ static ui_state_t s_ui = {
     .settings_preinf_slider = NULL,
     .settings_preinf_value = NULL,
     .heartbeat_timer = NULL,
+    .init_timer = NULL,
     .active_page = UI_PAGE_HOME,
     .brewing = false,
     .steaming = false,
@@ -82,6 +84,7 @@ static ui_state_t s_ui = {
 #define UI_COLOR_ACCENT        0x38BDF8
 #define UI_COLOR_ACCENT_ALT    0x0EA5E9
 #define UI_COLOR_SUCCESS       0x22C55E
+#define UI_INIT_SCREEN_DELAY_MS (5000)
 
 /**
  * @brief Apply shared dark card styling.
@@ -253,6 +256,24 @@ static void ui_tabview_event_cb(lv_event_t *e);
  * state stored in `s_ui`.
  */
 static void ui_render_active_page(void);
+
+/**
+ * @brief Build the full main application UI after initialization completes.
+ *
+ * @details Creates the persistent header and tabbed workflow layout that make
+ * up the normal post-boot user interface.
+ */
+static void ui_build_main_screen(void);
+
+/**
+ * @brief Transition from the initialization splash to the main workflow UI.
+ *
+ * @details Triggered by a one-shot LVGL timer so the splash screen stays
+ * visible for a fixed boot interval before the normal interface appears.
+ *
+ * @param[in] timer LVGL timer handle.
+ */
+static void ui_init_timer_cb(lv_timer_t *timer);
 
 /**
  * @brief Handle brew switch state transitions.
@@ -610,10 +631,15 @@ static void ui_heartbeat_timer_cb(lv_timer_t *timer)
  * @details Creates header, content, and bottom navigation sections and renders
  * the default dashboard page.
  */
-void ui_screen_create(void)
+static void ui_build_main_screen(void)
 {
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_hex(UI_COLOR_BG), 0);
+
+    if (s_ui.root) {
+        lv_obj_del(s_ui.root);
+        s_ui.root = NULL;
+    }
 
     s_ui.root = lv_obj_create(scr);
     lv_obj_remove_style_all(s_ui.root);
@@ -690,4 +716,58 @@ void ui_screen_create(void)
     }
 
     ESP_LOGI(TAG, "UI screen created successfully");
+}
+
+/**
+ * @brief Swap the splash screen for the full workflow UI.
+ *
+ * @details Deletes the one-shot init timer handle and delegates construction of
+ * the real application interface to `ui_build_main_screen()`.
+ *
+ * @param[in] timer LVGL timer handle.
+ */
+static void ui_init_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    s_ui.init_timer = NULL;
+    ui_build_main_screen();
+}
+
+/**
+ * @brief Create the initialization splash screen before the main UI.
+ *
+ * @details Shows a centered `Initializing System...` message for five seconds,
+ * then transitions to the normal workflow UI.
+ */
+void ui_screen_create(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_set_style_bg_color(scr, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_clean(scr);
+
+    s_ui.root = NULL;
+    s_ui.tabview = NULL;
+    s_ui.content = NULL;
+    s_ui.header_status = NULL;
+    s_ui.header_runtime = NULL;
+
+    lv_obj_t *splash = lv_obj_create(scr);
+    lv_obj_remove_style_all(splash);
+    lv_obj_set_size(splash, 800, 480);
+    lv_obj_center(splash);
+    lv_obj_set_style_bg_color(splash, lv_color_hex(UI_COLOR_BG), 0);
+
+    lv_obj_t *label = lv_label_create(splash);
+    lv_label_set_text(label, "Initializing System...");
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_center(label);
+
+    if (s_ui.init_timer) {
+        lv_timer_del(s_ui.init_timer);
+    }
+    s_ui.init_timer = lv_timer_create(ui_init_timer_cb, UI_INIT_SCREEN_DELAY_MS, NULL);
+    lv_timer_set_repeat_count(s_ui.init_timer, 1);
+
+    ESP_LOGI(TAG, "Initialization splash screen created");
 }
