@@ -99,6 +99,7 @@ We will get back to you as soon as possible.
 - `Z`: sub-version increment for successful build+flash cycles.
 - After a successful build+flash, confirm whether to commit and bump `Z`.
 - After every flash, Codex must monitor the target and read at least the first 10 seconds of serial log output.
+- The post-flash monitor attach command shall use ESP-IDF monitor without resetting the board again: `.\scripts\idfw.cmd monitor --port COM9 --no-reset`.
 - Codex must verify that the first 10 seconds of post-flash logs contain no warnings or errors before reporting success.
 - Maintain `DefectRegister.rtf` in the repository root as the running defect log.
 - For every defect found by Eyal or Codex, add a new entry to `DefectRegister.rtf`.
@@ -201,5 +202,6 @@ References:
   - `XDG_CACHE_HOME=.cache idf.py -B .idfbuild build`
 - Windows quick commands:
   - `.\scripts\idfw.cmd -DIDF_TARGET=esp32s3 reconfigure`
-  - `.\scripts\idfw.cmd build`
-  - `.\scripts\idfw.cmd -p COM9 flash monitor`
+- `.\scripts\idfw.cmd build`
+- `.\scripts\idfw.cmd -p COM9 flash monitor`
+- `.\scripts\idfw.cmd monitor --port COM9 --no-reset`
