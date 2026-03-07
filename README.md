@@ -189,6 +189,12 @@ References:
   - source file: `sounds/waiting_candidates/orange-game-start-countdown.mp3`
   - project playback files: `sounds/WaitSound.mp3` (source copy) and `sounds/WaitSound.wav` (runtime playback file)
   - usage: play once immediately when waiting begins, then repeat every 3 minutes while still waiting
+  - verified working runtime path:
+    - one-shot playback through `.\scripts\play_wait_sound.ps1 -SoundFile sounds\WaitSound.wav`
+    - repeating worker startup through `.\scripts\start_wait_sound.ps1`
+    - worker PID handle written to `.cache\wait_sound.pid`
+  - current known limitation:
+    - the sound path and background worker are working, but the wait sound still depends on Codex explicitly starting/stopping the helper at the correct wait-state boundaries
 - Use local cache/build-dir for consistent local builds:
   - `XDG_CACHE_HOME=.cache idf.py -B .idfbuild -DIDF_TARGET=esp32s3 reconfigure`
   - `XDG_CACHE_HOME=.cache idf.py -B .idfbuild build`
