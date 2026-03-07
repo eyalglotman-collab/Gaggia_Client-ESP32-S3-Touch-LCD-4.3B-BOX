@@ -92,6 +92,7 @@ We will get back to you as soon as possible.
 
 - Product requirements and application design shall be maintained in `EyalEspressoRequirements and Design.docx`.
 - `README.md` is the workflow/session handoff file; the requirements/design document is the primary place for application requirements, UX intent, architecture decisions, and planned features.
+- Every time Codex opens and reviews `EyalEspressoRequirements and Design.docx`, Codex must update the document field `Reviewed on` with the current time.
 - Repository version is tracked in root `VERSION` with format `X.Y.Z`.
 - `X`: major functionality/refactoring changes.
 - `Y`: minor bug-fix and incremental functionality changes.
