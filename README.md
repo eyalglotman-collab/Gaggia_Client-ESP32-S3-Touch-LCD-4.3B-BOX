@@ -173,6 +173,14 @@ References:
   - `psram_trans_align = 64`
   - `bounce_buffer_size_px = LCD_H_RES * 10`
   - register RGB completion on `on_bounce_frame_finish` when bounce buffering is enabled
+- Working CH422G backlight control implementation:
+  - the Settings tab exposes a `Display Backlight` switch in `main/ui_screen.c`
+  - backlight control is routed through `hardware_set_backlight_enabled()` in `main/hardware_init.c`
+  - the implementation uses fixed known-good CH422G masks for this board:
+    - `0x1E` = backlight on
+    - `0x1A` = backlight off while keeping the other required board-control lines high
+  - any valid touch sample wakes the backlight again in `main/lvgl_port.c`
+  - this working version does not use an inactivity timer; the earlier idle-timer attempt caused a black-screen regression and was reverted
 - Build-success sound selection:
   - source file: `sounds/cartoon_candidates/mixkit-cartoon-monkey-preview.mp3`
   - project playback file: `sounds/build-success-monkey-1p5x.wav`
