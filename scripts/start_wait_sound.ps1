@@ -6,7 +6,7 @@ param(
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $PidFile = Join-Path $ProjectRoot ".cache\wait_sound.pid"
-$SoundFile = Join-Path $ProjectRoot "sounds\WaitSound.mp3"
+$SoundFile = Join-Path $ProjectRoot "sounds\WaitSound.wav"
 
 # @brief Check whether VS Code is still running on the host.
 # @details The wait-sound worker exits automatically if no `Code` process is
@@ -16,23 +16,12 @@ function Test-VsCodeRunning {
 }
 
 # @brief Play the configured wait sound once.
-# @details Uses WPF MediaPlayer so MP3 playback works on the local Windows host.
-# The helper waits briefly for metadata before stopping the player.
+# @details Uses `System.Media.SoundPlayer` for reliable WAV playback on the
+# local Windows host.
 function Play-WaitSound {
-    Add-Type -AssemblyName presentationCore
-    $player = New-Object System.Windows.Media.MediaPlayer
-    $player.Open([Uri](Resolve-Path $SoundFile))
-    Start-Sleep -Milliseconds 700
-    $duration = $player.NaturalDuration.TimeSpan.TotalSeconds
-    if (-not $duration -or $duration -le 0) {
-        $duration = 4
-    }
-
-    $player.Volume = 1.0
-    $player.Play()
-    Start-Sleep -Seconds ([Math]::Ceiling($duration) + 1)
-    $player.Stop()
-    $player.Close()
+    Add-Type -AssemblyName System
+    $player = New-Object System.Media.SoundPlayer $SoundFile
+    $player.PlaySync()
 }
 
 # @brief Run the repeating wait-sound loop.
@@ -101,4 +90,5 @@ if ($Worker) {
     exit 0
 }
 
+Play-WaitSound
 Start-WaitWorker
