@@ -29,6 +29,23 @@ typedef enum {
 } peripherals_controller_status_t;
 
 /**
+ * @brief Snapshot of the client connection and telemetry state.
+ *
+ * @details Aggregates the main connection-facing data needed by the UI:
+ * current Wi-Fi IP string, active controller transport port description, and
+ * coarse telemetry flags collected during startup and runtime checks.
+ */
+typedef struct {
+    char ip_address[16];
+    char port_text[32];
+    bool wifi_ready;
+    bool rtc_ready;
+    bool tf_ready;
+    uint16_t wifi_ap_count;
+    peripherals_controller_status_t controller_status;
+} peripherals_connection_info_t;
+
+/**
  * @brief Initialize and start all non-display board peripherals.
  *
  * @details Applies settings extracted from the Waveshare example set for:
@@ -143,6 +160,22 @@ esp_err_t peripherals_manager_init_wifi(void);
  *      - ESP_ERR_*: RS485 path could not be initialized or used
  */
 esp_err_t peripherals_manager_request_controller_init(peripherals_controller_status_t *out_status);
+
+/**
+ * @brief Get a snapshot of current connection-related state.
+ *
+ * @details Returns a lightweight summary suitable for UI presentation,
+ * including the current Wi-Fi IP address if assigned, the fixed controller
+ * transport description, the last Wi-Fi scan count, and the last known
+ * controller initialization status.
+ *
+ * @param[out] out_info Destination snapshot structure.
+ *
+ * @return
+ *      - ESP_OK: Snapshot filled successfully
+ *      - ESP_ERR_INVALID_ARG: `out_info` is NULL
+ */
+esp_err_t peripherals_manager_get_connection_info(peripherals_connection_info_t *out_info);
 
 /**
  * @brief Convert controller status enum to printable text.

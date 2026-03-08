@@ -29,6 +29,7 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
+#include "lwip/ip4_addr.h"
 
 #include "hardware_init.h"
 
@@ -81,6 +82,8 @@ static bool s_twai_ready = false;
 static bool s_sd_ready = false;
 static bool s_rtc_ready = false;
 static bool s_wifi_ready = false;
+static uint16_t s_last_wifi_ap_count = 0;
+static peripherals_controller_status_t s_last_controller_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
 static sdmmc_card_t *s_sd_card = NULL;
 static TaskHandle_t s_peripherals_task = NULL;
 
@@ -536,6 +539,7 @@ esp_err_t peripherals_manager_init_wifi(void)
 
     uint16_t ap_count = 0;
     ESP_RETURN_ON_ERROR(esp_wifi_scan_get_ap_num(&ap_count), TAG, "Wi-Fi AP count read failed");
+    s_last_wifi_ap_count = ap_count;
     ESP_LOGI(TAG, "Wi-Fi scan complete: %u APs found", ap_count);
 
     wifi_ap_record_t ap_records[5] = {0};
@@ -649,6 +653,7 @@ esp_err_t peripherals_manager_request_controller_init(peripherals_controller_sta
     static const char *request = "INIT?\r\n";
     uint8_t rx_buf[64] = {0};
     *out_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
+    s_last_controller_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
 
     uart_flush_input(RS485_UART_PORT);
     ESP_RETURN_ON_FALSE(uart_write_bytes(RS485_UART_PORT, request, strlen(request)) >= 0,
@@ -662,6 +667,7 @@ esp_err_t peripherals_manager_request_controller_init(peripherals_controller_sta
                                  pdMS_TO_TICKS(RS485_CONTROLLER_TIMEOUT_MS));
     if (rx_len <= 0) {
         *out_status = PERIPHERALS_CONTROLLER_STATUS_OFFLINE;
+        s_last_controller_status = *out_status;
         ESP_LOGW(TAG, "Controller init request timed out");
         return ESP_OK;
     }
@@ -677,7 +683,53 @@ esp_err_t peripherals_manager_request_controller_init(peripherals_controller_sta
         *out_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
     }
 
+    s_last_controller_status = *out_status;
     ESP_LOGI(TAG, "Controller init response: %s", (const char *)rx_buf);
+    return ESP_OK;
+}
+
+/**
+ * @brief Collect a UI-friendly snapshot of connection information.
+ *
+ * @details Reads the current Wi-Fi IP assignment if available and combines it
+ * with the latest cached transport and telemetry state tracked by the
+ * peripheral manager.
+ *
+ * @param[out] out_info Destination snapshot structure.
+ *
+ * @return
+ *      - ESP_OK: Snapshot filled successfully
+ *      - ESP_ERR_INVALID_ARG: `out_info` is NULL
+ */
+esp_err_t peripherals_manager_get_connection_info(peripherals_connection_info_t *out_info)
+{
+    ESP_RETURN_ON_FALSE(out_info != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid connection info buffer");
+
+    memset(out_info, 0, sizeof(*out_info));
+    snprintf(out_info->ip_address, sizeof(out_info->ip_address), "Not assigned");
+    snprintf(out_info->port_text,
+             sizeof(out_info->port_text),
+             "UART%d @ %d",
+             (int)RS485_UART_PORT,
+             RS485_UART_BAUD);
+
+    out_info->wifi_ready = s_wifi_ready;
+    out_info->rtc_ready = s_rtc_ready;
+    out_info->tf_ready = s_sd_ready;
+    out_info->wifi_ap_count = s_last_wifi_ap_count;
+    out_info->controller_status = s_last_controller_status;
+
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif != NULL) {
+        esp_netif_ip_info_t ip_info = {0};
+        if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
+            snprintf(out_info->ip_address,
+                     sizeof(out_info->ip_address),
+                     IPSTR,
+                     IP2STR(&ip_info.ip));
+        }
+    }
+
     return ESP_OK;
 }
 

@@ -32,6 +32,7 @@ typedef struct {
     lv_obj_t *page_runtime;
     lv_obj_t *clock_label;
     lv_obj_t *clock_set_overlay;
+    lv_obj_t *connection_info_overlay;
     lv_obj_t *clock_set_day_roller;
     lv_obj_t *clock_set_month_roller;
     lv_obj_t *clock_set_year_roller;
@@ -67,6 +68,7 @@ static ui_state_t s_ui = {
     .page_runtime = NULL,
     .clock_label = NULL,
     .clock_set_overlay = NULL,
+    .connection_info_overlay = NULL,
     .clock_set_day_roller = NULL,
     .clock_set_month_roller = NULL,
     .clock_set_year_roller = NULL,
@@ -394,6 +396,21 @@ static void ui_close_clock_overlay(void)
 }
 
 /**
+ * @brief Close the connection-info overlay.
+ *
+ * @details Deletes the temporary full-screen connection-information UI and
+ * clears the stored overlay pointer.
+ */
+static void ui_close_connection_info_overlay(void)
+{
+    if (s_ui.connection_info_overlay) {
+        lv_obj_del(s_ui.connection_info_overlay);
+    }
+
+    s_ui.connection_info_overlay = NULL;
+}
+
+/**
  * @brief Apply the user-selected clock value to the RTC.
  *
  * @details Reads the active roller selections, converts them into a calendar
@@ -510,6 +527,133 @@ static void ui_settings_set_clock_event_cb(lv_event_t *e)
     lv_label_set_text(done_lbl, "Done");
     ui_style_button_label(done_lbl);
     lv_obj_center(done_lbl);
+}
+
+/**
+ * @brief Close the connection-info screen and return to Settings.
+ *
+ * @details Dismisses the modal connection-information overlay created from the
+ * Settings page.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_connection_info_done_event_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_close_connection_info_overlay();
+}
+
+/**
+ * @brief Open the connection-info overlay from the Settings tab.
+ *
+ * @details Shows the current connection snapshot, including IP address,
+ * controller transport port, and a textual telemetry summary, plus a bottom
+ * `Done` action that returns to the main UI.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_settings_connection_info_event_cb(lv_event_t *e)
+{
+    (void)e;
+
+    ui_close_connection_info_overlay();
+
+    peripherals_connection_info_t info = {0};
+    esp_err_t ret = peripherals_manager_get_connection_info(&info);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Connection info read failed: %s", esp_err_to_name(ret));
+        snprintf(info.ip_address, sizeof(info.ip_address), "Unavailable");
+        snprintf(info.port_text, sizeof(info.port_text), "Unavailable");
+        info.wifi_ready = false;
+        info.rtc_ready = false;
+        info.tf_ready = false;
+        info.wifi_ap_count = 0;
+        info.controller_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
+    }
+
+    lv_obj_t *scr = lv_screen_active();
+    s_ui.connection_info_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_ui.connection_info_overlay);
+    lv_obj_set_size(s_ui.connection_info_overlay, 800, 480);
+    lv_obj_set_style_bg_color(s_ui.connection_info_overlay, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(s_ui.connection_info_overlay, LV_OPA_COVER, 0);
+
+    lv_obj_t *panel = lv_obj_create(s_ui.connection_info_overlay);
+    lv_obj_set_size(panel, 760, 440);
+    lv_obj_center(panel);
+    ui_style_card(panel, UI_COLOR_PANEL);
+
+    lv_obj_t *title = lv_label_create(panel);
+    lv_label_set_text(title, "Connection Info");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 16);
+
+    lv_obj_t *info_body = lv_obj_create(panel);
+    lv_obj_set_size(info_body, 720, 282);
+    lv_obj_align(info_body, LV_ALIGN_TOP_MID, 0, 70);
+    ui_style_card(info_body, UI_COLOR_CARD);
+    lv_obj_set_scrollbar_mode(info_body, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_style_pad_all(info_body, 18, 0);
+    lv_obj_set_style_pad_row(info_body, 14, 0);
+    lv_obj_set_layout(info_body, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(info_body, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *ip_label = lv_label_create(info_body);
+    lv_label_set_text_fmt(ip_label, "IP: %s", info.ip_address);
+    lv_obj_set_style_text_font(ip_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(ip_label, lv_color_hex(UI_COLOR_TEXT), 0);
+
+    lv_obj_t *port_label = lv_label_create(info_body);
+    lv_label_set_text_fmt(port_label, "Port: %s", info.port_text);
+    lv_obj_set_style_text_font(port_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(port_label, lv_color_hex(UI_COLOR_TEXT), 0);
+
+    lv_obj_t *telemetry_title = lv_label_create(info_body);
+    lv_label_set_text(telemetry_title, "Telemetry");
+    lv_obj_set_style_text_font(telemetry_title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(telemetry_title, lv_color_hex(UI_COLOR_TEXT), 0);
+
+    lv_obj_t *telemetry_card = lv_obj_create(info_body);
+    lv_obj_set_width(telemetry_card, lv_pct(100));
+    ui_style_card(telemetry_card, UI_COLOR_CARD_ALT);
+    lv_obj_clear_flag(telemetry_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(telemetry_card, 18, 0);
+
+    lv_obj_t *telemetry_label = lv_label_create(telemetry_card);
+    lv_label_set_text_fmt(telemetry_label,
+                          "Wi-Fi Ready: %s\n"
+                          "Visible APs: %u\n"
+                          "RTC Ready: %s\n"
+                          "TF Card Ready: %s\n"
+                          "Controller Status: %s",
+                          info.wifi_ready ? "Yes" : "No",
+                          info.wifi_ap_count,
+                          info.rtc_ready ? "Yes" : "No",
+                          info.tf_ready ? "Yes" : "No",
+                          peripherals_manager_controller_status_to_string(info.controller_status));
+    lv_obj_set_style_text_font(telemetry_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(telemetry_label, lv_color_hex(UI_COLOR_TEXT), 0);
+
+    lv_obj_t *done_btn = lv_button_create(panel);
+    lv_obj_set_size(done_btn, 300, 58);
+    ui_style_action_button(done_btn);
+    lv_obj_add_event_cb(done_btn, ui_connection_info_done_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *done_lbl = lv_label_create(done_btn);
+    lv_label_set_text(done_lbl, "Done");
+    ui_style_button_label(done_lbl);
+    lv_obj_center(done_lbl);
+
+    lv_obj_update_layout(panel);
+    lv_coord_t lowest_bottom = lv_obj_get_y(info_body) + lv_obj_get_height(info_body);
+    lv_coord_t telemetry_bottom = lv_obj_get_y(info_body) + lv_obj_get_y(telemetry_card) + lv_obj_get_height(telemetry_card);
+    if (telemetry_bottom > lowest_bottom) {
+        lowest_bottom = telemetry_bottom;
+    }
+    lv_obj_set_pos(done_btn,
+                   (lv_obj_get_width(panel) - lv_obj_get_width(done_btn)) / 2,
+                   lowest_bottom + 5);
 }
 
 /**
@@ -884,11 +1028,11 @@ static void ui_build_page_settings(void)
     lv_label_set_text(temp_lbl, "Target Temperature");
     lv_obj_set_style_text_font(temp_lbl, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(temp_lbl, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(temp_lbl, LV_ALIGN_TOP_LEFT, 20, 102);
+    lv_obj_align(temp_lbl, LV_ALIGN_TOP_LEFT, 20, 92);
 
     s_ui.settings_target_slider = lv_slider_create(s_ui.content);
     lv_obj_set_size(s_ui.settings_target_slider, 540, 8);
-    lv_obj_align(s_ui.settings_target_slider, LV_ALIGN_TOP_LEFT, 20, 144);
+    lv_obj_align(s_ui.settings_target_slider, LV_ALIGN_TOP_LEFT, 20, 132);
     ui_style_slider(s_ui.settings_target_slider);
     lv_slider_set_range(s_ui.settings_target_slider, 86, 98);
     lv_slider_set_value(s_ui.settings_target_slider, s_ui.target_temp_c, LV_ANIM_OFF);
@@ -897,17 +1041,17 @@ static void ui_build_page_settings(void)
     s_ui.settings_target_value = lv_label_create(s_ui.content);
     lv_obj_set_style_text_font(s_ui.settings_target_value, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_ui.settings_target_value, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(s_ui.settings_target_value, LV_ALIGN_TOP_RIGHT, -40, 130);
+    lv_obj_align(s_ui.settings_target_value, LV_ALIGN_TOP_RIGHT, -40, 118);
 
     lv_obj_t *pre_lbl = lv_label_create(s_ui.content);
     lv_label_set_text(pre_lbl, "Preinfusion");
     lv_obj_set_style_text_font(pre_lbl, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(pre_lbl, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(pre_lbl, LV_ALIGN_TOP_LEFT, 20, 212);
+    lv_obj_align(pre_lbl, LV_ALIGN_TOP_LEFT, 20, 170);
 
     s_ui.settings_preinf_slider = lv_slider_create(s_ui.content);
     lv_obj_set_size(s_ui.settings_preinf_slider, 540, 8);
-    lv_obj_align(s_ui.settings_preinf_slider, LV_ALIGN_TOP_LEFT, 20, 254);
+    lv_obj_align(s_ui.settings_preinf_slider, LV_ALIGN_TOP_LEFT, 20, 210);
     ui_style_slider(s_ui.settings_preinf_slider);
     lv_slider_set_range(s_ui.settings_preinf_slider, 0, 12);
     lv_slider_set_value(s_ui.settings_preinf_slider, s_ui.preinf_s, LV_ANIM_OFF);
@@ -916,7 +1060,7 @@ static void ui_build_page_settings(void)
     s_ui.settings_preinf_value = lv_label_create(s_ui.content);
     lv_obj_set_style_text_font(s_ui.settings_preinf_value, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_ui.settings_preinf_value, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(s_ui.settings_preinf_value, LV_ALIGN_TOP_RIGHT, -40, 240);
+    lv_obj_align(s_ui.settings_preinf_value, LV_ALIGN_TOP_RIGHT, -40, 196);
 
     if (s_ui.settings_target_value) {
         char txt[24];
@@ -929,22 +1073,24 @@ static void ui_build_page_settings(void)
         lv_label_set_text(s_ui.settings_preinf_value, txt);
     }
 
-    lv_obj_t *bl_lbl = lv_label_create(s_ui.content);
-    lv_label_set_text(bl_lbl, "Display Backlight");
-    lv_obj_set_style_text_font(bl_lbl, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(bl_lbl, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(bl_lbl, LV_ALIGN_TOP_LEFT, 20, 314);
+    const lv_coord_t action_btn_width = 360;
+    const lv_coord_t action_btn_height = 58;
+    const lv_coord_t action_left_x = 20;
+    const lv_coord_t action_right_x = 400;
+    const lv_coord_t action_row1_y = 246;
+    const lv_coord_t action_row2_y = 318;
 
     s_ui.settings_backlight_toggle = ui_create_toggle_button(s_ui.content,
                                                              "Backlight",
                                                              hardware_get_backlight_enabled(),
-                                                             500,
-                                                             302,
+                                                             action_left_x,
+                                                             action_row1_y,
                                                              ui_settings_backlight_toggle_event_cb);
+    lv_obj_set_size(s_ui.settings_backlight_toggle, action_btn_width, action_btn_height);
 
     lv_obj_t *set_clock_btn = lv_button_create(s_ui.content);
-    lv_obj_set_size(set_clock_btn, 320, 58);
-    lv_obj_align(set_clock_btn, LV_ALIGN_TOP_LEFT, 20, 372);
+    lv_obj_set_size(set_clock_btn, action_btn_width, action_btn_height);
+    lv_obj_align(set_clock_btn, LV_ALIGN_TOP_LEFT, action_right_x, action_row1_y);
     ui_style_action_button(set_clock_btn);
     lv_obj_add_event_cb(set_clock_btn, ui_settings_set_clock_event_cb, LV_EVENT_CLICKED, NULL);
 
@@ -953,9 +1099,20 @@ static void ui_build_page_settings(void)
     ui_style_button_label(set_clock_lbl);
     lv_obj_center(set_clock_lbl);
 
+    lv_obj_t *connection_btn = lv_button_create(s_ui.content);
+    lv_obj_set_size(connection_btn, action_btn_width, action_btn_height);
+    lv_obj_align(connection_btn, LV_ALIGN_TOP_LEFT, action_left_x, action_row2_y);
+    ui_style_action_button(connection_btn);
+    lv_obj_add_event_cb(connection_btn, ui_settings_connection_info_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *connection_lbl = lv_label_create(connection_btn);
+    lv_label_set_text(connection_lbl, "Connection Info");
+    ui_style_button_label(connection_lbl);
+    lv_obj_center(connection_lbl);
+
     lv_obj_t *reboot_btn = lv_button_create(s_ui.content);
-    lv_obj_set_size(reboot_btn, 320, 58);
-    lv_obj_align(reboot_btn, LV_ALIGN_TOP_RIGHT, -20, 372);
+    lv_obj_set_size(reboot_btn, action_btn_width, action_btn_height);
+    lv_obj_align(reboot_btn, LV_ALIGN_TOP_LEFT, action_right_x, action_row2_y);
     ui_style_action_button(reboot_btn);
     lv_obj_add_event_cb(reboot_btn, ui_settings_reboot_client_event_cb, LV_EVENT_CLICKED, NULL);
 
@@ -1147,6 +1304,7 @@ void ui_screen_create(void)
     s_ui.init_status_label = NULL;
     s_ui.tabview = NULL;
     s_ui.clock_set_overlay = NULL;
+    s_ui.connection_info_overlay = NULL;
     s_ui.clock_set_day_roller = NULL;
     s_ui.clock_set_month_roller = NULL;
     s_ui.clock_set_year_roller = NULL;
