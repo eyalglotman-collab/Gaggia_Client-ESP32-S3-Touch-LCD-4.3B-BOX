@@ -653,7 +653,7 @@ static void ui_settings_connection_info_event_cb(lv_event_t *e)
     }
     lv_obj_set_pos(done_btn,
                    (lv_obj_get_width(panel) - lv_obj_get_width(done_btn)) / 2,
-                   lowest_bottom + 5);
+                   lowest_bottom + 10);
 }
 
 /**
