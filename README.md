@@ -134,6 +134,7 @@ We will get back to you as soon as possible.
   - the current working implementation uses `sounds/WaitSound.wav` for runtime playback and a dedicated playback helper in `.\scripts\play_wait_sound.ps1`
   - the repeat path was verified locally with a 20-second test interval before returning to the normal 3-minute rule
 - Important inconsistencies, mismatches, or stale notes discovered during work must be explicitly pointed out in project notes before they are forgotten.
+- UI spacing rule: keep at least `10` pixels of spacing between menus, buttons, and adjacent interactive controls unless a different spacing is explicitly required for a specific screen.
   
 
 ### Codex and VS Code `PROBLEMS` (Session Rule)
