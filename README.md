@@ -170,7 +170,8 @@ References:
 - `docs/EyalEspressoRequirements and Design.docx`: primary requirements and design document for the application.
 - `docs/REVISION_HISTORY.doc`: Word-compatible revision and latest-features tracker.
 - `docs/VERSIONING.md`: repository versioning scheme reference for `X.Y.Z`.
-- When updating `docs/EyalEspressoRequirements and Design.docx` programmatically, use an extract/edit/repack flow for the OpenXML container (`.docx` is a ZIP package) instead of relying on in-place entry replacement on this host.
+- When creating or updating `.docx` files programmatically, use an extract/edit/repack flow for the OpenXML container (`.docx` is a ZIP package) instead of relying on in-place entry replacement on this host.
+- Programmatic `.docx` generation must write valid OpenXML package entry names with forward slashes such as `_rels/.rels` and `word/document.xml`, and must emit valid XML text without doubled quote escaping inside the stored XML files.
 
 ## ESP32-S3-4.3B Setup Notes
 
