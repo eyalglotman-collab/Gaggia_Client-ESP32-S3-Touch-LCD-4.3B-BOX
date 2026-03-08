@@ -100,6 +100,7 @@ We will get back to you as soon as possible.
 - After a successful build+flash, confirm whether to commit and bump `Z`.
 - After every flash, Codex must monitor the target and read at least the first 10 seconds of serial log output.
 - The post-flash monitor attach command shall use ESP-IDF monitor without resetting the board again: `.\scripts\idfw.cmd monitor --port COM9 --no-reset`.
+- If ESP-IDF monitor fails on this Windows host with `PermissionError: [WinError 5] Access is denied`, use the local fallback capture helper instead: `powershell -ExecutionPolicy Bypass -File .\scripts\monitor_capture.ps1 -Port COM9 -DurationSec 10`.
 - Codex must verify that the first 10 seconds of post-flash logs contain no warnings or errors before reporting success.
 - Maintain `DefectRegister.rtf` in the repository root as the running defect log.
 - For every defect found by Eyal or Codex, add a new entry to `DefectRegister.rtf`.
@@ -163,6 +164,7 @@ References:
 - `.\scripts\start_wait_sound.ps1`: also exits automatically if no `Code.exe` process remains, which covers VS Code shutdown.
 - `.\scripts\play_wait_sound.ps1`: one-shot WAV playback helper used by the repeating wait worker for reliable replay.
 - `.\scripts\stop_wait_sound.ps1`: stops the hidden wait-sound worker referenced by `.cache\wait_sound.pid`.
+- `.\scripts\monitor_capture.ps1`: fallback 10-second raw serial log capture that attaches to the port without resetting the board.
 - `./scripts/import_waveshare_examples.sh <path>`: imports external Waveshare ESP-IDF demo examples.
 - `docs/REVISION_HISTORY.doc`: Word-compatible revision and latest-features tracker.
 - `EyalEspressoRequirements and Design.docx`: primary requirements and design template for the application.
