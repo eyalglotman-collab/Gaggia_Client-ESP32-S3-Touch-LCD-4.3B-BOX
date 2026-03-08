@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.2\par
+0.2.3\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -30,6 +30,7 @@
 - RTC startup now preserves valid retained time instead of overwriting it unconditionally on every boot.\par
 - Settings tab now includes a `Set Clock` flow with rollers for day, month, year, hour, and minute plus a `Done` action that writes the selected time to the RTC.\par
 - Windows monitoring workflow now includes a fallback raw serial capture helper and separate flash/monitor tasks when `idf.py monitor` fails on this host.\par
+- Bottom clock bar now uses a larger font and full date-time format with weekday, month, day, year, and seconds.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par
@@ -187,6 +188,13 @@
 - Version: 0.2.2\par
 - Summary: Added manual RTC clock setting and preserved retained RTC time across restart, with a working fallback serial-monitor path on Windows.\par
 - Notes: `main/peripherals_manager.*` now keeps valid retained RTC time and exposes an explicit RTC setter API, `main/ui_screen.c` now adds a `Set Clock` Settings overlay with rollers and a `Done` action, `.vscode/tasks.json` and `scripts/setup_idf_env.ps1` now separate flash from monitor usage, and `scripts/monitor_capture.ps1` provides a raw serial capture fallback that successfully verifies the first 20 seconds of startup logs on this host.\par
+- Resolved Defects:\par
+  - None in this release.\par
+\par
+\b 2026-03-08\b0\par
+- Version: 0.2.3\par
+- Summary: Refined the persistent clock bar with a larger font and a fuller human-readable date-time format.\par
+- Notes: `main/ui_screen.c` now renders the bottom clock as `Weekday, Mon-D, YYYY HH:MM:SS` and increases the clock-bar typography for improved readability while preserving the existing RTC-backed live updates.\par
 - Resolved Defects:\par
   - None in this release.\par
 \par

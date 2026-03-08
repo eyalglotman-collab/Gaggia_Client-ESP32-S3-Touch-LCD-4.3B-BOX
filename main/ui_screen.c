@@ -107,7 +107,7 @@ static ui_state_t s_ui = {
 #define UI_CLOCK_SET_YEAR_START (2020)
 #define UI_CLOCK_SET_YEAR_END   (2045)
 #define UI_TABVIEW_HEIGHT      (432)
-#define UI_CLOCK_BAR_HEIGHT    (48)
+#define UI_CLOCK_BAR_HEIGHT    (56)
 
 /**
  * @brief Apply shared dark card styling.
@@ -233,12 +233,25 @@ static void ui_update_clock_bar(void)
 
     struct tm rtc_tm = {0};
     if (peripherals_manager_get_rtc_time(&rtc_tm) == ESP_OK) {
-        char txt[32];
-        snprintf(txt, sizeof(txt), "%02d:%02d:%02d",
-                 rtc_tm.tm_hour, rtc_tm.tm_min, rtc_tm.tm_sec);
+        static const char *wday_names[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+        static const char *month_names[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+        char txt[64];
+        const char *wday = (rtc_tm.tm_wday >= 0 && rtc_tm.tm_wday < 7) ? wday_names[rtc_tm.tm_wday] : "---";
+        const char *month = (rtc_tm.tm_mon >= 0 && rtc_tm.tm_mon < 12) ? month_names[rtc_tm.tm_mon] : "---";
+        snprintf(txt,
+                 sizeof(txt),
+                 "%s, %s-%d, %04d %02d:%02d:%02d",
+                 wday,
+                 month,
+                 rtc_tm.tm_mday,
+                 rtc_tm.tm_year + 1900,
+                 rtc_tm.tm_hour,
+                 rtc_tm.tm_min,
+                 rtc_tm.tm_sec);
         lv_label_set_text(s_ui.clock_label, txt);
     } else {
-        lv_label_set_text(s_ui.clock_label, "--:--:--");
+        lv_label_set_text(s_ui.clock_label, "--------, --- --, ---- --:--:--");
     }
 }
 
@@ -1100,7 +1113,7 @@ static void ui_build_main_screen(void)
     lv_obj_set_style_pad_all(clock_bar, 0, 0);
 
     s_ui.clock_label = lv_label_create(clock_bar);
-    lv_obj_set_style_text_font(s_ui.clock_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(s_ui.clock_label, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(s_ui.clock_label, lv_color_hex(UI_COLOR_TEXT), 0);
     lv_obj_align(s_ui.clock_label, LV_ALIGN_CENTER, 0, 0);
 
