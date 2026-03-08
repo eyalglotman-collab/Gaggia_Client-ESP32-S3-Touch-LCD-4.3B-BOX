@@ -496,104 +496,97 @@ static void ui_close_system_constants_overlay(void)
 }
 
 /**
- * @brief Format the embedded XML into an indented text view.
+ * @brief Format loaded system constants into a tree-style text view.
  *
- * @details Converts the raw embedded `SystemConstants.xml` into a tree-style
- * text block so nested tags are easier to read on the display. Small inline
- * value tags remain on one line, while container tags are broken into indented
- * lines.
+ * @details Converts the active constants snapshot into a readable outline so
+ * the hierarchy is clear on screen without showing raw XML tags.
  *
  * @return Pointer to a static formatted XML buffer.
  */
 static const char *ui_get_system_constants_pretty_text(void)
 {
-    const char *xml = system_constants_get_xml_text();
-    size_t xml_len = system_constants_get_xml_length();
+    const system_constants_data_t *constants = ui_get_constants();
     size_t used = 0;
-    int indent_level = 0;
-    size_t cursor = 0;
-
-    if (xml == NULL || xml_len == 0U) {
-        snprintf(s_system_constants_pretty_text,
-                 sizeof(s_system_constants_pretty_text),
-                 "SystemConstants.xml is unavailable.");
-        return s_system_constants_pretty_text;
-    }
+    int written = 0;
 
     s_system_constants_pretty_text[0] = '\0';
 
-    while (cursor < xml_len && used + 2 < sizeof(s_system_constants_pretty_text)) {
-        if (xml[cursor] != '<') {
-            cursor++;
-            continue;
-        }
+    if (constants == NULL) {
+        snprintf(s_system_constants_pretty_text,
+                 sizeof(s_system_constants_pretty_text),
+                 "System Constants\n    Unavailable");
+        return s_system_constants_pretty_text;
+    }
 
-        size_t tag_end = cursor;
-        while (tag_end < xml_len && xml[tag_end] != '>') {
-            tag_end++;
-        }
-        if (tag_end >= xml_len) {
+    written = snprintf(
+        s_system_constants_pretty_text,
+        sizeof(s_system_constants_pretty_text),
+        "System Constants\n"
+        "    Versions\n"
+        "        Client Version: %s\n"
+        "        Compatible Version: %s\n"
+        "    Connection\n"
+        "        Host: %s\n"
+        "        Port: %s\n"
+        "        Baud Rate: %d\n"
+        "    Limits\n"
+        "        Temperature: %d-%d C\n"
+        "        Pressure: %d.%d-%d.%d bar\n"
+        "        Flow: %d.%d-%d.%d ml/s\n"
+        "    Profiles (%d)",
+        constants->client_version,
+        constants->compatible_client_version,
+        constants->connection_host,
+        constants->connection_port,
+        constants->connection_baud_rate,
+        constants->temperature_min_c,
+        constants->temperature_max_c,
+        constants->pressure_min_tenths / 10,
+        abs(constants->pressure_min_tenths % 10),
+        constants->pressure_max_tenths / 10,
+        abs(constants->pressure_max_tenths % 10),
+        constants->flow_min_tenths / 10,
+        abs(constants->flow_min_tenths % 10),
+        constants->flow_max_tenths / 10,
+        abs(constants->flow_max_tenths % 10),
+        constants->profile_count);
+
+    if (written < 0) {
+        s_system_constants_pretty_text[0] = '\0';
+        return s_system_constants_pretty_text;
+    }
+
+    used = (size_t)written;
+    if (used >= sizeof(s_system_constants_pretty_text)) {
+        used = sizeof(s_system_constants_pretty_text) - 1U;
+    }
+
+    for (int i = 0; i < constants->profile_count && used + 1U < sizeof(s_system_constants_pretty_text); i++) {
+        written = snprintf(
+            s_system_constants_pretty_text + used,
+            sizeof(s_system_constants_pretty_text) - used,
+            "\n"
+            "        Profile %d\n"
+            "            Name: %s\n"
+            "            Target Temperature: %d C\n"
+            "            Preinfusion: %d s\n"
+            "            Target Pressure: %d.%d bar\n"
+            "            Target Flow: %d.%d ml/s",
+            i + 1,
+            constants->profiles[i].name,
+            constants->profiles[i].target_temperature_c,
+            constants->profiles[i].preinfusion_seconds,
+            constants->profiles[i].target_pressure_tenths / 10,
+            abs(constants->profiles[i].target_pressure_tenths % 10),
+            constants->profiles[i].target_flow_tenths / 10,
+            abs(constants->profiles[i].target_flow_tenths % 10));
+        if (written < 0) {
             break;
         }
-
-        bool is_closing_tag = (cursor + 1U < xml_len && xml[cursor + 1U] == '/');
-        bool is_self_closing = (tag_end > cursor && xml[tag_end - 1U] == '/');
-        size_t next_tag = tag_end + 1U;
-        while (next_tag < xml_len && xml[next_tag] != '<') {
-            next_tag++;
-        }
-
-        size_t text_start = tag_end + 1U;
-        while (text_start < next_tag && (xml[text_start] == ' ' || xml[text_start] == '\t' ||
-                                         xml[text_start] == '\r' || xml[text_start] == '\n')) {
-            text_start++;
-        }
-
-        size_t text_end = next_tag;
-        while (text_end > text_start && (xml[text_end - 1U] == ' ' || xml[text_end - 1U] == '\t' ||
-                                         xml[text_end - 1U] == '\r' || xml[text_end - 1U] == '\n')) {
-            text_end--;
-        }
-
-        bool has_inline_text = (text_end > text_start);
-
-        if (is_closing_tag && indent_level > 0) {
-            indent_level--;
-        }
-
-        if (used > 0U && used + 1U < sizeof(s_system_constants_pretty_text)) {
-            s_system_constants_pretty_text[used++] = '\n';
-        }
-
-        for (int indent = 0; indent < indent_level && used + 4U < sizeof(s_system_constants_pretty_text); indent++) {
-            s_system_constants_pretty_text[used++] = ' ';
-            s_system_constants_pretty_text[used++] = ' ';
-            s_system_constants_pretty_text[used++] = ' ';
-            s_system_constants_pretty_text[used++] = ' ';
-        }
-
-        size_t tag_len = tag_end - cursor + 1U;
-        if (used + tag_len >= sizeof(s_system_constants_pretty_text)) {
-            tag_len = sizeof(s_system_constants_pretty_text) - used - 1U;
-        }
-        memcpy(&s_system_constants_pretty_text[used], &xml[cursor], tag_len);
-        used += tag_len;
-
-        if (has_inline_text && used + 1U < sizeof(s_system_constants_pretty_text)) {
-            s_system_constants_pretty_text[used++] = ' ';
-            size_t text_len = text_end - text_start;
-            if (used + text_len >= sizeof(s_system_constants_pretty_text)) {
-                text_len = sizeof(s_system_constants_pretty_text) - used - 1U;
-            }
-            memcpy(&s_system_constants_pretty_text[used], &xml[text_start], text_len);
-            used += text_len;
-            cursor = next_tag;
-        } else {
-            cursor = tag_end + 1U;
-        }
-
-        if (!is_closing_tag && !is_self_closing && !has_inline_text) {
-            indent_level++;
+        used += (size_t)written;
+        if (used >= sizeof(s_system_constants_pretty_text)) {
+            used = sizeof(s_system_constants_pretty_text) - 1U;
+            break;
         }
     }
 
