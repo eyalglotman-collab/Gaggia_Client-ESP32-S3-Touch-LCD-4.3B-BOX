@@ -32,6 +32,7 @@
 #include "lwip/ip4_addr.h"
 
 #include "hardware_init.h"
+#include "system_constants.h"
 
 static const char *TAG = "peripherals";
 
@@ -706,12 +707,13 @@ esp_err_t peripherals_manager_get_connection_info(peripherals_connection_info_t 
     ESP_RETURN_ON_FALSE(out_info != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid connection info buffer");
 
     memset(out_info, 0, sizeof(*out_info));
+    const system_constants_data_t *constants = system_constants_get();
     snprintf(out_info->ip_address, sizeof(out_info->ip_address), "Not assigned");
     snprintf(out_info->port_text,
              sizeof(out_info->port_text),
-             "UART%d @ %d",
-             (int)RS485_UART_PORT,
-             RS485_UART_BAUD);
+             "%s @ %d",
+             constants->connection_port,
+             constants->connection_baud_rate);
 
     out_info->wifi_ready = s_wifi_ready;
     out_info->rtc_ready = s_rtc_ready;

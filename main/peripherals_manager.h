@@ -37,7 +37,7 @@ typedef enum {
  */
 typedef struct {
     char ip_address[16];
-    char port_text[32];
+    char port_text[48];
     bool wifi_ready;
     bool rtc_ready;
     bool tf_ready;

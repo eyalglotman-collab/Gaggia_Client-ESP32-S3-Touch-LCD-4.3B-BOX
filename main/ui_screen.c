@@ -6,12 +6,14 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "lvgl.h"
 #include "hardware_init.h"
 #include "peripherals_manager.h"
+#include "system_constants.h"
 
 static const char *TAG = "ui_screen";
 
@@ -33,6 +35,7 @@ typedef struct {
     lv_obj_t *clock_label;
     lv_obj_t *clock_set_overlay;
     lv_obj_t *connection_info_overlay;
+    lv_obj_t *system_constants_overlay;
     lv_obj_t *clock_set_day_roller;
     lv_obj_t *clock_set_month_roller;
     lv_obj_t *clock_set_year_roller;
@@ -69,6 +72,7 @@ static ui_state_t s_ui = {
     .clock_label = NULL,
     .clock_set_overlay = NULL,
     .connection_info_overlay = NULL,
+    .system_constants_overlay = NULL,
     .clock_set_day_roller = NULL,
     .clock_set_month_roller = NULL,
     .clock_set_year_roller = NULL,
@@ -110,6 +114,14 @@ static ui_state_t s_ui = {
 #define UI_CLOCK_SET_YEAR_END   (2045)
 #define UI_TABVIEW_HEIGHT      (432)
 #define UI_CLOCK_BAR_HEIGHT    (56)
+#define UI_SYSTEM_CONSTANTS_TEXT_MAX (4096)
+
+static const system_constants_data_t *ui_get_constants(void);
+static const system_constants_profile_t *ui_get_profile_constants(int profile_index);
+static void ui_apply_profile_defaults(int profile_index);
+static const char *ui_get_system_constants_pretty_text(void);
+
+static char s_system_constants_pretty_text[UI_SYSTEM_CONSTANTS_TEXT_MAX];
 
 /**
  * @brief Apply shared dark card styling.
@@ -266,8 +278,9 @@ static void ui_update_clock_bar(void)
 static void ui_update_home_labels(void)
 {
     if (s_ui.home_active_profile) {
-        char txt[48];
-        snprintf(txt, sizeof(txt), "Active Profile: %d", s_ui.active_profile);
+        const system_constants_profile_t *profile = ui_get_profile_constants(s_ui.active_profile);
+        char txt[80];
+        snprintf(txt, sizeof(txt), "Active Profile: %s", profile->name);
         lv_label_set_text(s_ui.home_active_profile, txt);
     }
 
@@ -307,6 +320,63 @@ static void ui_update_tab_style(void)
         lv_obj_set_style_text_color(btn, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_PRESSED);
         lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
     }
+}
+
+/**
+ * @brief Return the currently loaded system constants snapshot.
+ *
+ * @details Provides a short local wrapper so UI code can consume the loaded
+ * constants database without repeating the accessor call everywhere.
+ *
+ * @return Pointer to the active constants snapshot.
+ */
+static const system_constants_data_t *ui_get_constants(void)
+{
+    return system_constants_get();
+}
+
+/**
+ * @brief Resolve a one-based profile selection to loaded constants data.
+ *
+ * @details Maps the UI's profile numbering onto the loaded constants array and
+ * clamps invalid indices to the nearest valid profile entry.
+ *
+ * @param[in] profile_index One-based profile index.
+ *
+ * @return Pointer to the resolved profile entry.
+ */
+static const system_constants_profile_t *ui_get_profile_constants(int profile_index)
+{
+    const system_constants_data_t *constants = ui_get_constants();
+
+    if (constants->profile_count <= 0) {
+        return &constants->profiles[0];
+    }
+
+    if (profile_index < 1) {
+        profile_index = 1;
+    }
+    if (profile_index > constants->profile_count) {
+        profile_index = constants->profile_count;
+    }
+
+    return &constants->profiles[profile_index - 1];
+}
+
+/**
+ * @brief Apply a loaded profile's default targets to the active UI state.
+ *
+ * @details Copies the selected profile's configured target temperature and
+ * preinfusion time from the constants database into the editable UI fields.
+ *
+ * @param[in] profile_index One-based profile index to apply.
+ */
+static void ui_apply_profile_defaults(int profile_index)
+{
+    const system_constants_profile_t *profile = ui_get_profile_constants(profile_index);
+    s_ui.active_profile = profile_index;
+    s_ui.target_temp_c = profile->target_temperature_c;
+    s_ui.preinf_s = profile->preinfusion_seconds;
 }
 
 /**
@@ -408,6 +478,127 @@ static void ui_close_connection_info_overlay(void)
     }
 
     s_ui.connection_info_overlay = NULL;
+}
+
+/**
+ * @brief Close the system-constants overlay.
+ *
+ * @details Deletes the temporary full-screen XML viewer UI and clears the
+ * stored overlay pointer.
+ */
+static void ui_close_system_constants_overlay(void)
+{
+    if (s_ui.system_constants_overlay) {
+        lv_obj_del(s_ui.system_constants_overlay);
+    }
+
+    s_ui.system_constants_overlay = NULL;
+}
+
+/**
+ * @brief Format the embedded XML into an indented text view.
+ *
+ * @details Converts the raw embedded `SystemConstants.xml` into a tree-style
+ * text block so nested tags are easier to read on the display. Small inline
+ * value tags remain on one line, while container tags are broken into indented
+ * lines.
+ *
+ * @return Pointer to a static formatted XML buffer.
+ */
+static const char *ui_get_system_constants_pretty_text(void)
+{
+    const char *xml = system_constants_get_xml_text();
+    size_t xml_len = system_constants_get_xml_length();
+    size_t used = 0;
+    int indent_level = 0;
+    size_t cursor = 0;
+
+    if (xml == NULL || xml_len == 0U) {
+        snprintf(s_system_constants_pretty_text,
+                 sizeof(s_system_constants_pretty_text),
+                 "SystemConstants.xml is unavailable.");
+        return s_system_constants_pretty_text;
+    }
+
+    s_system_constants_pretty_text[0] = '\0';
+
+    while (cursor < xml_len && used + 2 < sizeof(s_system_constants_pretty_text)) {
+        if (xml[cursor] != '<') {
+            cursor++;
+            continue;
+        }
+
+        size_t tag_end = cursor;
+        while (tag_end < xml_len && xml[tag_end] != '>') {
+            tag_end++;
+        }
+        if (tag_end >= xml_len) {
+            break;
+        }
+
+        bool is_closing_tag = (cursor + 1U < xml_len && xml[cursor + 1U] == '/');
+        bool is_self_closing = (tag_end > cursor && xml[tag_end - 1U] == '/');
+        size_t next_tag = tag_end + 1U;
+        while (next_tag < xml_len && xml[next_tag] != '<') {
+            next_tag++;
+        }
+
+        size_t text_start = tag_end + 1U;
+        while (text_start < next_tag && (xml[text_start] == ' ' || xml[text_start] == '\t' ||
+                                         xml[text_start] == '\r' || xml[text_start] == '\n')) {
+            text_start++;
+        }
+
+        size_t text_end = next_tag;
+        while (text_end > text_start && (xml[text_end - 1U] == ' ' || xml[text_end - 1U] == '\t' ||
+                                         xml[text_end - 1U] == '\r' || xml[text_end - 1U] == '\n')) {
+            text_end--;
+        }
+
+        bool has_inline_text = (text_end > text_start);
+
+        if (is_closing_tag && indent_level > 0) {
+            indent_level--;
+        }
+
+        if (used > 0U && used + 1U < sizeof(s_system_constants_pretty_text)) {
+            s_system_constants_pretty_text[used++] = '\n';
+        }
+
+        for (int indent = 0; indent < indent_level && used + 4U < sizeof(s_system_constants_pretty_text); indent++) {
+            s_system_constants_pretty_text[used++] = ' ';
+            s_system_constants_pretty_text[used++] = ' ';
+            s_system_constants_pretty_text[used++] = ' ';
+            s_system_constants_pretty_text[used++] = ' ';
+        }
+
+        size_t tag_len = tag_end - cursor + 1U;
+        if (used + tag_len >= sizeof(s_system_constants_pretty_text)) {
+            tag_len = sizeof(s_system_constants_pretty_text) - used - 1U;
+        }
+        memcpy(&s_system_constants_pretty_text[used], &xml[cursor], tag_len);
+        used += tag_len;
+
+        if (has_inline_text && used + 1U < sizeof(s_system_constants_pretty_text)) {
+            s_system_constants_pretty_text[used++] = ' ';
+            size_t text_len = text_end - text_start;
+            if (used + text_len >= sizeof(s_system_constants_pretty_text)) {
+                text_len = sizeof(s_system_constants_pretty_text) - used - 1U;
+            }
+            memcpy(&s_system_constants_pretty_text[used], &xml[text_start], text_len);
+            used += text_len;
+            cursor = next_tag;
+        } else {
+            cursor = tag_end + 1U;
+        }
+
+        if (!is_closing_tag && !is_self_closing && !has_inline_text) {
+            indent_level++;
+        }
+    }
+
+    s_system_constants_pretty_text[used] = '\0';
+    return s_system_constants_pretty_text;
 }
 
 /**
@@ -544,6 +735,20 @@ static void ui_connection_info_done_event_cb(lv_event_t *e)
 }
 
 /**
+ * @brief Close the system-constants screen and return to Settings.
+ *
+ * @details Dismisses the modal XML viewer overlay created from the Settings
+ * page.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_system_constants_done_event_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_close_system_constants_overlay();
+}
+
+/**
  * @brief Open the connection-info overlay from the Settings tab.
  *
  * @details Shows the current connection snapshot, including IP address,
@@ -654,6 +859,73 @@ static void ui_settings_connection_info_event_cb(lv_event_t *e)
     lv_obj_set_pos(done_btn,
                    (lv_obj_get_width(panel) - lv_obj_get_width(done_btn)) / 2,
                    lowest_bottom + 10);
+}
+
+/**
+ * @brief Open the System Constants XML viewer from the Settings tab.
+ *
+ * @details Builds a scrollable overlay that presents the embedded
+ * `SystemConstants.xml` text in an indented hierarchy view, with a bottom
+ * `Done` button positioned 10 pixels below the rendered text.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_settings_system_constants_event_cb(lv_event_t *e)
+{
+    (void)e;
+
+    ui_close_system_constants_overlay();
+
+    lv_obj_t *scr = lv_screen_active();
+    s_ui.system_constants_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_ui.system_constants_overlay);
+    lv_obj_set_size(s_ui.system_constants_overlay, 800, 480);
+    lv_obj_set_style_bg_color(s_ui.system_constants_overlay, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(s_ui.system_constants_overlay, LV_OPA_COVER, 0);
+
+    lv_obj_t *panel = lv_obj_create(s_ui.system_constants_overlay);
+    lv_obj_set_size(panel, 760, 440);
+    lv_obj_center(panel);
+    ui_style_card(panel, UI_COLOR_PANEL);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(panel);
+    lv_label_set_text(title, "System Constants");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 16);
+
+    lv_obj_t *xml_body = lv_obj_create(panel);
+    lv_obj_set_size(xml_body, 720, 340);
+    lv_obj_align(xml_body, LV_ALIGN_TOP_MID, 0, 70);
+    ui_style_card(xml_body, UI_COLOR_CARD);
+    lv_obj_set_scrollbar_mode(xml_body, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_style_pad_all(xml_body, 16, 0);
+    lv_obj_set_scroll_dir(xml_body, LV_DIR_VER);
+
+    lv_obj_t *xml_label = lv_label_create(xml_body);
+    lv_label_set_long_mode(xml_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(xml_label, 680);
+    lv_obj_set_style_text_font(xml_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(xml_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(xml_label, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_label_set_text(xml_label, ui_get_system_constants_pretty_text());
+
+    lv_obj_t *done_btn = lv_button_create(xml_body);
+    lv_obj_set_size(done_btn, 300, 58);
+    ui_style_action_button(done_btn);
+    lv_obj_add_event_cb(done_btn, ui_system_constants_done_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *done_lbl = lv_label_create(done_btn);
+    lv_label_set_text(done_lbl, "Done");
+    ui_style_button_label(done_lbl);
+    lv_obj_center(done_lbl);
+
+    lv_obj_update_layout(xml_body);
+    lv_coord_t text_bottom = lv_obj_get_y(xml_label) + lv_obj_get_height(xml_label);
+    lv_obj_set_pos(done_btn,
+                   (lv_obj_get_width(xml_body) - lv_obj_get_width(done_btn)) / 2,
+                   text_bottom + 10);
 }
 
 /**
@@ -819,10 +1091,10 @@ static void ui_steam_toggle_event_cb(lv_event_t *e)
 static void ui_profile_btn_event_cb(lv_event_t *e)
 {
     intptr_t profile = (intptr_t)lv_event_get_user_data(e);
-    if (profile < 1 || profile > 3) {
+    if (profile < 1 || profile > ui_get_constants()->profile_count) {
         return;
     }
-    s_ui.active_profile = (int)profile;
+    ui_apply_profile_defaults((int)profile);
     ui_update_home_labels();
     ui_update_header_status();
     if (s_ui.active_page == UI_PAGE_PROFILES) {
@@ -996,8 +1268,8 @@ static void ui_build_page_profiles(void)
     ui_build_page_title(s_ui.content, "Profiles");
     ui_build_page_live_summary(s_ui.content);
 
-    const char *names[3] = {"Classic 9 Bar", "Turbo Shot", "Light Roast"};
-    for (int i = 0; i < 3; i++) {
+    const system_constants_data_t *constants = ui_get_constants();
+    for (int i = 0; i < constants->profile_count; i++) {
         lv_obj_t *btn = lv_button_create(s_ui.content);
         lv_obj_set_size(btn, 740, 72);
         lv_obj_align(btn, LV_ALIGN_TOP_LEFT, 20, 102 + (i * 86));
@@ -1008,7 +1280,7 @@ static void ui_build_page_profiles(void)
         lv_obj_add_event_cb(btn, ui_profile_btn_event_cb, LV_EVENT_CLICKED, (void *)(intptr_t)(i + 1));
 
         lv_obj_t *lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, names[i]);
+        lv_label_set_text(lbl, constants->profiles[i].name);
         ui_style_button_label(lbl);
         lv_obj_center(lbl);
     }
@@ -1034,7 +1306,9 @@ static void ui_build_page_settings(void)
     lv_obj_set_size(s_ui.settings_target_slider, 540, 8);
     lv_obj_align(s_ui.settings_target_slider, LV_ALIGN_TOP_LEFT, 20, 132);
     ui_style_slider(s_ui.settings_target_slider);
-    lv_slider_set_range(s_ui.settings_target_slider, 86, 98);
+    lv_slider_set_range(s_ui.settings_target_slider,
+                        ui_get_constants()->temperature_min_c,
+                        ui_get_constants()->temperature_max_c);
     lv_slider_set_value(s_ui.settings_target_slider, s_ui.target_temp_c, LV_ANIM_OFF);
     lv_obj_add_event_cb(s_ui.settings_target_slider, ui_settings_slider_event_cb, LV_EVENT_VALUE_CHANGED, (void *)0);
 
@@ -1074,11 +1348,12 @@ static void ui_build_page_settings(void)
     }
 
     const lv_coord_t action_btn_width = 360;
-    const lv_coord_t action_btn_height = 58;
+    const lv_coord_t action_btn_height = 48;
     const lv_coord_t action_left_x = 20;
     const lv_coord_t action_right_x = 400;
-    const lv_coord_t action_row1_y = 246;
-    const lv_coord_t action_row2_y = 318;
+    const lv_coord_t action_row1_y = 238;
+    const lv_coord_t action_row2_y = 296;
+    const lv_coord_t action_row3_y = 354;
 
     s_ui.settings_backlight_toggle = ui_create_toggle_button(s_ui.content,
                                                              "Backlight",
@@ -1120,6 +1395,17 @@ static void ui_build_page_settings(void)
     lv_label_set_text(reboot_lbl, "Reboot Client");
     ui_style_button_label(reboot_lbl);
     lv_obj_center(reboot_lbl);
+
+    lv_obj_t *system_constants_btn = lv_button_create(s_ui.content);
+    lv_obj_set_size(system_constants_btn, action_btn_width, action_btn_height);
+    lv_obj_align(system_constants_btn, LV_ALIGN_TOP_LEFT, action_left_x, action_row3_y);
+    ui_style_action_button(system_constants_btn);
+    lv_obj_add_event_cb(system_constants_btn, ui_settings_system_constants_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *system_constants_lbl = lv_label_create(system_constants_btn);
+    lv_label_set_text(system_constants_lbl, "System Constants");
+    ui_style_button_label(system_constants_lbl);
+    lv_obj_center(system_constants_lbl);
 }
 
 /**
@@ -1276,6 +1562,9 @@ static void ui_build_main_screen(void)
 
     ui_update_tab_style();
 
+    if (ui_get_constants()->profile_count > 0) {
+        ui_apply_profile_defaults(1);
+    }
     s_ui.active_page = UI_PAGE_HOME;
     ui_render_active_page();
     lv_tabview_set_active(s_ui.tabview, UI_PAGE_HOME, LV_ANIM_OFF);
@@ -1305,6 +1594,7 @@ void ui_screen_create(void)
     s_ui.tabview = NULL;
     s_ui.clock_set_overlay = NULL;
     s_ui.connection_info_overlay = NULL;
+    s_ui.system_constants_overlay = NULL;
     s_ui.clock_set_day_roller = NULL;
     s_ui.clock_set_month_roller = NULL;
     s_ui.clock_set_year_roller = NULL;

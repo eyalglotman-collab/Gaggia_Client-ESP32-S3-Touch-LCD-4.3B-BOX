@@ -20,6 +20,7 @@
 #include "ui_screen.h"
 #include "hardware_init.h"
 #include "peripherals_manager.h"
+#include "system_constants.h"
 
 static const char *TAG = "espresso";
 #define UI_INIT_STATUS_SHOW_MS (300)
@@ -111,6 +112,14 @@ static void espresso_run_client_initialization_sequence(void)
         ESP_LOGI(TAG, "RTC initialized successfully");
     } else {
         ESP_LOGW(TAG, "RTC initialization failed: %s", esp_err_to_name(rtc_ret));
+    }
+
+    ui_set_init_status_and_yield("Loading system constants...");
+    esp_err_t constants_ret = system_constants_load();
+    if (constants_ret == ESP_OK) {
+        ESP_LOGI(TAG, "System constants loaded successfully");
+    } else {
+        ESP_LOGW(TAG, "System constants load failed: %s", esp_err_to_name(constants_ret));
     }
 
     ui_set_init_status_and_yield("Initializing TF card...");

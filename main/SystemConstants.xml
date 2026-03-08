@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SystemConstants>
+  <ClientVersion>0.2.4</ClientVersion>
+  <CompatibleClientVersion>0.2.x</CompatibleClientVersion>
+
+  <ConnectionDetails>
+    <Host>GaggiaController</Host>
+    <Port>UART2</Port>
+    <BaudRate>115200</BaudRate>
+  </ConnectionDetails>
+
+  <Limits>
+    <TemperatureMin>86</TemperatureMin>
+    <TemperatureMax>98</TemperatureMax>
+    <PressureMin>0.0</PressureMin>
+    <PressureMax>12.0</PressureMax>
+    <FlowMin>0.0</FlowMin>
+    <FlowMax>5.0</FlowMax>
+  </Limits>
+
+  <BrewProfiles>
+    <ProfileCount>3</ProfileCount>
+
+    <Profile>
+      <Name>Classic 9 Bar</Name>
+      <TargetTemperature>93</TargetTemperature>
+      <PreinfusionSeconds>4</PreinfusionSeconds>
+      <TargetPressure>9.0</TargetPressure>
+      <TargetFlow>2.0</TargetFlow>
+    </Profile>
+
+    <Profile>
+      <Name>Turbo Shot</Name>
+      <TargetTemperature>91</TargetTemperature>
+      <PreinfusionSeconds>2</PreinfusionSeconds>
+      <TargetPressure>7.5</TargetPressure>
+      <TargetFlow>3.0</TargetFlow>
+    </Profile>
+
+    <Profile>
+      <Name>Light Roast</Name>
+      <TargetTemperature>96</TargetTemperature>
+      <PreinfusionSeconds>6</PreinfusionSeconds>
+      <TargetPressure>9.5</TargetPressure>
+      <TargetFlow>1.8</TargetFlow>
+    </Profile>
+  </BrewProfiles>
+</SystemConstants>
