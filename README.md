@@ -118,6 +118,7 @@ We will get back to you as soon as possible.
 - When Eyal asks to create another revision/version, Codex must always commit it to git and verify the commit was created successfully.
 - At the start of every coding session, Codex must first load the latest project version from git, then write/update release notes in this README so Eyal can see exactly where work stopped.
 - Every time README is changed, Codex must commit README to git immediately, even if there is no project version change.
+- Repositories must not share tracked files. If another repository needs the same asset, script, or document, duplicate it into that repository and maintain the copies separately.
 - When a build succeeds, play the project celebration sound from `sounds/build-success-monkey-1p5x.wav`.
 - The selected celebration sound source is `sounds/cartoon_candidates/mixkit-cartoon-monkey-preview.mp3` from Mixkit's monkey/cartoon effects page: `https://mixkit.co/free-sound-effects/monkey/`.
 - The stored project playback file is a 1.5x faster version of the selected monkey clip so the pitch is higher and the cue is shorter.
