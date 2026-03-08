@@ -90,9 +90,9 @@ We will get back to you as soon as possible.
 
 ## Project Workflow Rules
 
-- Product requirements and application design shall be maintained in `EyalEspressoRequirements and Design.docx`.
+- Product requirements and application design shall be maintained in `%USERPROFILE%\Documents\EyalEspressoRequirements and Design.docx`.
 - `README.md` is the workflow/session handoff file; the requirements/design document is the primary place for application requirements, UX intent, architecture decisions, and planned features.
-- Every time Codex opens and reviews `EyalEspressoRequirements and Design.docx`, Codex must update the document field `Reviewed on` with the current time.
+- Every time Codex opens and reviews `%USERPROFILE%\Documents\EyalEspressoRequirements and Design.docx`, Codex must update the document field `Reviewed on` with the current time.
 - Repository version is tracked in root `VERSION` with format `X.Y.Z`.
 - `X`: major functionality/refactoring changes.
 - `Y`: minor bug-fix and incremental functionality changes.
@@ -169,8 +169,8 @@ References:
 - `.\scripts\monitor_capture.ps1`: fallback 20-second raw serial log capture that attaches to the port without resetting the board and is the approved monitoring method on this host when `idf.py monitor` fails.
 - `./scripts/import_waveshare_examples.sh <path>`: imports external Waveshare ESP-IDF demo examples.
 - `docs/REVISION_HISTORY.doc`: Word-compatible revision and latest-features tracker.
-- `EyalEspressoRequirements and Design.docx`: primary requirements and design template for the application.
-- When updating `EyalEspressoRequirements and Design.docx` programmatically, use an extract/edit/repack flow for the OpenXML container (`.docx` is a ZIP package) instead of relying on in-place entry replacement on this host.
+- `%USERPROFILE%\Documents\EyalEspressoRequirements and Design.docx`: primary requirements and design document for the application.
+- When updating `%USERPROFILE%\Documents\EyalEspressoRequirements and Design.docx` programmatically, use an extract/edit/repack flow for the OpenXML container (`.docx` is a ZIP package) instead of relying on in-place entry replacement on this host.
 
 ## ESP32-S3-4.3B Setup Notes
 
