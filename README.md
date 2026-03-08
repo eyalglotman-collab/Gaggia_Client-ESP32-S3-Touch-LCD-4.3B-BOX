@@ -168,8 +168,11 @@ References:
 - `.\scripts\stop_wait_sound.ps1`: stops the hidden wait-sound worker referenced by `.cache\wait_sound.pid`.
 - `.\scripts\monitor_capture.ps1`: fallback 20-second raw serial log capture that attaches to the port without resetting the board and is the approved monitoring method on this host when `idf.py monitor` fails.
 - `./scripts/import_waveshare_examples.sh <path>`: imports external Waveshare ESP-IDF demo examples.
-- `docs/REVISION_HISTORY.doc`: Word-compatible revision and latest-features tracker.
+- `docs/ESP32_S3_TOUCH_LCD_4_3B_SETUP.md`: hardware and bring-up notes for the Waveshare ESP32-S3 Touch LCD 4.3B kit.
+- `docs/EyalEspressoDetailedDesign.docx`: detailed design document covering software architecture, interface design, configuration, and environment/compilation method.
 - `docs/EyalEspressoRequirements and Design.docx`: primary requirements and design document for the application.
+- `docs/REVISION_HISTORY.doc`: Word-compatible revision and latest-features tracker.
+- `docs/VERSIONING.md`: repository versioning scheme reference for `X.Y.Z`.
 - When updating `docs/EyalEspressoRequirements and Design.docx` programmatically, use an extract/edit/repack flow for the OpenXML container (`.docx` is a ZIP package) instead of relying on in-place entry replacement on this host.
 
 ## ESP32-S3-4.3B Setup Notes
