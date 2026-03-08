@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.3.0\par
+0.2.1\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -27,9 +27,6 @@
 - Automatic backlight-off after 30 seconds without touch added with 1-second timer resolution.\par
 - All workflow text and controls moved fully inside the tab area, with a persistent bottom clock bar occupying the lower 10% of the display.\par
 - Press and toggle controls updated to use button-style surfaces with pressed/check-state colors and press in/out animation.\par
-- Initialization splash now shows staged component status updates while startup checks run.\par
-- Client startup now performs internal ESP32 checks plus RTC, TF, Wi-Fi, and controller initialization status handling.\par
-- Settings tab now includes a Reboot Client action that returns to the initialization state and reruns client startup.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par
@@ -185,20 +182,6 @@
 \par
 \i Entry template:\i0\par
 - Version: 0.2.Z\par
-- Date:\par
-- Summary:\par
-- Notes:\par
-\par
-\b X=0, Y=3\b0\par
-\b 2026-03-07\b0\par
-- Version: 0.3.0\par
-- Summary: Added staged initialization progress with controller-status handshake and a client-side reboot-to-initialize workflow.\par
-- Notes: `main/Eyal_espresso_ESP32_main.c` now runs a reusable initialization sequence that updates the splash with visible step text for internal ESP32 checks, RTC, TF, Wi-Fi, and the Gaggia Controller RS485 init request. `main/peripherals_manager.*` now exposes the controller initialization/status API, and `main/ui_screen.*` now supports dynamic initialization status text, explicit transition into the main UI, and a `Reboot Client` Settings action that returns to the splash and reruns the same startup sequence.\par
-- Resolved Defects:\par
-  - None in this release.\par
-\par
-\i Entry template:\i0\par
-- Version: 0.3.Z\par
 - Date:\par
 - Summary:\par
 - Notes:\par

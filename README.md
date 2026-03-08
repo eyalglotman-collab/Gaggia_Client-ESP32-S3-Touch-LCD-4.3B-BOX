@@ -9,8 +9,8 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
 
 ## Session Release Notes
 
-- Last released version in git: `0.1.6`
-- Release commit: `b9c0fd6` (`Release v0.1.6 - add swipe tab navigation`)
+- Last released version in git: `0.2.1`
+- Release commit: `c44f0b4` (`Release v0.2.1 - move UI into tabs`)
 - Version numbering reminder for release notes:
   - `X`: major architecture or feature-set changes
   - `Y`: minor functionality additions and bug-fix milestones
