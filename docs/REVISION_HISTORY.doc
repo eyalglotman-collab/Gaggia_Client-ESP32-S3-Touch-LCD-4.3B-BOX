@@ -206,6 +206,13 @@
 - Resolved Defects:\par
   - None in this release.\par
 \par
+\b 2026-03-08\b0\par
+- Version: 0.2.5\par
+- Summary: Added staged initialization flow with offline/online selection, failure handling, and a System Constants viewer.\par
+- Notes: `main/ui_screen.*` now starts with an `Offline Mode?` prompt, shows staged initialization progress, exposes failure-confirm and error/reset flows, and adds a Settings `System Constants` viewer plus initialization layout cleanup. `main/Eyal_espresso_ESP32_main.c` now runs a reusable staged initialization sequence with offline simulation, controller/version checks, and re-entry support. `main/peripherals_manager.*` now supports simulated connection state and controller-version requests for startup checks.\par
+- Resolved Defects:\par
+  - None in this release.\par
+\par
 \i Entry template:\i0\par
 - Version: 0.2.Z\par
 - Date:\par

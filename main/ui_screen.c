@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "lvgl.h"
+#include "ui_screen.h"
 #include "hardware_init.h"
 #include "peripherals_manager.h"
 #include "system_constants.h"
@@ -27,7 +28,14 @@ typedef enum {
 
 typedef struct {
     lv_obj_t *root;
+    lv_obj_t *init_title_label;
     lv_obj_t *init_status_label;
+    lv_obj_t *init_mode_prompt_label;
+    lv_obj_t *init_fail_label;
+    lv_obj_t *init_mode_yes_btn;
+    lv_obj_t *init_mode_no_btn;
+    lv_obj_t *init_confirm_btn;
+    lv_obj_t *error_screen;
     lv_obj_t *tabview;
     lv_obj_t *tab_pages[UI_PAGE_COUNT];
     lv_obj_t *page_status;
@@ -53,6 +61,7 @@ typedef struct {
     lv_obj_t *settings_backlight_toggle;
     lv_timer_t *heartbeat_timer;
     ui_page_t active_page;
+    ui_init_mode_t init_mode_selection;
     bool brewing;
     bool steaming;
     int active_profile;
@@ -60,11 +69,19 @@ typedef struct {
     int preinf_s;
     int shot_s;
     bool reinit_requested;
+    bool init_failure_confirm_requested;
 } ui_state_t;
 
 static ui_state_t s_ui = {
     .root = NULL,
+    .init_title_label = NULL,
     .init_status_label = NULL,
+    .init_mode_prompt_label = NULL,
+    .init_fail_label = NULL,
+    .init_mode_yes_btn = NULL,
+    .init_mode_no_btn = NULL,
+    .init_confirm_btn = NULL,
+    .error_screen = NULL,
     .tabview = NULL,
     .tab_pages = {NULL},
     .page_status = NULL,
@@ -90,6 +107,7 @@ static ui_state_t s_ui = {
     .settings_backlight_toggle = NULL,
     .heartbeat_timer = NULL,
     .active_page = UI_PAGE_HOME,
+    .init_mode_selection = UI_INIT_MODE_NONE,
     .brewing = false,
     .steaming = false,
     .active_profile = 1,
@@ -97,6 +115,7 @@ static ui_state_t s_ui = {
     .preinf_s = 4,
     .shot_s = 0,
     .reinit_requested = false,
+    .init_failure_confirm_requested = false,
 };
 
 #define UI_COLOR_BG            0x070B11
@@ -122,6 +141,38 @@ static void ui_apply_profile_defaults(int profile_index);
 static const char *ui_get_system_constants_pretty_text(void);
 
 static char s_system_constants_pretty_text[UI_SYSTEM_CONSTANTS_TEXT_MAX];
+
+/**
+ * @brief Handle the startup-mode `Yes` / `No` prompt selection.
+ *
+ * @details Stores the operator's requested initialization mode so the main task
+ * can begin either offline or online startup sequencing.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_init_mode_select_event_cb(lv_event_t *e)
+{
+    intptr_t mode_value = (intptr_t)lv_event_get_user_data(e);
+    if (mode_value == (intptr_t)UI_INIT_MODE_OFFLINE) {
+        s_ui.init_mode_selection = UI_INIT_MODE_OFFLINE;
+    } else {
+        s_ui.init_mode_selection = UI_INIT_MODE_ONLINE;
+    }
+}
+
+/**
+ * @brief Handle initialization failure confirmation presses.
+ *
+ * @details Captures the operator acknowledgement so the application can switch
+ * from the failed initialization view to the dedicated error screen.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_init_failure_confirm_event_cb(lv_event_t *e)
+{
+    (void)e;
+    s_ui.init_failure_confirm_requested = true;
+}
 
 /**
  * @brief Apply shared dark card styling.
@@ -1247,8 +1298,24 @@ static void ui_settings_reboot_client_event_cb(lv_event_t *e)
     s_ui.steaming = false;
     s_ui.shot_s = 0;
     s_ui.reinit_requested = true;
+    s_ui.init_mode_selection = UI_INIT_MODE_NONE;
+    s_ui.init_failure_confirm_requested = false;
     ui_screen_create();
     ESP_LOGI(TAG, "client UI returned to initialization state");
+}
+
+/**
+ * @brief Handle reset requests from the persistent error screen.
+ *
+ * @details Reuses the same client-side reinitialization path as the Settings
+ * page reboot action so the application returns to the startup prompt without a
+ * hardware reset.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_error_reset_event_cb(lv_event_t *e)
+{
+    ui_settings_reboot_client_event_cb(e);
 }
 
 /**
@@ -1583,7 +1650,14 @@ void ui_screen_create(void)
     lv_obj_clean(scr);
 
     s_ui.root = NULL;
+    s_ui.init_title_label = NULL;
     s_ui.init_status_label = NULL;
+    s_ui.init_mode_prompt_label = NULL;
+    s_ui.init_fail_label = NULL;
+    s_ui.init_mode_yes_btn = NULL;
+    s_ui.init_mode_no_btn = NULL;
+    s_ui.init_confirm_btn = NULL;
+    s_ui.error_screen = NULL;
     s_ui.tabview = NULL;
     s_ui.clock_set_overlay = NULL;
     s_ui.connection_info_overlay = NULL;
@@ -1599,6 +1673,8 @@ void ui_screen_create(void)
     s_ui.clock_label = NULL;
     s_ui.brew_toggle_btn = NULL;
     s_ui.steam_toggle_btn = NULL;
+    s_ui.init_mode_selection = UI_INIT_MODE_NONE;
+    s_ui.init_failure_confirm_requested = false;
 
     lv_obj_t *splash = lv_obj_create(scr);
     lv_obj_remove_style_all(splash);
@@ -1606,17 +1682,75 @@ void ui_screen_create(void)
     lv_obj_center(splash);
     lv_obj_set_style_bg_color(splash, lv_color_hex(UI_COLOR_BG), 0);
 
-    lv_obj_t *label = lv_label_create(splash);
-    lv_label_set_text(label, "Initializing System...");
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(label, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(label, LV_ALIGN_CENTER, 0, -18);
+    s_ui.init_title_label = lv_label_create(splash);
+    lv_label_set_text(s_ui.init_title_label, "Run in Offline Mode?");
+    lv_obj_set_style_text_font(s_ui.init_title_label, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_ui.init_title_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(s_ui.init_title_label, LV_ALIGN_CENTER, 0, -78);
+
+    s_ui.init_mode_prompt_label = lv_label_create(splash);
+    lv_label_set_text(s_ui.init_mode_prompt_label,
+                      "Select 'Yes' to simulate the server and skip real Wi-Fi.\n"
+                      "Select 'No' to run the full online initialization.");
+    lv_obj_set_style_text_font(s_ui.init_mode_prompt_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_ui.init_mode_prompt_label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+    lv_obj_set_style_text_align(s_ui.init_mode_prompt_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_ui.init_mode_prompt_label, LV_ALIGN_CENTER, 0, -20);
+
+    s_ui.init_mode_yes_btn = lv_button_create(splash);
+    lv_obj_set_size(s_ui.init_mode_yes_btn, 220, 58);
+    lv_obj_align(s_ui.init_mode_yes_btn, LV_ALIGN_CENTER, -130, 62);
+    ui_style_action_button(s_ui.init_mode_yes_btn);
+    lv_obj_add_event_cb(s_ui.init_mode_yes_btn,
+                        ui_init_mode_select_event_cb,
+                        LV_EVENT_CLICKED,
+                        (void *)(intptr_t)UI_INIT_MODE_OFFLINE);
+
+    lv_obj_t *yes_lbl = lv_label_create(s_ui.init_mode_yes_btn);
+    lv_label_set_text(yes_lbl, "Yes");
+    ui_style_button_label(yes_lbl);
+    lv_obj_center(yes_lbl);
+
+    s_ui.init_mode_no_btn = lv_button_create(splash);
+    lv_obj_set_size(s_ui.init_mode_no_btn, 220, 58);
+    lv_obj_align(s_ui.init_mode_no_btn, LV_ALIGN_CENTER, 130, 62);
+    ui_style_action_button(s_ui.init_mode_no_btn);
+    lv_obj_add_event_cb(s_ui.init_mode_no_btn,
+                        ui_init_mode_select_event_cb,
+                        LV_EVENT_CLICKED,
+                        (void *)(intptr_t)UI_INIT_MODE_ONLINE);
+
+    lv_obj_t *no_lbl = lv_label_create(s_ui.init_mode_no_btn);
+    lv_label_set_text(no_lbl, "No");
+    ui_style_button_label(no_lbl);
+    lv_obj_center(no_lbl);
 
     s_ui.init_status_label = lv_label_create(splash);
     lv_label_set_text(s_ui.init_status_label, "Preparing startup checks...");
     lv_obj_set_style_text_font(s_ui.init_status_label, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_ui.init_status_label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
-    lv_obj_align(s_ui.init_status_label, LV_ALIGN_CENTER, 0, 24);
+    lv_obj_set_style_text_align(s_ui.init_status_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_ui.init_status_label, LV_ALIGN_CENTER, 0, 42);
+    lv_obj_add_flag(s_ui.init_status_label, LV_OBJ_FLAG_HIDDEN);
+
+    s_ui.init_fail_label = lv_label_create(splash);
+    lv_label_set_text(s_ui.init_fail_label, "FAIL");
+    lv_obj_set_style_text_font(s_ui.init_fail_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(s_ui.init_fail_label, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_align(s_ui.init_fail_label, LV_ALIGN_CENTER, 0, 84);
+    lv_obj_add_flag(s_ui.init_fail_label, LV_OBJ_FLAG_HIDDEN);
+
+    s_ui.init_confirm_btn = lv_button_create(splash);
+    lv_obj_set_size(s_ui.init_confirm_btn, 260, 58);
+    ui_style_action_button(s_ui.init_confirm_btn);
+    lv_obj_align(s_ui.init_confirm_btn, LV_ALIGN_BOTTOM_MID, 0, -24);
+    lv_obj_add_event_cb(s_ui.init_confirm_btn, ui_init_failure_confirm_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(s_ui.init_confirm_btn, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *confirm_lbl = lv_label_create(s_ui.init_confirm_btn);
+    lv_label_set_text(confirm_lbl, "Confirm");
+    ui_style_button_label(confirm_lbl);
+    lv_obj_center(confirm_lbl);
 
     ESP_LOGI(TAG, "Initialization splash screen created");
 }
@@ -1639,6 +1773,118 @@ void ui_screen_set_init_status(const char *status_text)
 }
 
 /**
+ * @brief Mark the current initialization status as pass/fail.
+ *
+ * @details Highlights failed initialization text in red, shows a fail banner,
+ * and restores the normal muted appearance when no failure is active.
+ *
+ * @param[in] failed `true` to show failure styling, `false` otherwise.
+ */
+void ui_screen_set_init_failed(bool failed)
+{
+    if (!s_ui.init_status_label) {
+        return;
+    }
+
+    lv_obj_set_style_text_color(s_ui.init_status_label,
+                                failed ? lv_palette_main(LV_PALETTE_RED)
+                                       : lv_color_hex(UI_COLOR_TEXT_MUTED),
+                                0);
+    if (s_ui.init_fail_label) {
+        if (failed) {
+            lv_obj_clear_flag(s_ui.init_fail_label, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s_ui.init_fail_label, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+/**
+ * @brief Transition the startup UI from prompt mode into progress mode.
+ *
+ * @details Hides the offline-mode selection controls and shows the normal
+ * `Initializing System...` splash layout for the staged startup sequence.
+ *
+ * @param[in] mode Selected initialization mode.
+ */
+void ui_screen_begin_initialization(ui_init_mode_t mode)
+{
+    if (s_ui.init_title_label) {
+        lv_label_set_text(s_ui.init_title_label, "Initializing System...");
+        lv_obj_align(s_ui.init_title_label, LV_ALIGN_CENTER, 0, -74);
+    }
+
+    if (s_ui.init_mode_prompt_label) {
+        const char *mode_text = (mode == UI_INIT_MODE_OFFLINE)
+                                    ? "Offline mode selected. Starting simulated initialization..."
+                                    : "Online mode selected. Starting full initialization...";
+        lv_label_set_text(s_ui.init_mode_prompt_label, mode_text);
+        lv_obj_align(s_ui.init_mode_prompt_label, LV_ALIGN_CENTER, 0, -30);
+    }
+
+    if (s_ui.init_mode_yes_btn) {
+        lv_obj_add_flag(s_ui.init_mode_yes_btn, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_ui.init_mode_no_btn) {
+        lv_obj_add_flag(s_ui.init_mode_no_btn, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_ui.init_status_label) {
+        lv_obj_clear_flag(s_ui.init_status_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_ui.init_fail_label) {
+        lv_obj_add_flag(s_ui.init_fail_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_ui.init_confirm_btn) {
+        lv_obj_add_flag(s_ui.init_confirm_btn, LV_OBJ_FLAG_HIDDEN);
+    }
+    s_ui.init_failure_confirm_requested = false;
+    ui_screen_set_init_failed(false);
+}
+
+/**
+ * @brief Consume the operator's startup mode choice.
+ *
+ * @details Returns the stored prompt selection and clears it so startup begins
+ * only once per prompt response.
+ *
+ * @return Selected initialization mode or `UI_INIT_MODE_NONE`.
+ */
+ui_init_mode_t ui_screen_take_init_mode_selection(void)
+{
+    ui_init_mode_t selected = s_ui.init_mode_selection;
+    s_ui.init_mode_selection = UI_INIT_MODE_NONE;
+    return selected;
+}
+
+/**
+ * @brief Show the confirm action after initialization failure.
+ *
+ * @details Makes the bottom confirm button visible so the operator can
+ * acknowledge a failed initialization result before moving to the error screen.
+ */
+void ui_screen_show_init_failure_confirm(void)
+{
+    if (s_ui.init_confirm_btn) {
+        lv_obj_clear_flag(s_ui.init_confirm_btn, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/**
+ * @brief Consume the initialization-failure confirm request.
+ *
+ * @details Returns the current confirm flag and clears it so the main task can
+ * react only once to each operator acknowledgement.
+ *
+ * @return `true` when the confirm button was pressed.
+ */
+bool ui_screen_take_init_failure_confirm(void)
+{
+    bool requested = s_ui.init_failure_confirm_requested;
+    s_ui.init_failure_confirm_requested = false;
+    return requested;
+}
+
+/**
  * @brief Replace the splash screen with the main workflow UI.
  *
  * @details Builds the normal tab-based UI after initialization checks and
@@ -1646,8 +1892,76 @@ void ui_screen_set_init_status(const char *status_text)
  */
 void ui_screen_show_main(void)
 {
+    lv_obj_clean(lv_scr_act());
+    s_ui.init_title_label = NULL;
+    s_ui.init_mode_prompt_label = NULL;
     s_ui.init_status_label = NULL;
+    s_ui.init_fail_label = NULL;
+    s_ui.init_mode_yes_btn = NULL;
+    s_ui.init_mode_no_btn = NULL;
+    s_ui.init_confirm_btn = NULL;
+    s_ui.error_screen = NULL;
     ui_build_main_screen();
+}
+
+/**
+ * @brief Show the dedicated persistent error screen.
+ *
+ * @details Replaces the splash/main UI with a full-screen error view that
+ * displays the provided summary and offers a single `Reset` action back to the
+ * initialization prompt.
+ *
+ * @param[in] error_text Error summary to display.
+ */
+void ui_screen_show_error(const char *error_text)
+{
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_set_style_bg_color(scr, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_clean(scr);
+    s_ui.init_title_label = NULL;
+    s_ui.init_mode_prompt_label = NULL;
+    s_ui.init_status_label = NULL;
+    s_ui.init_fail_label = NULL;
+    s_ui.init_mode_yes_btn = NULL;
+    s_ui.init_mode_no_btn = NULL;
+    s_ui.init_confirm_btn = NULL;
+
+    s_ui.error_screen = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_ui.error_screen);
+    lv_obj_set_size(s_ui.error_screen, 800, 480);
+    lv_obj_center(s_ui.error_screen);
+    lv_obj_set_style_bg_color(s_ui.error_screen, lv_color_hex(UI_COLOR_BG), 0);
+
+    lv_obj_t *title = lv_label_create(s_ui.error_screen);
+    lv_label_set_text(title, "Error");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(title, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 24);
+
+    lv_obj_t *error_box = lv_obj_create(s_ui.error_screen);
+    lv_obj_set_size(error_box, 720, 260);
+    lv_obj_align(error_box, LV_ALIGN_TOP_MID, 0, 86);
+    ui_style_card(error_box, UI_COLOR_CARD);
+    lv_obj_set_scrollbar_mode(error_box, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_style_pad_all(error_box, 18, 0);
+
+    lv_obj_t *error_label = lv_label_create(error_box);
+    lv_obj_set_width(error_label, 680);
+    lv_label_set_long_mode(error_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(error_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(error_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_label_set_text(error_label, (error_text != NULL) ? error_text : "Unknown initialization error.");
+
+    lv_obj_t *reset_btn = lv_button_create(s_ui.error_screen);
+    lv_obj_set_size(reset_btn, 260, 58);
+    lv_obj_align(reset_btn, LV_ALIGN_BOTTOM_MID, 0, -26);
+    ui_style_action_button(reset_btn);
+    lv_obj_add_event_cb(reset_btn, ui_error_reset_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *reset_lbl = lv_label_create(reset_btn);
+    lv_label_set_text(reset_lbl, "Reset");
+    ui_style_button_label(reset_lbl);
+    lv_obj_center(reset_lbl);
 }
 
 /**

@@ -629,6 +629,24 @@ const char *peripherals_manager_controller_status_to_string(peripherals_controll
 }
 
 /**
+ * @brief Override cached connection state for offline simulation.
+ *
+ * @details Updates the module-level status fields used by the UI so offline
+ * initialization can present simulated connectivity without running real Wi-Fi
+ * or controller transactions.
+ *
+ * @param[in] wifi_ready Simulated Wi-Fi readiness flag.
+ * @param[in] status Simulated controller status value.
+ */
+void peripherals_manager_set_connection_simulation(bool wifi_ready,
+                                                   peripherals_controller_status_t status)
+{
+    s_wifi_ready = wifi_ready;
+    s_last_wifi_ap_count = 0;
+    s_last_controller_status = status;
+}
+
+/**
  * @brief Request controller initialization over RS485 and decode the reply.
  *
  * @details Sends a compact `INIT?` probe to the external controller and waits
@@ -686,6 +704,52 @@ esp_err_t peripherals_manager_request_controller_init(peripherals_controller_sta
 
     s_last_controller_status = *out_status;
     ESP_LOGI(TAG, "Controller init response: %s", (const char *)rx_buf);
+    return ESP_OK;
+}
+
+/**
+ * @brief Request the controller software version over RS485.
+ *
+ * @details Sends a compact `VER?` probe and returns the received reply string
+ * for startup compatibility checks. Missing or empty replies are treated as a
+ * transport failure.
+ *
+ * @param[out] out_version Destination string buffer.
+ * @param[in] out_len Destination buffer length.
+ *
+ * @return
+ *      - ESP_OK: Query succeeded and a reply string was captured
+ *      - ESP_ERR_INVALID_ARG: Output buffer is invalid
+ *      - ESP_ERR_*: RS485 path could not be initialized or the query failed
+ */
+esp_err_t peripherals_manager_request_controller_version(char *out_version, size_t out_len)
+{
+    ESP_RETURN_ON_FALSE(out_version != NULL && out_len > 1U, ESP_ERR_INVALID_ARG, TAG, "Invalid version buffer");
+
+    if (!s_rs485_ready) {
+        rs485_init();
+    }
+    ESP_RETURN_ON_FALSE(s_rs485_ready, ESP_FAIL, TAG, "RS485 not ready");
+
+    static const char *request = "VER?\r\n";
+    uint8_t rx_buf[64] = {0};
+    out_version[0] = '\0';
+
+    uart_flush_input(RS485_UART_PORT);
+    ESP_RETURN_ON_FALSE(uart_write_bytes(RS485_UART_PORT, request, strlen(request)) >= 0,
+                        ESP_FAIL,
+                        TAG,
+                        "Controller version request send failed");
+
+    int rx_len = uart_read_bytes(RS485_UART_PORT,
+                                 rx_buf,
+                                 sizeof(rx_buf) - 1,
+                                 pdMS_TO_TICKS(RS485_CONTROLLER_TIMEOUT_MS));
+    ESP_RETURN_ON_FALSE(rx_len > 0, ESP_ERR_TIMEOUT, TAG, "Controller version request timed out");
+
+    rx_buf[rx_len] = '\0';
+    snprintf(out_version, out_len, "%s", (const char *)rx_buf);
+    ESP_LOGI(TAG, "Controller version response: %s", out_version);
     return ESP_OK;
 }
 

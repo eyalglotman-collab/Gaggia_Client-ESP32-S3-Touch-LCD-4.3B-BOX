@@ -7,6 +7,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <time.h>
 #include "esp_err.h"
 
@@ -160,6 +161,34 @@ esp_err_t peripherals_manager_init_wifi(void);
  *      - ESP_ERR_*: RS485 path could not be initialized or used
  */
 esp_err_t peripherals_manager_request_controller_init(peripherals_controller_status_t *out_status);
+
+/**
+ * @brief Request the remote controller software version string.
+ *
+ * @details Sends a compact `VER?` query over RS485 and copies the first textual
+ * reply into the caller buffer for compatibility checks during initialization.
+ *
+ * @param[out] out_version Destination string buffer.
+ * @param[in] out_len Destination buffer size in bytes.
+ *
+ * @return
+ *      - ESP_OK: Query completed and a version-like reply was captured
+ *      - ESP_ERR_INVALID_ARG: Output buffer is invalid
+ *      - ESP_ERR_*: RS485 transport path could not be initialized or used
+ */
+esp_err_t peripherals_manager_request_controller_version(char *out_version, size_t out_len);
+
+/**
+ * @brief Override the cached connection state for UI simulation flows.
+ *
+ * @details Lets the application force the visible Wi-Fi and controller status
+ * when startup is running in offline simulation mode.
+ *
+ * @param[in] wifi_ready Simulated Wi-Fi readiness flag.
+ * @param[in] status Simulated controller status.
+ */
+void peripherals_manager_set_connection_simulation(bool wifi_ready,
+                                                   peripherals_controller_status_t status);
 
 /**
  * @brief Get a snapshot of current connection-related state.
