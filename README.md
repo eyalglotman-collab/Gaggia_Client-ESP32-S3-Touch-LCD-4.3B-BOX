@@ -40,7 +40,7 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
   - re-check `main/lvgl_port.c` flush behavior against LVGL v9 buffer ownership rules and the Waveshare example
   - do not disable the 1-second heartbeat timer in `main/ui_screen.c` again as an isolation step; that test resulted in a totally white screen
   - compare panel timing values in `main/hardware_init.c` against the exact board example and test porch/burst changes one at a time
-  - after every flash, capture the first 10 seconds of logs and remember there is still an existing startup warning about flash-size mismatch
+  - after every flash, capture the first 20 seconds of logs and remember there is still an existing startup warning about flash-size mismatch
   - for waits that need user input, use `.\scripts\start_wait_sound.ps1` before asking and `.\scripts\stop_wait_sound.ps1` after the next user reply
 
 ## How to use example
@@ -98,10 +98,11 @@ We will get back to you as soon as possible.
 - `Y`: minor bug-fix and incremental functionality changes.
 - `Z`: sub-version increment for successful build+flash cycles.
 - After a successful build+flash, confirm whether to commit and bump `Z`.
-- After every flash, Codex must monitor the target and read at least the first 10 seconds of serial log output.
+- After every flash, Codex must monitor the target and read at least the first 20 seconds of serial log output.
 - The post-flash monitor attach command shall use ESP-IDF monitor without resetting the board again: `.\scripts\idfw.cmd monitor --port COM9 --no-reset`.
-- If ESP-IDF monitor fails on this Windows host with `PermissionError: [WinError 5] Access is denied`, use the local fallback capture helper instead: `powershell -ExecutionPolicy Bypass -File .\scripts\monitor_capture.ps1 -Port COM9 -DurationSec 10`.
-- Codex must verify that the first 10 seconds of post-flash logs contain no warnings or errors before reporting success.
+- If ESP-IDF monitor fails on this Windows host with `PermissionError: [WinError 5] Access is denied`, use the local fallback capture helper instead: `powershell -ExecutionPolicy Bypass -File .\scripts\monitor_capture.ps1 -Port COM9 -DurationSec 20`.
+- The fallback capture helper is a good monitoring method on this host because it attaches to the serial port without resetting the board and has already captured a valid startup log through full UI bring-up.
+- Codex must verify that the first 20 seconds of post-flash logs contain no warnings or errors before reporting success.
 - Maintain `DefectRegister.rtf` in the repository root as the running defect log.
 - For every defect found by Eyal or Codex, add a new entry to `DefectRegister.rtf`.
 - Each defect entry must include:
@@ -164,7 +165,7 @@ References:
 - `.\scripts\start_wait_sound.ps1`: also exits automatically if no `Code.exe` process remains, which covers VS Code shutdown.
 - `.\scripts\play_wait_sound.ps1`: one-shot WAV playback helper used by the repeating wait worker for reliable replay.
 - `.\scripts\stop_wait_sound.ps1`: stops the hidden wait-sound worker referenced by `.cache\wait_sound.pid`.
-- `.\scripts\monitor_capture.ps1`: fallback 10-second raw serial log capture that attaches to the port without resetting the board.
+- `.\scripts\monitor_capture.ps1`: fallback 20-second raw serial log capture that attaches to the port without resetting the board and is the approved monitoring method on this host when `idf.py monitor` fails.
 - `./scripts/import_waveshare_examples.sh <path>`: imports external Waveshare ESP-IDF demo examples.
 - `docs/REVISION_HISTORY.doc`: Word-compatible revision and latest-features tracker.
 - `EyalEspressoRequirements and Design.docx`: primary requirements and design template for the application.
@@ -208,3 +209,4 @@ References:
 - `.\scripts\idfw.cmd build`
 - `.\scripts\idfw.cmd -p COM9 flash monitor`
 - `.\scripts\idfw.cmd monitor --port COM9 --no-reset`
+- `powershell -ExecutionPolicy Bypass -File .\scripts\monitor_capture.ps1 -Port COM9 -DurationSec 20`
