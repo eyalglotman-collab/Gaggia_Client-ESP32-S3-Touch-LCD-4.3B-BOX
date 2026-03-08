@@ -1,11 +1,9 @@
 | Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C5 | ESP32-C6 | ESP32-C61 | ESP32-H2 | ESP32-H21 | ESP32-H4 | ESP32-P4 | ESP32-S2 | ESP32-S3 | Linux |
 | ----------------- | ----- | -------- | -------- | -------- | -------- | --------- | -------- | --------- | -------- | -------- | -------- | -------- | ----- |
 
-# Eyal_espresso_ESP32 Example
+# Eyal Espresso ESP32-S3 Project
 
-Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
-
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+ESP-IDF application for the Waveshare ESP32-S3-Touch-LCD-4.3B platform. This README is the active session handoff and workflow file for the repository.
 
 ## Session Release Notes
 
@@ -43,34 +41,33 @@ Starts a FreeRTOS task that logs "Eyal_espresso_ESP32" using ESP_LOG macros.
   - after every flash, capture the first 20 seconds of logs and remember there is still an existing startup warning about flash-size mismatch
   - for waits that need user input, use `.\scripts\start_wait_sound.ps1` before asking and `.\scripts\stop_wait_sound.ps1` after the next user reply
 
-## How to use example
+## Getting Started
 
-Follow detailed instructions provided specifically for this example.
-
-Select the instructions depending on Espressif chip installed on your development board:
+Use the standard ESP-IDF setup flow for ESP32-S3 targets:
 
 - [ESP32 Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/stable/get-started/index.html)
-- [ESP32-S2 Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s2/get-started/index.html)
+- [ESP32-S3 Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/index.html)
 
+## Project Layout
 
-## Example folder contents
-
-The project **Eyal_espresso_ESP32** contains one source file in C language [Eyal_espresso_ESP32_main.c](main/Eyal_espresso_ESP32_main.c). The file is located in folder [main](main).
+The repository contains one main ESP-IDF application at the root and a set of reference/demo projects under `ESP-IDF_DEMO_Files/`.
 
 ESP-IDF projects are built using CMake. The project build configuration is contained in `CMakeLists.txt` files that provide set of directives and instructions describing the project's source files and targets (executable, library, or both).
 
-Below is short explanation of remaining files in the project folder.
+Below is a short explanation of the primary top-level areas used in this repository.
 
-```
-├── CMakeLists.txt
-├── pytest_Eyal_espresso_ESP32.py      Python script used for automated testing
-├── main
-│   ├── CMakeLists.txt
-│   └── Eyal_espresso_ESP32_main.c
-└── README.md                  This is the file you are currently reading
+```text
+├── CMakeLists.txt                 Root ESP-IDF project definition
+├── main/                          Application source code
+├── components/                    Local ESP-IDF components
+├── docs/                          Requirements, design, revision, and hardware notes
+├── scripts/                       Local workflow/build/monitor helpers
+├── ESP-IDF_DEMO_Files/            Standalone reference/demo ESP-IDF projects
+├── VERSION                        Repository version in X.Y.Z format
+└── README.md                      Session handoff and workflow notes
 ```
 
-For more information on structure and contents of ESP-IDF projects, please refer to Section [Build System](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/build-system.html) of the ESP-IDF Programming Guide.
+For more information on ESP-IDF project structure, refer to the [Build System](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/build-system.html) section of the ESP-IDF Programming Guide.
 
 ## Troubleshooting
 
@@ -135,7 +132,6 @@ We will get back to you as soon as possible.
   - the repeat path was verified locally with a 20-second test interval before returning to the normal 3-minute rule
 - Important inconsistencies, mismatches, or stale notes discovered during work must be explicitly pointed out in project notes before they are forgotten.
 - UI spacing rule: keep at least `10` pixels of spacing between menus, buttons, and adjacent interactive controls unless a different spacing is explicitly required for a specific screen.
-  
 
 ### Codex and VS Code `PROBLEMS` (Session Rule)
 
