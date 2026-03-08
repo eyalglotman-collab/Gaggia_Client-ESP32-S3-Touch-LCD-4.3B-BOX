@@ -69,6 +69,7 @@ static const char *TAG = "peripherals";
 #define RTC_REG_CTRL1               (0x00)
 #define RTC_REG_SECONDS             (0x04)
 #define RTC_CTRL1_CAP_SEL           (0x01)
+#define RTC_SECONDS_OS              (0x80)
 
 /* TWAI wiring from demo defaults. */
 #define TWAI_TX_GPIO                (15)
@@ -260,6 +261,94 @@ static esp_err_t rtc_log_now(void)
 }
 
 /**
+ * @brief Read raw RTC calendar registers and report clock validity.
+ *
+ * @details Reads the seven active calendar bytes starting at the seconds
+ * register and exposes whether the oscillator stop flag indicates invalid
+ * retained time.
+ *
+ * @param[out] raw Destination byte buffer for the 7 RTC calendar registers.
+ * @param[out] time_valid Set to `true` when the oscillator stop flag is clear.
+ *
+ * @return
+ *      - ESP_OK: Raw RTC registers read successfully
+ *      - ESP_ERR_INVALID_ARG: Output pointers are NULL
+ *      - ESP_ERR_*: Underlying I2C transaction failed
+ */
+static esp_err_t rtc_read_raw_time(uint8_t raw[7], bool *time_valid)
+{
+    ESP_RETURN_ON_FALSE(raw != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid RTC raw buffer");
+    ESP_RETURN_ON_FALSE(time_valid != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid RTC validity buffer");
+
+    uint8_t reg = RTC_REG_SECONDS;
+    ESP_RETURN_ON_ERROR(hardware_i2c_write_read(RTC_ADDR, &reg, 1, raw, 7),
+                        TAG,
+                        "RTC read failed");
+
+    *time_valid = ((raw[0] & RTC_SECONDS_OS) == 0);
+    return ESP_OK;
+}
+
+/**
+ * @brief Validate and write a calendar time into the RTC registers.
+ *
+ * @details Checks the provided calendar fields for a reasonable range, encodes
+ * them into the PCF85063A register layout, and writes the seven active date
+ * and time registers in one transaction.
+ *
+ * @param[in] new_tm New calendar time to write.
+ *
+ * @return
+ *      - ESP_OK: RTC registers updated successfully
+ *      - ESP_ERR_INVALID_ARG: `new_tm` is NULL or contains invalid fields
+ *      - ESP_ERR_*: Underlying RTC write failed
+ */
+esp_err_t peripherals_manager_set_rtc_time(const struct tm *new_tm)
+{
+    ESP_RETURN_ON_FALSE(new_tm != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid RTC time input");
+    ESP_RETURN_ON_FALSE(new_tm->tm_sec >= 0 && new_tm->tm_sec <= 59, ESP_ERR_INVALID_ARG, TAG, "Invalid seconds");
+    ESP_RETURN_ON_FALSE(new_tm->tm_min >= 0 && new_tm->tm_min <= 59, ESP_ERR_INVALID_ARG, TAG, "Invalid minutes");
+    ESP_RETURN_ON_FALSE(new_tm->tm_hour >= 0 && new_tm->tm_hour <= 23, ESP_ERR_INVALID_ARG, TAG, "Invalid hours");
+    ESP_RETURN_ON_FALSE(new_tm->tm_mday >= 1 && new_tm->tm_mday <= 31, ESP_ERR_INVALID_ARG, TAG, "Invalid day");
+    ESP_RETURN_ON_FALSE(new_tm->tm_mon >= 0 && new_tm->tm_mon <= 11, ESP_ERR_INVALID_ARG, TAG, "Invalid month");
+    ESP_RETURN_ON_FALSE((new_tm->tm_year + 1900) >= 1970 && (new_tm->tm_year + 1900) <= 2069,
+                        ESP_ERR_INVALID_ARG,
+                        TAG,
+                        "Invalid year");
+
+    struct tm normalized_tm = *new_tm;
+    normalized_tm.tm_isdst = -1;
+    time_t stamp = mktime(&normalized_tm);
+    ESP_RETURN_ON_FALSE(stamp != (time_t)-1, ESP_ERR_INVALID_ARG, TAG, "Invalid RTC calendar");
+
+    uint8_t dt_data[8] = {
+        RTC_REG_SECONDS,
+        dec_to_bcd(normalized_tm.tm_sec),
+        dec_to_bcd(normalized_tm.tm_min),
+        dec_to_bcd(normalized_tm.tm_hour),
+        dec_to_bcd(normalized_tm.tm_mday),
+        dec_to_bcd(normalized_tm.tm_wday),
+        dec_to_bcd(normalized_tm.tm_mon + 1),
+        dec_to_bcd((normalized_tm.tm_year + 1900) - 1970),
+    };
+
+    ESP_RETURN_ON_ERROR(hardware_i2c_write_raw(RTC_ADDR, dt_data, sizeof(dt_data)),
+                        TAG,
+                        "RTC datetime set failed");
+
+    s_rtc_ready = true;
+    ESP_LOGI(TAG,
+             "RTC time updated to %04d-%02d-%02d %02d:%02d:%02d",
+             normalized_tm.tm_year + 1900,
+             normalized_tm.tm_mon + 1,
+             normalized_tm.tm_mday,
+             normalized_tm.tm_hour,
+             normalized_tm.tm_min,
+             normalized_tm.tm_sec);
+    return ESP_OK;
+}
+
+/**
  * @brief Read the current RTC calendar registers.
  *
  * @details Retrieves the active PCF85063A date/time register set and converts
@@ -278,11 +367,10 @@ esp_err_t peripherals_manager_get_rtc_time(struct tm *out_tm)
     ESP_RETURN_ON_FALSE(out_tm != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid RTC output buffer");
     ESP_RETURN_ON_FALSE(s_rtc_ready, ESP_ERR_INVALID_STATE, TAG, "RTC not initialized");
 
-    uint8_t reg = RTC_REG_SECONDS;
     uint8_t raw[7] = {0};
-    ESP_RETURN_ON_ERROR(hardware_i2c_write_read(RTC_ADDR, &reg, 1, raw, sizeof(raw)),
-                        TAG,
-                        "RTC read failed");
+    bool time_valid = false;
+    ESP_RETURN_ON_ERROR(rtc_read_raw_time(raw, &time_valid), TAG, "RTC read failed");
+    ESP_RETURN_ON_FALSE(time_valid, ESP_ERR_INVALID_STATE, TAG, "RTC time invalid");
 
     memset(out_tm, 0, sizeof(*out_tm));
     out_tm->tm_sec = bcd_to_dec(raw[0] & 0x7F);
@@ -298,12 +386,13 @@ esp_err_t peripherals_manager_get_rtc_time(struct tm *out_tm)
 }
 
 /**
- * @brief Initialize the RTC and set it to the current firmware timestamp.
+ * @brief Initialize the RTC and set it only when retained time is invalid.
  *
- * @details Configures the PCF85063A control register, writes the parsed
- * compiler build timestamp from the active build, and logs the resulting clock
- * value. This is the available "now" source for standalone boot without an
- * external RTC sync channel.
+ * @details Configures the PCF85063A control register, checks whether retained
+ * RTC time is valid, and only writes the parsed compiler build timestamp when
+ * the oscillator stop flag indicates the current clock contents are invalid.
+ * This preserves RTC-backed time across normal power cycles when backup power
+ * is present.
  *
  * @return
  *      - ESP_OK: RTC configured successfully
@@ -311,14 +400,7 @@ esp_err_t peripherals_manager_get_rtc_time(struct tm *out_tm)
  */
 esp_err_t peripherals_manager_init_rtc_now(void)
 {
-    struct tm build_tm = {0};
-    esp_err_t ret = parse_build_time(&build_tm);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "RTC build-time parse failed");
-        s_rtc_ready = false;
-        return ret;
-    }
-
+    esp_err_t ret;
     uint8_t ctrl1_data[2] = {
         RTC_REG_CTRL1,
         RTC_CTRL1_CAP_SEL,
@@ -330,17 +412,24 @@ esp_err_t peripherals_manager_init_rtc_now(void)
         return ret;
     }
 
-    uint8_t dt_data[8] = {
-        RTC_REG_SECONDS,
-        dec_to_bcd(build_tm.tm_sec),
-        dec_to_bcd(build_tm.tm_min),
-        dec_to_bcd(build_tm.tm_hour),
-        dec_to_bcd(build_tm.tm_mday),
-        dec_to_bcd(build_tm.tm_wday),
-        dec_to_bcd(build_tm.tm_mon + 1),
-        dec_to_bcd((build_tm.tm_year + 1900) - 1970),
-    };
-    ret = hardware_i2c_write_raw(RTC_ADDR, dt_data, sizeof(dt_data));
+    uint8_t raw[7] = {0};
+    bool time_valid = false;
+    ret = rtc_read_raw_time(raw, &time_valid);
+    if (ret == ESP_OK && time_valid) {
+        s_rtc_ready = true;
+        ESP_LOGI(TAG, "RTC retained time is valid; keeping current clock");
+        return rtc_log_now();
+    }
+
+    struct tm build_tm = {0};
+    ret = parse_build_time(&build_tm);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "RTC build-time parse failed");
+        s_rtc_ready = false;
+        return ret;
+    }
+
+    ret = peripherals_manager_set_rtc_time(&build_tm);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "RTC datetime set failed");
         s_rtc_ready = false;

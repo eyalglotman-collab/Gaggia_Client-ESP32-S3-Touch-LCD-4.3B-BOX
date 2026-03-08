@@ -31,6 +31,12 @@ typedef struct {
     lv_obj_t *page_status;
     lv_obj_t *page_runtime;
     lv_obj_t *clock_label;
+    lv_obj_t *clock_set_overlay;
+    lv_obj_t *clock_set_day_roller;
+    lv_obj_t *clock_set_month_roller;
+    lv_obj_t *clock_set_year_roller;
+    lv_obj_t *clock_set_hour_roller;
+    lv_obj_t *clock_set_minute_roller;
     lv_obj_t *content;
     lv_obj_t *brew_toggle_btn;
     lv_obj_t *steam_toggle_btn;
@@ -60,6 +66,12 @@ static ui_state_t s_ui = {
     .page_status = NULL,
     .page_runtime = NULL,
     .clock_label = NULL,
+    .clock_set_overlay = NULL,
+    .clock_set_day_roller = NULL,
+    .clock_set_month_roller = NULL,
+    .clock_set_year_roller = NULL,
+    .clock_set_hour_roller = NULL,
+    .clock_set_minute_roller = NULL,
     .content = NULL,
     .brew_toggle_btn = NULL,
     .steam_toggle_btn = NULL,
@@ -92,6 +104,8 @@ static ui_state_t s_ui = {
 #define UI_COLOR_ACCENT        0x38BDF8
 #define UI_COLOR_ACCENT_ALT    0x0EA5E9
 #define UI_COLOR_SUCCESS       0x22C55E
+#define UI_CLOCK_SET_YEAR_START (2020)
+#define UI_CLOCK_SET_YEAR_END   (2045)
 #define UI_TABVIEW_HEIGHT      (432)
 #define UI_CLOCK_BAR_HEIGHT    (48)
 
@@ -278,6 +292,211 @@ static void ui_update_tab_style(void)
         lv_obj_set_style_text_color(btn, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_PRESSED);
         lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
     }
+}
+
+/**
+ * @brief Populate a roller with a numeric range.
+ *
+ * @details Generates newline-separated numeric labels so LVGL rollers can show
+ * simple day/month/year/hour/minute selections.
+ *
+ * @param[in] roller Destination LVGL roller object.
+ * @param[in] start_value Inclusive first value.
+ * @param[in] end_value Inclusive last value.
+ * @param[in] width_digits Minimum digits to print for each option.
+ */
+static void ui_set_roller_numeric_options(lv_obj_t *roller, int start_value, int end_value, int width_digits)
+{
+    char options[1024] = {0};
+    size_t used = 0;
+
+    for (int value = start_value; value <= end_value; value++) {
+        int written = snprintf(options + used,
+                               sizeof(options) - used,
+                               (value == start_value) ? "%0*d" : "\n%0*d",
+                               width_digits,
+                               value);
+        if (written <= 0 || (size_t)written >= (sizeof(options) - used)) {
+            break;
+        }
+        used += (size_t)written;
+    }
+
+    lv_roller_set_options(roller, options, LV_ROLLER_MODE_NORMAL);
+    lv_roller_set_visible_row_count(roller, 3);
+}
+
+/**
+ * @brief Create a labeled time-selection roller.
+ *
+ * @details Builds a compact label plus roller pair used by the clock-setting
+ * overlay.
+ *
+ * @param[in] parent Overlay panel parent object.
+ * @param[in] title Section label text.
+ * @param[in] x Left offset within the panel.
+ * @param[in] y Top offset within the panel.
+ *
+ * @return Created LVGL roller object.
+ */
+static lv_obj_t *ui_create_clock_roller(lv_obj_t *parent, const char *title, int x, int y)
+{
+    lv_obj_t *label = lv_label_create(parent);
+    lv_label_set_text(label, title);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, x, y);
+
+    lv_obj_t *roller = lv_roller_create(parent);
+    lv_obj_set_size(roller, 120, 124);
+    lv_obj_align(roller, LV_ALIGN_TOP_LEFT, x, y + 28);
+    lv_obj_set_style_bg_color(roller, lv_color_hex(UI_COLOR_CARD_ALT), LV_PART_MAIN);
+    lv_obj_set_style_text_color(roller, lv_color_hex(UI_COLOR_TEXT), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(roller, lv_color_hex(UI_COLOR_ACCENT_ALT), LV_PART_SELECTED);
+    lv_obj_set_style_text_color(roller, lv_color_hex(0xFFFFFF), LV_PART_SELECTED);
+    lv_obj_set_style_border_color(roller, lv_color_hex(UI_COLOR_BORDER), LV_PART_MAIN);
+    lv_obj_set_style_border_width(roller, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(roller, 14, LV_PART_MAIN);
+    return roller;
+}
+
+/**
+ * @brief Close the clock-setting overlay.
+ *
+ * @details Deletes the temporary full-screen time-picker UI and clears the
+ * stored widget pointers.
+ */
+static void ui_close_clock_overlay(void)
+{
+    if (s_ui.clock_set_overlay) {
+        lv_obj_del(s_ui.clock_set_overlay);
+    }
+
+    s_ui.clock_set_overlay = NULL;
+    s_ui.clock_set_day_roller = NULL;
+    s_ui.clock_set_month_roller = NULL;
+    s_ui.clock_set_year_roller = NULL;
+    s_ui.clock_set_hour_roller = NULL;
+    s_ui.clock_set_minute_roller = NULL;
+}
+
+/**
+ * @brief Apply the user-selected clock value to the RTC.
+ *
+ * @details Reads the active roller selections, converts them into a calendar
+ * time, writes the new value into the RTC, then closes the overlay on success.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_clock_set_done_event_cb(lv_event_t *e)
+{
+    (void)e;
+
+    if (!s_ui.clock_set_day_roller ||
+        !s_ui.clock_set_month_roller ||
+        !s_ui.clock_set_year_roller ||
+        !s_ui.clock_set_hour_roller ||
+        !s_ui.clock_set_minute_roller) {
+        return;
+    }
+
+    struct tm new_tm = {0};
+    new_tm.tm_mday = lv_roller_get_selected(s_ui.clock_set_day_roller) + 1;
+    new_tm.tm_mon = lv_roller_get_selected(s_ui.clock_set_month_roller);
+    new_tm.tm_year = (UI_CLOCK_SET_YEAR_START + lv_roller_get_selected(s_ui.clock_set_year_roller)) - 1900;
+    new_tm.tm_hour = lv_roller_get_selected(s_ui.clock_set_hour_roller);
+    new_tm.tm_min = lv_roller_get_selected(s_ui.clock_set_minute_roller);
+    new_tm.tm_sec = 0;
+    new_tm.tm_isdst = -1;
+
+    esp_err_t ret = peripherals_manager_set_rtc_time(&new_tm);
+    if (ret == ESP_OK) {
+        ui_update_clock_bar();
+        ui_close_clock_overlay();
+        ESP_LOGI(TAG, "RTC updated from Settings page");
+    } else {
+        ESP_LOGW(TAG, "RTC update failed from Settings page: %s", esp_err_to_name(ret));
+    }
+}
+
+/**
+ * @brief Open the dedicated clock-setting overlay from the Settings tab.
+ *
+ * @details Builds a full-screen modal UI with rollers for date and time
+ * selection and a bottom `Done` action that writes the chosen value to the RTC.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_settings_set_clock_event_cb(lv_event_t *e)
+{
+    (void)e;
+
+    ui_close_clock_overlay();
+
+    struct tm rtc_tm = {0};
+    bool have_rtc_time = (peripherals_manager_get_rtc_time(&rtc_tm) == ESP_OK);
+    if (!have_rtc_time) {
+        rtc_tm.tm_mday = 1;
+        rtc_tm.tm_mon = 0;
+        rtc_tm.tm_year = 2026 - 1900;
+        rtc_tm.tm_hour = 12;
+        rtc_tm.tm_min = 0;
+    }
+
+    lv_obj_t *scr = lv_screen_active();
+    s_ui.clock_set_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_ui.clock_set_overlay);
+    lv_obj_set_size(s_ui.clock_set_overlay, 800, 480);
+    lv_obj_set_style_bg_color(s_ui.clock_set_overlay, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(s_ui.clock_set_overlay, LV_OPA_COVER, 0);
+
+    lv_obj_t *panel = lv_obj_create(s_ui.clock_set_overlay);
+    lv_obj_set_size(panel, 760, 440);
+    lv_obj_center(panel);
+    ui_style_card(panel, UI_COLOR_PANEL);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(panel);
+    lv_label_set_text(title, "Set Clock");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 16);
+
+    s_ui.clock_set_day_roller = ui_create_clock_roller(panel, "Day", 20, 76);
+    s_ui.clock_set_month_roller = ui_create_clock_roller(panel, "Month", 164, 76);
+    s_ui.clock_set_year_roller = ui_create_clock_roller(panel, "Year", 308, 76);
+    s_ui.clock_set_hour_roller = ui_create_clock_roller(panel, "Hour", 492, 76);
+    s_ui.clock_set_minute_roller = ui_create_clock_roller(panel, "Minute", 620, 76);
+
+    ui_set_roller_numeric_options(s_ui.clock_set_day_roller, 1, 31, 2);
+    ui_set_roller_numeric_options(s_ui.clock_set_month_roller, 1, 12, 2);
+    ui_set_roller_numeric_options(s_ui.clock_set_year_roller, UI_CLOCK_SET_YEAR_START, UI_CLOCK_SET_YEAR_END, 4);
+    ui_set_roller_numeric_options(s_ui.clock_set_hour_roller, 0, 23, 2);
+    ui_set_roller_numeric_options(s_ui.clock_set_minute_roller, 0, 59, 2);
+
+    lv_roller_set_selected(s_ui.clock_set_day_roller, rtc_tm.tm_mday - 1, LV_ANIM_OFF);
+    lv_roller_set_selected(s_ui.clock_set_month_roller, rtc_tm.tm_mon, LV_ANIM_OFF);
+    int year_index = (rtc_tm.tm_year + 1900) - UI_CLOCK_SET_YEAR_START;
+    if (year_index < 0) {
+        year_index = 0;
+    }
+    if (year_index > (UI_CLOCK_SET_YEAR_END - UI_CLOCK_SET_YEAR_START)) {
+        year_index = UI_CLOCK_SET_YEAR_END - UI_CLOCK_SET_YEAR_START;
+    }
+    lv_roller_set_selected(s_ui.clock_set_year_roller, year_index, LV_ANIM_OFF);
+    lv_roller_set_selected(s_ui.clock_set_hour_roller, rtc_tm.tm_hour, LV_ANIM_OFF);
+    lv_roller_set_selected(s_ui.clock_set_minute_roller, rtc_tm.tm_min, LV_ANIM_OFF);
+
+    lv_obj_t *done_btn = lv_button_create(panel);
+    lv_obj_set_size(done_btn, 720, 58);
+    lv_obj_align(done_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
+    ui_style_action_button(done_btn);
+    lv_obj_add_event_cb(done_btn, ui_clock_set_done_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *done_lbl = lv_label_create(done_btn);
+    lv_label_set_text(done_lbl, "Done");
+    ui_style_button_label(done_lbl);
+    lv_obj_center(done_lbl);
 }
 
 /**
@@ -710,9 +929,20 @@ static void ui_build_page_settings(void)
                                                              302,
                                                              ui_settings_backlight_toggle_event_cb);
 
+    lv_obj_t *set_clock_btn = lv_button_create(s_ui.content);
+    lv_obj_set_size(set_clock_btn, 320, 58);
+    lv_obj_align(set_clock_btn, LV_ALIGN_TOP_LEFT, 20, 372);
+    ui_style_action_button(set_clock_btn);
+    lv_obj_add_event_cb(set_clock_btn, ui_settings_set_clock_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *set_clock_lbl = lv_label_create(set_clock_btn);
+    lv_label_set_text(set_clock_lbl, "Set Clock");
+    ui_style_button_label(set_clock_lbl);
+    lv_obj_center(set_clock_lbl);
+
     lv_obj_t *reboot_btn = lv_button_create(s_ui.content);
     lv_obj_set_size(reboot_btn, 320, 58);
-    lv_obj_align(reboot_btn, LV_ALIGN_TOP_LEFT, 20, 372);
+    lv_obj_align(reboot_btn, LV_ALIGN_TOP_RIGHT, -20, 372);
     ui_style_action_button(reboot_btn);
     lv_obj_add_event_cb(reboot_btn, ui_settings_reboot_client_event_cb, LV_EVENT_CLICKED, NULL);
 
@@ -903,6 +1133,12 @@ void ui_screen_create(void)
     s_ui.root = NULL;
     s_ui.init_status_label = NULL;
     s_ui.tabview = NULL;
+    s_ui.clock_set_overlay = NULL;
+    s_ui.clock_set_day_roller = NULL;
+    s_ui.clock_set_month_roller = NULL;
+    s_ui.clock_set_year_roller = NULL;
+    s_ui.clock_set_hour_roller = NULL;
+    s_ui.clock_set_minute_roller = NULL;
     s_ui.content = NULL;
     s_ui.page_status = NULL;
     s_ui.page_runtime = NULL;

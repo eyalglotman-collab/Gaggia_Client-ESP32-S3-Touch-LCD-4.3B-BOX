@@ -28,9 +28,21 @@
       }
     },
     {
-      "label": "ESP-IDF: Flash Monitor (COM9)",
+      "label": "ESP-IDF: Flash (COM9)",
       "type": "shell",
-      "command": ".\\scripts\\idfw.cmd -p COM9 flash monitor",
+      "command": ".\\scripts\\idfw.cmd -p COM9 flash",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true,
+        "revealProblems": "onProblem"
+      }
+    },
+    {
+      "label": "ESP-IDF: Monitor (COM9, no reset)",
+      "type": "shell",
+      "command": ".\\scripts\\idfw.cmd monitor --port COM9 --no-reset",
       "problemMatcher": [],
       "presentation": {
         "reveal": "always",

@@ -57,12 +57,12 @@ esp_err_t peripherals_manager_start(void);
 esp_err_t peripherals_manager_init_tf_card(void);
 
 /**
- * @brief Initialize the RTC and set it to the current firmware timestamp.
+ * @brief Initialize the RTC and only set it when retained time is invalid.
  *
- * @details Configures the PCF85063A control register, parses the C compiler
- * `__DATE__` and `__TIME__` macros from the current build, writes that
- * timestamp into the RTC, and logs the resulting clock value. This is the
- * closest available "now" without adding an external time-sync source.
+ * @details Configures the PCF85063A control register, checks whether the RTC
+ * still holds a valid retained time, and only falls back to the C compiler
+ * `__DATE__` and `__TIME__` macros when the clock contents are invalid. This
+ * preserves RTC-backed time across power cycles when backup power is present.
  *
  * @return
  *      - ESP_OK: RTC initialized and timestamp written successfully
@@ -85,6 +85,22 @@ esp_err_t peripherals_manager_init_rtc_now(void);
  *      - ESP_ERR_*: Underlying RTC read failed
  */
 esp_err_t peripherals_manager_get_rtc_time(struct tm *out_tm);
+
+/**
+ * @brief Write a new calendar time into the RTC.
+ *
+ * @details Encodes a caller-provided `struct tm` into the PCF85063A register
+ * format, writes the updated calendar values, and marks the RTC as ready for
+ * subsequent reads.
+ *
+ * @param[in] new_tm New calendar time to store in the RTC.
+ *
+ * @return
+ *      - ESP_OK: RTC time written successfully
+ *      - ESP_ERR_INVALID_ARG: `new_tm` is NULL or contains out-of-range fields
+ *      - ESP_ERR_*: Underlying RTC write failed
+ */
+esp_err_t peripherals_manager_set_rtc_time(const struct tm *new_tm);
 
 /**
  * @brief Report whether the TF card is currently mounted and ready.
