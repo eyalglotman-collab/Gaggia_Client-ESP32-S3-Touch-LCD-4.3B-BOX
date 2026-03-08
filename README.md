@@ -166,6 +166,7 @@ References:
 - `./scripts/import_waveshare_examples.sh <path>`: imports external Waveshare ESP-IDF demo examples.
 - `docs/REVISION_HISTORY.doc`: Word-compatible revision and latest-features tracker.
 - `EyalEspressoRequirements and Design.docx`: primary requirements and design template for the application.
+- When updating `EyalEspressoRequirements and Design.docx` programmatically, use an extract/edit/repack flow for the OpenXML container (`.docx` is a ZIP package) instead of relying on in-place entry replacement on this host.
 
 ## ESP32-S3-4.3B Setup Notes
 
