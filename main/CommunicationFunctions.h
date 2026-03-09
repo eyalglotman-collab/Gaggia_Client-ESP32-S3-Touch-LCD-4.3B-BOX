@@ -1,0 +1,126 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Eyal Espresso
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "esp_err.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * @brief Low-level Wi-Fi transport state.
+ *
+ * @details Tracks the transport-side workflow used to prepare the ESP32-S3 for
+ * TCP communication with the remote Wi-Fi server. The steady-state connected
+ * condition is represented by the `CONNECT` state together with a live TCP
+ * socket in the runtime snapshot.
+ */
+typedef enum {
+    COMMUNICATION_STATE_RESET = 0,
+    COMMUNICATION_STATE_INITIALIZE,
+    COMMUNICATION_STATE_CONNECT,
+    COMMUNICATION_STATE_DISCONNECT,
+    COMMUNICATION_STATE_ERROR,
+} communication_state_t;
+
+/**
+ * @brief Defaultable Wi-Fi server communication settings.
+ *
+ * @details Stores the station credentials and remote TCP endpoint required for
+ * the low-level transport task. The task uses these values when a reset request
+ * restarts the communication workflow.
+ */
+typedef struct {
+    char wifi_ssid[33];
+    char wifi_password[65];
+    char server_ip[16];
+    uint16_t server_port;
+    uint32_t wifi_connect_timeout_ms;
+    uint32_t tcp_connect_timeout_ms;
+    uint32_t keep_alive_period_ms;
+} communication_config_t;
+
+/**
+ * @brief Snapshot of current communication-task runtime state.
+ *
+ * @details Provides a UI-friendly summary of the current low-level state,
+ * active defaults, TCP/Wi-Fi link readiness, and the latest keep-alive/error
+ * bookkeeping maintained by the communication task.
+ */
+typedef struct {
+    communication_state_t state;
+    communication_config_t config;
+    bool wifi_has_ip;
+    bool tcp_connected;
+    bool reset_requested;
+    uint32_t live_integer;
+    int32_t wifi_rssi;
+    char local_ip[16];
+    char last_error[96];
+} communication_snapshot_t;
+
+/**
+ * @brief Initialize the communication task and load default settings.
+ *
+ * @details Creates the background task that owns the low-level Wi-Fi/TCP state
+ * machine. The task starts in the `DISCONNECT` state until the operator presses
+ * `Reset Connection`.
+ *
+ * @return
+ *      - ESP_OK: Module initialized successfully or was already initialized
+ *      - ESP_ERR_NO_MEM: Task or synchronization primitives could not be created
+ */
+esp_err_t communication_functions_init(void);
+
+/**
+ * @brief Request a transport reset and reconnect cycle.
+ *
+ * @details Schedules an asynchronous `reset -> initialize -> connect` sequence.
+ * The actual Wi-Fi and TCP work is performed by the background task.
+ */
+void communication_functions_request_reset(void);
+
+/**
+ * @brief Request a transport disconnect cycle.
+ *
+ * @details Schedules an asynchronous transition into the `DISCONNECT` state so
+ * sockets are closed and the current Wi-Fi station session is released.
+ */
+void communication_functions_request_disconnect(void);
+
+/**
+ * @brief Read the latest communication snapshot.
+ *
+ * @details Copies the current low-level transport snapshot for UI and logging
+ * use without exposing internal mutable module state.
+ *
+ * @param[out] out_snapshot Destination snapshot structure.
+ *
+ * @return
+ *      - ESP_OK: Snapshot copied successfully
+ *      - ESP_ERR_INVALID_ARG: `out_snapshot` is NULL
+ */
+esp_err_t communication_functions_get_snapshot(communication_snapshot_t *out_snapshot);
+
+/**
+ * @brief Convert a communication state enum into printable text.
+ *
+ * @details Returns a constant string suitable for status labels and logs.
+ *
+ * @param[in] state Communication state value.
+ *
+ * @return Constant state name string.
+ */
+const char *communication_functions_state_to_string(communication_state_t state);
+
+#ifdef __cplusplus
+}
+#endif

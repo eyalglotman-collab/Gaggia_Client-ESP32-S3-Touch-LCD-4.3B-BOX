@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.4\par
+0.2.6\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -32,6 +32,7 @@
 - Windows monitoring workflow now includes a fallback raw serial capture helper and separate flash/monitor tasks when `idf.py monitor` fails on this host.\par
 - Bottom clock bar now uses a larger font and full date-time format with weekday, month, day, year, and seconds.\par
 - Settings page now includes a symmetric two-column action layout and a `Connection Info` overlay with live IP/port/telemetry text.\par
+- Connection Info now includes a `Reset Connection` action backed by a dedicated low-level Wi-Fi/TCP communication state machine with default server settings and live runtime status.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par
@@ -210,6 +211,14 @@
 - Version: 0.2.5\par
 - Summary: Added staged initialization flow with offline/online selection, failure handling, and a System Constants viewer.\par
 - Notes: `main/ui_screen.*` now starts with an `Offline Mode?` prompt, shows staged initialization progress, exposes failure-confirm and error/reset flows, and adds a Settings `System Constants` viewer plus initialization layout cleanup. `main/Eyal_espresso_ESP32_main.c` now runs a reusable staged initialization sequence with offline simulation, controller/version checks, and re-entry support. `main/peripherals_manager.*` now supports simulated connection state and controller-version requests for startup checks.\par
+- Resolved Defects:\par
+  - None in this release.\par
+\par
+\b 2026-03-09\b0\par
+- Version: 0.2.6\par
+- Timestamp: 2026-03-09 14:02:36\par
+- Summary: Added the low-level Wi-Fi/TCP communication module and wired `Reset Connection` into the Connection Info screen.\par
+- Notes: Added `main/CommunicationFunctions.*` to own default Wi-Fi server settings, a `reset / initialize / connect / disconnect / error` state machine, TCP keep-alive progression, and a runtime snapshot API. `main/ui_screen.c` now shows a top `Reset Connection` button and live low-level communication details in the Connection Info overlay, while `main/Eyal_espresso_ESP32_main.c` initializes the communication task during staged startup. Verified with successful `idf.py build`, flash to `COM9`, and 20-second post-flash serial log capture.\par
 - Resolved Defects:\par
   - None in this release.\par
 \par

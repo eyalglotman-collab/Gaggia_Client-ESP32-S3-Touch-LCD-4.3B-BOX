@@ -20,6 +20,7 @@
 #include "lvgl_port.h"
 #include "ui_screen.h"
 #include "hardware_init.h"
+#include "CommunicationFunctions.h"
 #include "peripherals_manager.h"
 #include "system_constants.h"
 
@@ -220,6 +221,15 @@ static bool espresso_run_client_initialization_sequence(ui_init_mode_t init_mode
     } else {
         ESP_LOGW(TAG, "System constants load failed: %s", esp_err_to_name(constants_ret));
         return espresso_handle_init_failure("SystemConstants DB", esp_err_to_name(constants_ret));
+    }
+
+    ui_set_init_status_and_yield("Preparing communication state machine...");
+    esp_err_t comm_ret = communication_functions_init();
+    if (comm_ret == ESP_OK) {
+        ESP_LOGI(TAG, "Communication state machine initialized successfully");
+    } else {
+        ESP_LOGW(TAG, "Communication state machine init failed: %s", esp_err_to_name(comm_ret));
+        return espresso_handle_init_failure("Communication state machine", esp_err_to_name(comm_ret));
     }
 
     peripherals_controller_status_t controller_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
