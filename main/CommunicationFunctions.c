@@ -22,6 +22,7 @@
 #include "freertos/task.h"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
+#include "peripherals_manager.h"
 
 #define COMMUNICATION_TASK_NAME              "comm_link"
 #define COMMUNICATION_TASK_STACK_BYTES       (4096)
@@ -68,6 +69,31 @@ static communication_context_t s_comm = {
     .state_started_us = 0,
     .last_keep_alive_us = 0,
 };
+
+/**
+ * @brief Ensure the underlying Wi-Fi hardware stack is available.
+ *
+ * @details Lazily brings up the ESP-IDF station stack through the shared
+ * peripheral manager so the communication state machine can be entered even
+ * when the application originally booted in offline mode.
+ *
+ * @return
+ *      - ESP_OK: Wi-Fi hardware and driver stack are ready
+ *      - ESP_ERR_*: Underlying Wi-Fi bring-up failed
+ */
+static esp_err_t communication_ensure_wifi_stack_ready_locked(void)
+{
+    esp_err_t ret = peripherals_manager_init_wifi();
+    if (ret == ESP_OK) {
+        return ESP_OK;
+    }
+
+    snprintf(s_comm.snapshot.last_error,
+             sizeof(s_comm.snapshot.last_error),
+             "Wi-Fi HW init failed (%s)",
+             esp_err_to_name(ret));
+    return ret;
+}
 
 /**
  * @brief Format the last local IP address into the shared snapshot.
@@ -247,6 +273,11 @@ static void communication_start_reset_locked(void)
  */
 static esp_err_t communication_begin_initialize_locked(void)
 {
+    esp_err_t ret = communication_ensure_wifi_stack_ready_locked();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
     wifi_config_t wifi_cfg = {0};
     strncpy((char *)wifi_cfg.sta.ssid,
             s_comm.snapshot.config.wifi_ssid,
@@ -258,7 +289,7 @@ static esp_err_t communication_begin_initialize_locked(void)
     wifi_cfg.sta.pmf_cfg.capable = true;
     wifi_cfg.sta.pmf_cfg.required = false;
 
-    esp_err_t ret = esp_wifi_set_mode(WIFI_MODE_STA);
+    ret = esp_wifi_set_mode(WIFI_MODE_STA);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -370,6 +401,16 @@ static void communication_service_keep_alive_locked(void)
  */
 static void communication_begin_scan_locked(void)
 {
+    esp_err_t ret = communication_ensure_wifi_stack_ready_locked();
+    if (ret != ESP_OK) {
+        s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
+        snprintf(s_comm.snapshot.scan_results,
+                 sizeof(s_comm.snapshot.scan_results),
+                 "Scan unavailable: %s",
+                 esp_err_to_name(ret));
+        return;
+    }
+
     wifi_scan_config_t scan_cfg = {
         .ssid = NULL,
         .bssid = NULL,
@@ -384,7 +425,7 @@ static void communication_begin_scan_locked(void)
              sizeof(s_comm.snapshot.scan_results),
              "Scanning for devices...\nPlease wait 10 seconds.");
 
-    esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);
+    ret = esp_wifi_scan_start(&scan_cfg, false);
     if (ret != ESP_OK) {
         s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
         snprintf(s_comm.snapshot.scan_results,
@@ -440,7 +481,8 @@ static void communication_complete_scan_locked(void)
     if (total_ap_count == 0 || ap_count == 0) {
         snprintf(s_comm.snapshot.scan_results,
                  sizeof(s_comm.snapshot.scan_results),
-                 "No devices found...");
+                 "Scan complete in %u ms.\nNo devices were discovered.",
+                 (unsigned)s_comm.snapshot.scan_duration_ms);
         return;
     }
 
@@ -681,9 +723,7 @@ void communication_functions_request_scan(void)
         s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_REQUESTED;
         s_comm.snapshot.scan_duration_ms = 0;
         s_comm.snapshot.scan_device_count = 0;
-        snprintf(s_comm.snapshot.scan_results,
-                 sizeof(s_comm.snapshot.scan_results),
-                 "Scanning for devices...\nPlease wait 10 seconds.");
+        s_comm.snapshot.scan_results[0] = '\0';
         xSemaphoreGive(s_comm.mutex);
     }
 }

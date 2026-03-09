@@ -123,8 +123,10 @@ bool ui_screen_take_reinit_request(void);
 /**
  * @brief Synchronize the Settings backlight control with runtime state.
  *
- * @details Keeps the Settings-page backlight control visually consistent with
- * runtime state changes such as automatic screen-off.
+ * @details The Settings control is a momentary push button, so there is no
+ * persistent checked state to synchronize. The hook is kept so runtime
+ * backlight logic can call a single UI function without needing to know the
+ * current control style.
  *
  * @param[in] enabled `true` when the backlight is on, `false` when off.
  */

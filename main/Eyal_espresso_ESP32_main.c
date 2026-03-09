@@ -21,7 +21,6 @@
 #include "ui_screen.h"
 #include "hardware_init.h"
 #include "CommunicationFunctions.h"
-#include "EspLogBuffer.h"
 #include "peripherals_manager.h"
 #include "system_constants.h"
 
@@ -328,7 +327,6 @@ static esp_err_t lcd_and_touch_init(esp_lcd_panel_handle_t *lcd_handle,
  */
 void app_main(void)
 {
-    (void)esp_log_buffer_init();
     ESP_LOGI(TAG, "Eyal_espresso_ESP32!");
     esp_log_level_set("GT911", ESP_LOG_ERROR);
 
