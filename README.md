@@ -125,6 +125,8 @@ We will get back to you as soon as possible.
   - entry to `error`, `reset`, and `initialize`
 - If Eyal edits `.docx` files manually, Codex must review those edits and update the text-based files under `docs/architecture/` so future LLM work remains aligned.
 - If Codex updates the text-based architecture files first, Codex must also update the corresponding `.docx` documents before considering the documentation change complete.
+- Once Eyal establishes manual formatting in a `.docx` document, future `.docx` edits must preserve the existing headings, styles, bullets, numbering, fonts, tables, figure placement, and general layout unless Eyal explicitly asks to change them.
+- After manual formatting exists, do not replace the entire `.docx` as a regeneration strategy for normal documentation updates. Prefer targeted in-place OpenXML edits that preserve the existing presentation layer.
 - Repository version is tracked in root `VERSION` with format `X.Y.Z`.
 - `X`: major functionality/refactoring changes.
 - `Y`: minor bug-fix and incremental functionality changes.
