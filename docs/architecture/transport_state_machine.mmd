@@ -1,8 +1,8 @@
 stateDiagram-v2
     [*] --> reset
     reset --> initialize: reset complete / self-test passed
-    initialize --> connect: configuration valid / transport prepared
-    initialize --> error: invalid config or bring-up failure
+    initialize --> connect: configuration valid / SSID visible / transport prepared
+    initialize --> error: invalid config, Wi-Fi HW bring-up failure, SSID visibility failure, or association timeout
     connect --> disconnect: intentional disconnect command
     connect --> error: CRC fault, timeout, malformed frame, USB loss, Wi-Fi loss, TCP loss
     disconnect --> reset: controlled shutdown complete
@@ -29,4 +29,12 @@ stateDiagram-v2
         COMMUNICATION_SCAN_STATE_IN_PROGRESS --> COMMUNICATION_SCAN_STATE_ERROR: scan read failure
         COMMUNICATION_SCAN_STATE_COMPLETE --> COMMUNICATION_SCAN_STATE_REQUESTED: new scan request
         COMMUNICATION_SCAN_STATE_ERROR --> COMMUNICATION_SCAN_STATE_REQUESTED: retry scan request
+    }
+
+    state "client_connect_precheck" as client_precheck {
+        [*] --> wifi_hw_ready
+        wifi_hw_ready --> ssid_visible: blocking AP visibility scan found configured SSID
+        wifi_hw_ready --> precheck_error: Wi-Fi hardware bring-up failure
+        ssid_visible --> [*]: esp_wifi_set_config and esp_wifi_connect may proceed
+        ssid_visible --> precheck_error: configured SSID empty or not visible
     }

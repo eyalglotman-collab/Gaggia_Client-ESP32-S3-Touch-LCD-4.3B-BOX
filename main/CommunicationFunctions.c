@@ -8,6 +8,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
@@ -25,7 +26,7 @@
 #include "peripherals_manager.h"
 
 #define COMMUNICATION_TASK_NAME              "comm_link"
-#define COMMUNICATION_TASK_STACK_BYTES       (4096)
+#define COMMUNICATION_TASK_STACK_BYTES       (16384)
 #define COMMUNICATION_TASK_PRIORITY          (5)
 #define COMMUNICATION_STEP_PERIOD_MS         (100)
 #define COMMUNICATION_DEFAULT_WIFI_SSID      "EyalSimulatorAP"
@@ -37,6 +38,7 @@
 #define COMMUNICATION_DEFAULT_KEEPALIVE_MS   (100)
 #define COMMUNICATION_SCAN_WINDOW_MS         (10000)
 #define COMMUNICATION_SCAN_MAX_APS           (10)
+#define COMMUNICATION_CONNECT_PRECHECK_APS   (16)
 
 static const char *TAG = "CommunicationFunctions";
 
@@ -175,6 +177,119 @@ static void communication_reset_scan_locked(void)
 }
 
 /**
+ * @brief Allocate AP-record storage for scan processing.
+ *
+ * @details Moves scan result storage off the communication-task stack so
+ * button-triggered Wi-Fi scans and SSID prechecks cannot overflow the
+ * `comm_link` task stack during deep ESP-IDF Wi-Fi call chains.
+ *
+ * @param[in] requested_count Number of records requested.
+ *
+ * @return Heap-allocated AP record buffer or `NULL` on allocation failure.
+ */
+static wifi_ap_record_t *communication_alloc_ap_records(size_t requested_count)
+{
+    if (requested_count == 0U) {
+        return NULL;
+    }
+
+    return calloc(requested_count, sizeof(wifi_ap_record_t));
+}
+
+/**
+ * @brief Check whether the configured target SSID is visible before association.
+ *
+ * @details Runs a short blocking scan on the background communication task to
+ * avoid repeated association attempts against an AP that is not currently
+ * visible. This keeps the module in a deterministic error state with a clear
+ * message instead of relying on repeated driver warnings alone.
+ *
+ * @return
+ *      - ESP_OK: Configured SSID was found in the current scan results
+ *      - ESP_ERR_INVALID_STATE: No SSID is configured
+ *      - ESP_ERR_NOT_FOUND: Configured SSID is not currently visible
+ *      - ESP_ERR_*: Wi-Fi scan path failed
+ */
+static esp_err_t communication_validate_target_ap_visible_locked(void)
+{
+    if (s_comm.snapshot.config.wifi_ssid[0] == '\0') {
+        snprintf(s_comm.snapshot.last_error,
+                 sizeof(s_comm.snapshot.last_error),
+                 "Configured SSID is empty");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    wifi_scan_config_t scan_cfg = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = true,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+    };
+
+    esp_err_t ret = esp_wifi_scan_start(&scan_cfg, true);
+    if (ret != ESP_OK) {
+        snprintf(s_comm.snapshot.last_error,
+                 sizeof(s_comm.snapshot.last_error),
+                 "AP visibility scan failed (%s)",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+
+    uint16_t total_ap_count = 0;
+    ret = esp_wifi_scan_get_ap_num(&total_ap_count);
+    if (ret != ESP_OK) {
+        snprintf(s_comm.snapshot.last_error,
+                 sizeof(s_comm.snapshot.last_error),
+                 "AP count read failed (%s)",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+
+    uint16_t ap_count = total_ap_count;
+    if (ap_count > COMMUNICATION_CONNECT_PRECHECK_APS) {
+        ap_count = COMMUNICATION_CONNECT_PRECHECK_APS;
+    }
+
+    wifi_ap_record_t *ap_records = communication_alloc_ap_records(ap_count);
+    if (ap_count > 0U && ap_records == NULL) {
+        snprintf(s_comm.snapshot.last_error,
+                 sizeof(s_comm.snapshot.last_error),
+                 "AP record allocation failed");
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (ap_count > 0U) {
+        ret = esp_wifi_scan_get_ap_records(&ap_count, ap_records);
+        if (ret != ESP_OK) {
+            snprintf(s_comm.snapshot.last_error,
+                     sizeof(s_comm.snapshot.last_error),
+                     "AP record read failed (%s)",
+                     esp_err_to_name(ret));
+            free(ap_records);
+            return ret;
+        }
+    }
+
+    for (uint16_t index = 0; index < ap_count; index++) {
+        if (strncmp((const char *)ap_records[index].ssid,
+                    s_comm.snapshot.config.wifi_ssid,
+                    sizeof(ap_records[index].ssid)) == 0) {
+            free(ap_records);
+            return ESP_OK;
+        }
+    }
+
+    free(ap_records);
+
+    snprintf(s_comm.snapshot.last_error,
+             sizeof(s_comm.snapshot.last_error),
+             "Configured SSID '%s' is not visible",
+             s_comm.snapshot.config.wifi_ssid);
+    return ESP_ERR_NOT_FOUND;
+}
+
+/**
  * @brief Transition the task to a new low-level state.
  *
  * @details Updates the state tracking timestamps and logs the state movement for
@@ -274,6 +389,11 @@ static void communication_start_reset_locked(void)
 static esp_err_t communication_begin_initialize_locked(void)
 {
     esp_err_t ret = communication_ensure_wifi_stack_ready_locked();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = communication_validate_target_ap_visible_locked();
     if (ret != ESP_OK) {
         return ret;
     }
@@ -447,7 +567,6 @@ static void communication_begin_scan_locked(void)
  */
 static void communication_complete_scan_locked(void)
 {
-    wifi_ap_record_t ap_records[COMMUNICATION_SCAN_MAX_APS] = {0};
     uint16_t ap_count = COMMUNICATION_SCAN_MAX_APS;
     uint16_t total_ap_count = 0;
     esp_err_t ret = ESP_OK;
@@ -464,6 +583,15 @@ static void communication_complete_scan_locked(void)
         return;
     }
 
+    wifi_ap_record_t *ap_records = communication_alloc_ap_records(ap_count);
+    if (ap_count > 0U && ap_records == NULL) {
+        s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
+        snprintf(s_comm.snapshot.scan_results,
+                 sizeof(s_comm.snapshot.scan_results),
+                 "Scan device allocation failed");
+        return;
+    }
+
     ret = esp_wifi_scan_get_ap_records(&ap_count, ap_records);
     if (ret != ESP_OK) {
         s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
@@ -471,6 +599,7 @@ static void communication_complete_scan_locked(void)
                  sizeof(s_comm.snapshot.scan_results),
                  "Scan device list failed: %s",
                  esp_err_to_name(ret));
+        free(ap_records);
         return;
     }
 
@@ -507,6 +636,8 @@ static void communication_complete_scan_locked(void)
         }
         offset += written;
     }
+
+    free(ap_records);
 }
 
 /**

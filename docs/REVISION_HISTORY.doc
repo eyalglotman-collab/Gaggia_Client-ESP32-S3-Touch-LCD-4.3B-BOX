@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.8\par
+0.2.9\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -35,8 +35,14 @@
 - Connection Info now includes a `Reset Connection` action backed by a dedicated low-level Wi-Fi/TCP communication state machine with default server settings and live runtime status.\par
 - Connection Info now includes a `Scan for Devices` action backed by a dedicated 10-second Wi-Fi discovery workflow, plus a hardened serial monitor capture helper that releases COM ports cleanly after log capture.\par
 - Wi-Fi hardware bring-up is now working from the low-level communication path, including lazy driver initialization before reset/connect and scan operations.\par
+- Connection Info reset/scan crashes caused by `comm_link` stack overflow are fixed by increasing task stack budget and moving scan AP-record buffers off the task stack.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
+\par
+\b 2026-03-09 18:10:00\b0\par
+- Version: 0.2.9\par
+- Summary: Fixed the new `comm_link` crash path triggered by Connection Info reset and scan actions.\par
+- Notes: `main/CommunicationFunctions.c` now increases the communication-task stack size, allocates AP-record scan buffers on the heap instead of the task stack, and keeps the Wi-Fi hardware precheck path in place. Verified with successful build, flash to `COM9`, and 20-second post-flash log review showing the previous stack-overflow fault is gone.\par
 \par
 \b X=0, Y=2\b0\par
 \b 2026-03-09 15:23:00\b0\par

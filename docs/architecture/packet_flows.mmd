@@ -7,8 +7,10 @@ flowchart TD
 
     subgraph INITIALIZE["INITIALIZE"]
         I1["Host sends INITIALIZE(role, endpoint, watchdog)"] --> I2["Bridge validates configuration"]
-        I2 --> I3["Bridge prepares Wi-Fi/TCP resources"]
-        I3 --> I4["Bridge returns INITIALIZE_ACK"]
+        I2 --> I3["Bridge ensures Wi-Fi hardware stack is ready"]
+        I3 --> I4["Bridge runs SSID visibility precheck scan"]
+        I4 --> I5["Bridge prepares Wi-Fi/TCP resources only when target SSID is visible"]
+        I5 --> I6["Bridge returns INITIALIZE_ACK"]
     end
 
     subgraph CONNECT["CONNECT"]

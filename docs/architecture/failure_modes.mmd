@@ -4,6 +4,7 @@ flowchart TD
     DEV["Device watchdog failure"] --> ERR
     USB["USB COM loss"] --> ERR
     WIFI["Wi-Fi association failure"] --> ERR
+    SSID["Configured SSID not visible in precheck scan"] --> ERR
     TCP["TCP session loss"] --> ERR
     SCAN["Wi-Fi scan start or result-read failure"] --> SERR["scan error state"]
     MAL["Malformed packet / bad version"] --> ERR

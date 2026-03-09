@@ -51,12 +51,19 @@ This file is the canonical machine-readable design baseline for low-level transp
 | `COMMUNICATION_SCAN_STATE_COMPLETE` | New scan request | Operator requests fresh discovery | Empty previous result list and restart workflow | `COMMUNICATION_SCAN_STATE_REQUESTED` | None |
 | `COMMUNICATION_SCAN_STATE_ERROR` | New scan request | Operator requests retry | Clear error text and retry scan | `COMMUNICATION_SCAN_STATE_REQUESTED` | Repeated failure stays in `COMMUNICATION_SCAN_STATE_ERROR`. |
 
+## Client Wi-Fi Association Precheck
+
+| Step | Purpose | Action | Success Outcome | Failure Outcome |
+| --- | --- | --- | --- | --- |
+| `communication_ensure_wifi_stack_ready_locked()` | Guarantee Wi-Fi driver ownership exists before connect/scan logic runs. | Lazily call `peripherals_manager_init_wifi()` from the communication task. | Communication module may proceed into association preparation. | `last_error` records Wi-Fi hardware bring-up failure and the main state machine moves to `error`. |
+| `communication_validate_target_ap_visible_locked()` | Prevent blind association attempts against an unavailable AP. | Run a blocking AP visibility scan and compare the configured `wifi_ssid` against visible AP records. | The configured SSID is visible, so `esp_wifi_set_config()` and `esp_wifi_connect()` may run. | `last_error` records that the configured SSID is empty, scan failed, or the configured SSID is not visible; the main state machine moves to `error`. |
+
 ## Transition Table
 
 | Current State | Trigger | Guard / Condition | Action | Next State | Timeout / Failure Behavior |
 | --- | --- | --- | --- | --- | --- |
 | `reset` | Self-test complete | Parameters valid | Prepare initialization inputs | `initialize` | Self-test failure moves to `error`. |
-| `initialize` | Initialize command completed | Configuration valid | Arm transport resources | `connect` | Validation or bring-up failure moves to `error`. |
+| `initialize` | Initialize command completed | Configuration valid and configured SSID is currently visible | Arm transport resources and start Wi-Fi association | `connect` | Validation failure, Wi-Fi hardware bring-up failure, SSID visibility failure, or association timeout moves to `error`. |
 | `connect` | Disconnect command | Intentional shutdown requested | Controlled teardown | `disconnect` | Teardown failure moves to `error`. |
 | `connect` | Fault detected | CRC fault, watchdog timeout, malformed frame, transport loss | Latch fault and stop forwarding | `error` | Fault is terminal until explicit recovery. |
 | `disconnect` | Teardown complete | Resources released | Return to clean baseline | `reset` | Incomplete teardown moves to `error`. |
@@ -92,6 +99,7 @@ This file is the canonical machine-readable design baseline for low-level transp
 | Device watchdog failure | Host side | Stop trusting link and latch fault | `reset` |
 | USB COM loss | Host or bridge | Stop transport and latch fault | `reset` after COM recovery |
 | Wi-Fi association failure | Bridge-side initialize/connect | Latch fault with Wi-Fi status | `initialize` or `reset` |
+| Configured SSID not visible | Client communication initialize precheck | Latch fault with configured SSID text before calling `esp_wifi_connect()` | `reset` after configuration or environment changes |
 | TCP session loss | Bridge-side connect state | Latch fault and stop forwarding | `initialize` then `connect`, or `reset` |
 | Malformed packet / unsupported version | Parser | Reject packet and latch fault | `reset` after protocol correction |
 | Intentional disconnect | Supervisor | Controlled shutdown | `reset` then normal reconnect sequence |
