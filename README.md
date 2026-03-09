@@ -133,6 +133,7 @@ We will get back to you as soon as possible.
 - `Y`: minor bug-fix and incremental functionality changes.
 - `Z`: sub-version increment for successful build+flash cycles.
 - After a successful build+flash, confirm whether to commit and bump `Z`.
+- After a successful build+flash, Codex must automatically run the simulator UI and ask Eyal whether it loaded successfully.
 - Every version bump must add a new entry to `docs/REVISION_HISTORY.doc` that includes the new version number, a timestamp, and a brief description of what changed relative to the previous version.
 - After every flash, Codex must monitor the target and read at least the first 20 seconds of serial log output.
 - The post-flash monitor attach command shall use ESP-IDF monitor without resetting the board again: `.\scripts\idfw.cmd monitor --port COM9 --no-reset`.
