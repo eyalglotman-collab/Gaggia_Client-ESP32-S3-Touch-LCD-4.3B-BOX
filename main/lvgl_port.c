@@ -19,6 +19,7 @@
 #include "lvgl.h"
 #include "lvgl_port.h"
 #include "hardware_init.h"
+#include "ui_screen.h"
 
 static const char *TAG = "lv_port";
 static SemaphoreHandle_t lvgl_mux = NULL;
@@ -27,6 +28,7 @@ static esp_timer_handle_t s_backlight_idle_timer = NULL;
 static volatile uint32_t s_backlight_pending_ticks = 0;
 static bool s_backlight_idle_armed = true;
 static uint32_t s_backlight_timeout_remaining_s = LVGL_PORT_BACKLIGHT_IDLE_TIMEOUT_SEC;
+static bool s_consume_wake_touch_until_release = false;
 
 /**
  * @brief Restore the backlight when a touch is detected.
@@ -87,6 +89,10 @@ static void handle_backlight_idle_tick(void)
     if (s_backlight_timeout_remaining_s == 0) {
         esp_err_t ret = hardware_set_backlight_enabled(false);
         if (ret == ESP_OK) {
+            if (lvgl_port_lock(-1)) {
+                ui_screen_set_backlight_toggle_state(false);
+                lvgl_port_unlock();
+            }
             ESP_LOGI(TAG, "Backlight turned off after %u seconds without touch",
                      LVGL_PORT_BACKLIGHT_IDLE_TIMEOUT_SEC);
         } else {
@@ -229,11 +235,24 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
 
     if (touchpad_pressed && touchpad_cnt > 0) {
         note_backlight_touch_activity();
-        wake_backlight_on_touch();
+
+        if (!hardware_get_backlight_enabled()) {
+            wake_backlight_on_touch();
+            s_consume_wake_touch_until_release = true;
+            data->state = LV_INDEV_STATE_RELEASED;
+            return;
+        }
+
+        if (s_consume_wake_touch_until_release) {
+            data->state = LV_INDEV_STATE_RELEASED;
+            return;
+        }
+
         data->point.x = touchpad_x;
         data->point.y = touchpad_y;
         data->state = LV_INDEV_STATE_PRESSED;
     } else {
+        s_consume_wake_touch_until_release = false;
         data->state = LV_INDEV_STATE_RELEASED;
     }
 }

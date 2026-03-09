@@ -73,6 +73,56 @@ static communication_context_t s_comm = {
 };
 
 /**
+ * @brief Format a precise AP-offline error for the configured SSID.
+ *
+ * @details Keeps the user-facing message stable and explicit when the client
+ * cannot see the configured Wi-Fi AP during initialize precheck.
+ */
+static void communication_set_ap_offline_error_locked(void)
+{
+    snprintf(s_comm.snapshot.last_error,
+             sizeof(s_comm.snapshot.last_error),
+             "Wi-Fi AP '%s' is offline or not visible",
+             s_comm.snapshot.config.wifi_ssid);
+}
+
+/**
+ * @brief Format a precise TCP server availability error.
+ *
+ * @details Distinguishes server/listener problems from generic transport
+ * failures using the configured IP/port and the last socket errno value.
+ *
+ * @param[in] socket_errno Last socket errno value.
+ */
+static void communication_set_tcp_server_not_found_error_locked(int socket_errno)
+{
+    snprintf(s_comm.snapshot.last_error,
+             sizeof(s_comm.snapshot.last_error),
+             "TCP server %s:%u not found or not listening (errno=%d)",
+             s_comm.snapshot.config.server_ip,
+             (unsigned)s_comm.snapshot.config.server_port,
+             socket_errno);
+}
+
+/**
+ * @brief Format a generic low-level transport failure.
+ *
+ * @details Used when the client can identify the failing stage but cannot
+ * honestly prove a more specific root cause such as remote COM-port state.
+ *
+ * @param[in] stage_text Short stage label.
+ * @param[in] detail_text Failure detail or error-name string.
+ */
+static void communication_set_generic_failure_locked(const char *stage_text, const char *detail_text)
+{
+    snprintf(s_comm.snapshot.last_error,
+             sizeof(s_comm.snapshot.last_error),
+             "%s failure: %s",
+             (stage_text != NULL) ? stage_text : "Transport",
+             (detail_text != NULL) ? detail_text : "Unknown");
+}
+
+/**
  * @brief Ensure the underlying Wi-Fi hardware stack is available.
  *
  * @details Lazily brings up the ESP-IDF station stack through the shared
@@ -286,6 +336,7 @@ static esp_err_t communication_validate_target_ap_visible_locked(void)
              sizeof(s_comm.snapshot.last_error),
              "Configured SSID '%s' is not visible",
              s_comm.snapshot.config.wifi_ssid);
+    communication_set_ap_offline_error_locked();
     return ESP_ERR_NOT_FOUND;
 }
 
@@ -390,11 +441,17 @@ static esp_err_t communication_begin_initialize_locked(void)
 {
     esp_err_t ret = communication_ensure_wifi_stack_ready_locked();
     if (ret != ESP_OK) {
+        communication_set_generic_failure_locked("Wi-Fi hardware init", esp_err_to_name(ret));
         return ret;
     }
 
     ret = communication_validate_target_ap_visible_locked();
     if (ret != ESP_OK) {
+        if (ret == ESP_ERR_NOT_FOUND) {
+            communication_set_ap_offline_error_locked();
+        } else if (ret != ESP_ERR_INVALID_STATE && ret != ESP_ERR_NO_MEM) {
+            communication_set_generic_failure_locked("Initialize precheck", esp_err_to_name(ret));
+        }
         return ret;
     }
 
@@ -411,16 +468,19 @@ static esp_err_t communication_begin_initialize_locked(void)
 
     ret = esp_wifi_set_mode(WIFI_MODE_STA);
     if (ret != ESP_OK) {
+        communication_set_generic_failure_locked("Wi-Fi mode set", esp_err_to_name(ret));
         return ret;
     }
 
     ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
     if (ret != ESP_OK) {
+        communication_set_generic_failure_locked("Wi-Fi config", esp_err_to_name(ret));
         return ret;
     }
 
     ret = esp_wifi_connect();
     if (ret != ESP_OK) {
+        communication_set_generic_failure_locked("Wi-Fi connect", esp_err_to_name(ret));
         return ret;
     }
 
@@ -447,11 +507,13 @@ static esp_err_t communication_open_tcp_socket_locked(void)
     };
 
     if (inet_pton(AF_INET, s_comm.snapshot.config.server_ip, &server_addr.sin_addr) != 1) {
+        communication_set_generic_failure_locked("TCP address parse", "Invalid server IP");
         return ESP_ERR_INVALID_ARG;
     }
 
     int socket_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
     if (socket_fd < 0) {
+        communication_set_generic_failure_locked("TCP socket create", strerror(errno));
         return ESP_FAIL;
     }
 
@@ -466,6 +528,14 @@ static esp_err_t communication_open_tcp_socket_locked(void)
         int socket_errno = errno;
         close(socket_fd);
         errno = socket_errno;
+        if (socket_errno == ECONNREFUSED ||
+            socket_errno == ETIMEDOUT ||
+            socket_errno == EHOSTUNREACH ||
+            socket_errno == ENETUNREACH) {
+            communication_set_tcp_server_not_found_error_locked(socket_errno);
+        } else {
+            communication_set_generic_failure_locked("TCP connect", strerror(socket_errno));
+        }
         return ESP_FAIL;
     }
 
@@ -699,12 +769,11 @@ static void communication_task_step(void)
     case COMMUNICATION_STATE_RESET: {
         esp_err_t ret = communication_begin_initialize_locked();
         if (ret != ESP_OK) {
-            char error_text[96];
-            snprintf(error_text,
-                     sizeof(error_text),
-                     "Initialize start failed (%s)",
-                     esp_err_to_name(ret));
-            communication_set_error_locked(error_text);
+            if (s_comm.snapshot.last_error[0] == '\0' ||
+                strcmp(s_comm.snapshot.last_error, "No error") == 0) {
+                communication_set_generic_failure_locked("Initialize start", esp_err_to_name(ret));
+            }
+            communication_enter_state_locked(COMMUNICATION_STATE_ERROR);
         }
         break;
     }
@@ -714,15 +783,15 @@ static void communication_task_step(void)
         if (s_comm.snapshot.wifi_has_ip) {
             esp_err_t ret = communication_open_tcp_socket_locked();
             if (ret != ESP_OK) {
-                char error_text[96];
-                snprintf(error_text,
-                         sizeof(error_text),
-                         "TCP connect failed (%d)",
-                         errno);
-                communication_set_error_locked(error_text);
+                if (s_comm.snapshot.last_error[0] == '\0' ||
+                    strcmp(s_comm.snapshot.last_error, "No error") == 0) {
+                    communication_set_generic_failure_locked("TCP connect", strerror(errno));
+                }
+                communication_enter_state_locked(COMMUNICATION_STATE_ERROR);
             }
         } else if ((uint32_t)elapsed_ms >= s_comm.snapshot.config.wifi_connect_timeout_ms) {
-            communication_set_error_locked("Wi-Fi connect timeout");
+            communication_set_generic_failure_locked("Wi-Fi connect", "Timeout");
+            communication_enter_state_locked(COMMUNICATION_STATE_ERROR);
         }
         break;
     }

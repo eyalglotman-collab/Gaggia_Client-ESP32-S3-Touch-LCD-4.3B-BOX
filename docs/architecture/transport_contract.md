@@ -100,8 +100,20 @@ This file is the canonical machine-readable design baseline for low-level transp
 | USB COM loss | Host or bridge | Stop transport and latch fault | `reset` after COM recovery |
 | Wi-Fi association failure | Bridge-side initialize/connect | Latch fault with Wi-Fi status | `initialize` or `reset` |
 | Configured SSID not visible | Client communication initialize precheck | Latch fault with configured SSID text before calling `esp_wifi_connect()` | `reset` after configuration or environment changes |
+| TCP server not found / not listening | Client communication TCP socket open | Latch fault with configured server IP/port and socket errno when `connect()` fails with reachability or refusal errors | `reset` or corrected server availability |
+| COM port not found on simulator host | PC simulator or ESP32-C3 bridge side only | Must be reported by the bridge/simulator protocol if it needs to appear as a distinct client-visible error | Not directly diagnosable by the client without explicit remote status reporting |
+| Generic unknown transport failure | Any transport stage not mapped to a more precise category | Latch stage-specific failure text and stop progressing the state machine | `reset`, `initialize`, or implementation-specific review |
 | TCP session loss | Bridge-side connect state | Latch fault and stop forwarding | `initialize` then `connect`, or `reset` |
 | Malformed packet / unsupported version | Parser | Reject packet and latch fault | `reset` after protocol correction |
 | Intentional disconnect | Supervisor | Controlled shutdown | `reset` then normal reconnect sequence |
 | Wi-Fi scan start failure | Client communication scan workflow | Preserve scan error text and stop current scan | New operator scan request |
 | Wi-Fi scan result-read failure | Client communication scan workflow | Preserve scan error text and stop current scan | New operator scan request |
+
+## Client Error Message Mapping
+
+| Condition | User-Facing Error Text | Notes |
+| --- | --- | --- |
+| Configured SSID not visible during initialize precheck | `Wi-Fi AP '<ssid>' is offline or not visible` | This is the preferred explicit wording for the default simulator AP `EyalSimulatorAP`. |
+| TCP `connect()` fails with `ECONNREFUSED`, `ETIMEDOUT`, `EHOSTUNREACH`, or `ENETUNREACH` | `TCP server <ip>:<port> not found or not listening (errno=<n>)` | Used only when socket-layer evidence supports a missing/unreachable listener diagnosis. |
+| Wi-Fi/TCP stage fails without a more precise classification | `<stage> failure: <detail>` | Preserves the failing stage without inventing unsupported root-cause claims. |
+| Simulator bridge COM port missing | Not directly shown by the client unless the bridge protocol reports it | The client must not claim `COM port not found` based only on local Wi-Fi/TCP observations. |
