@@ -91,6 +91,40 @@ We will get back to you as soon as possible.
 - `README.md` is the workflow/session handoff file; the requirements/design document is the primary place for application requirements, UX intent, architecture decisions, and planned features.
 - Every time Codex opens and reviews `docs/EyalEspressoRequirements and Design.docx`, Codex must update the document field `Reviewed on` with the current time.
 - After any documentation change in this repository, Codex must ask Eyal whether to open the `docs` folder.
+- Design documentation must be maintained in dual format:
+  - human review artifacts in `.docx`
+  - machine-readable architecture sources under `docs/architecture/`
+- The required machine-readable architecture sources are:
+  - `docs/architecture/transport_state_machine.mmd`
+  - `docs/architecture/packet_flows.mmd`
+  - `docs/architecture/failure_modes.mmd`
+  - `docs/architecture/transport_contract.md`
+- The text-based architecture sources are the canonical editable design source for workflow/state/packet behavior; rendered diagrams and `.docx` content must match them.
+- When workflow, state machines, packet definitions, failure handling, ownership, timing, watchdog rules, or transport architecture change, update both:
+  - the relevant `.docx` design documents
+  - the matching files under `docs/architecture/`
+- Do not maintain image-only diagrams as the sole source of truth. Every important workflow/state/failure diagram must also exist as text-based Mermaid and as structured tables in markdown.
+- Use exact code-facing names in documentation for states, packet types, counters, modules, and events. Do not rename concepts in prose if the code uses a different identifier.
+- Every state machine must be documented with:
+  - purpose and scope
+  - state list
+  - transition diagram
+  - transition table with current state, trigger, guard/condition, action, next state, and timeout/failure behavior
+- Every packet flow must be documented with:
+  - packet purpose
+  - sender and receiver
+  - required fields
+  - normal response
+  - timeout rule
+  - error handling
+- Every transport contract must explicitly document ownership of:
+  - liveness counters such as `HostLiveInteger` and `DeviceLiveInteger`
+  - CRC/checksum validation
+  - reconnect behavior
+  - watchdog enforcement
+  - entry to `error`, `reset`, and `initialize`
+- If Eyal edits `.docx` files manually, Codex must review those edits and update the text-based files under `docs/architecture/` so future LLM work remains aligned.
+- If Codex updates the text-based architecture files first, Codex must also update the corresponding `.docx` documents before considering the documentation change complete.
 - Repository version is tracked in root `VERSION` with format `X.Y.Z`.
 - `X`: major functionality/refactoring changes.
 - `Y`: minor bug-fix and incremental functionality changes.
