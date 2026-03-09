@@ -39,3 +39,11 @@ flowchart TD
         E1["Faulting side latches low-level fault"] --> E2["ERROR packet reports code, state, counters, summary"]
         E2 --> E3["Supervisor decides reset or initialize"]
     end
+
+    subgraph SCAN["SCAN"]
+        S1["Operator presses Scan for Devices"] --> S2["Connection Info text box is cleared immediately"]
+        S2 --> S3["communication_functions_request_scan() queues scan workflow"]
+        S3 --> S4["Wi-Fi driver runs AP discovery for 10 seconds"]
+        S4 --> S5["Communication task reads AP records and formats scan_results"]
+        S5 --> S6["Connection Info text box shows discovered device list"]
+    end

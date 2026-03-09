@@ -5,10 +5,12 @@ flowchart TD
     USB["USB COM loss"] --> ERR
     WIFI["Wi-Fi association failure"] --> ERR
     TCP["TCP session loss"] --> ERR
+    SCAN["Wi-Fi scan start or result-read failure"] --> SERR["scan error state"]
     MAL["Malformed packet / bad version"] --> ERR
     DISC["Intentional disconnect"] --> RESET["reset state"]
 
     ERR --> HARD["reset"]
     ERR --> SOFT["initialize"]
+    SERR --> RETRY["new scan request"]
     HARD --> CONN["connect after normal sequence"]
     SOFT --> CONN

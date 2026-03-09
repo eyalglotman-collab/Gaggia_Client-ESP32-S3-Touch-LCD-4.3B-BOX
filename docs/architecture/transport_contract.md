@@ -31,6 +31,26 @@ This file is the canonical machine-readable design baseline for low-level transp
 | `disconnect` | Perform controlled teardown. | Stop forwarding, close transport cleanly, preserve reason. | Teardown complete or teardown fault occurs. |
 | `error` | Latch low-level fault and block normal traffic. | Preserve error reason and last counters, stop forwarding payloads. | Explicit `reset` or `initialize` command only. |
 
+## Client Communication Scan State Definitions
+
+| Scan State | Purpose | Entry Actions | Exit Conditions |
+| --- | --- | --- | --- |
+| `COMMUNICATION_SCAN_STATE_IDLE` | Hold the last stable scan status when no operator-triggered discovery is running. | Preserve or reset scan text baseline. | Operator presses `Scan for Devices`. |
+| `COMMUNICATION_SCAN_STATE_REQUESTED` | Capture the operator request and clear the previous text box content immediately. | Empty visible results and queue Wi-Fi scan start. | Background task starts scan successfully or fails immediately. |
+| `COMMUNICATION_SCAN_STATE_IN_PROGRESS` | Keep the scan visible as active during the fixed discovery window. | Start non-blocking Wi-Fi AP scan and record scan start timestamp. | Ten-second scan window expires or Wi-Fi scan start fails. |
+| `COMMUNICATION_SCAN_STATE_COMPLETE` | Publish the discovered AP list to the Connection Info text box. | Read AP records, format device list, store count and duration. | Next operator scan request or communication reset. |
+| `COMMUNICATION_SCAN_STATE_ERROR` | Latch scan-specific failure while preserving the main transport state. | Preserve scan failure reason and stop the current scan workflow. | Next operator scan request or communication reset. |
+
+## Client Communication Scan Transition Table
+
+| Current Scan State | Trigger | Guard / Condition | Action | Next Scan State | Failure Behavior |
+| --- | --- | --- | --- | --- | --- |
+| `COMMUNICATION_SCAN_STATE_IDLE` | `communication_functions_request_scan()` | Connection Info operator requests discovery | Clear previous text and queue scan start | `COMMUNICATION_SCAN_STATE_REQUESTED` | None |
+| `COMMUNICATION_SCAN_STATE_REQUESTED` | Background task tick | Wi-Fi driver accepts scan request | Start non-blocking AP scan, show progress text | `COMMUNICATION_SCAN_STATE_IN_PROGRESS` | Wi-Fi API start failure moves to `COMMUNICATION_SCAN_STATE_ERROR`. |
+| `COMMUNICATION_SCAN_STATE_IN_PROGRESS` | Elapsed time reaches 10 seconds | Scan window complete | Stop scan, read AP records, format device list | `COMMUNICATION_SCAN_STATE_COMPLETE` | Record-read failure moves to `COMMUNICATION_SCAN_STATE_ERROR`. |
+| `COMMUNICATION_SCAN_STATE_COMPLETE` | New scan request | Operator requests fresh discovery | Empty previous result list and restart workflow | `COMMUNICATION_SCAN_STATE_REQUESTED` | None |
+| `COMMUNICATION_SCAN_STATE_ERROR` | New scan request | Operator requests retry | Clear error text and retry scan | `COMMUNICATION_SCAN_STATE_REQUESTED` | Repeated failure stays in `COMMUNICATION_SCAN_STATE_ERROR`. |
+
 ## Transition Table
 
 | Current State | Trigger | Guard / Condition | Action | Next State | Timeout / Failure Behavior |
@@ -54,6 +74,7 @@ This file is the canonical machine-readable design baseline for low-level transp
 | `KEEPALIVE` | Prove host forward progress. | Host side | Low-level peer | incremented `HostLiveInteger`, sequence, CRC | `KEEPALIVE_ACK` with `DeviceLiveInteger` and status | Every 100 mSec. | Missing progress enters `error`. |
 | `DATA` | Carry application payload after validation. | Either side | Peer | payload, sequence, CRC | `ACK` or application response | Normal transport timeout policy applies. | Invalid frame is rejected before upper layer sees payload. |
 | `ERROR` | Report latched low-level fault. | Faulting side | Supervisory peer | error code, state, last counters, summary, CRC | Recovery command | Immediate supervisory review required. | Link remains in `error`. |
+| `SCAN` | Discover available Wi-Fi devices for operator selection. | Client communication task | ESP32-S3 Wi-Fi driver | scan request flag, 10-second window, current STA configuration | formatted AP list in `scan_results` | Operator-visible scan lasts 10 seconds. | Scan API or result-read failure enters `COMMUNICATION_SCAN_STATE_ERROR`. |
 
 ## Timing Rules
 
@@ -74,3 +95,5 @@ This file is the canonical machine-readable design baseline for low-level transp
 | TCP session loss | Bridge-side connect state | Latch fault and stop forwarding | `initialize` then `connect`, or `reset` |
 | Malformed packet / unsupported version | Parser | Reject packet and latch fault | `reset` after protocol correction |
 | Intentional disconnect | Supervisor | Controlled shutdown | `reset` then normal reconnect sequence |
+| Wi-Fi scan start failure | Client communication scan workflow | Preserve scan error text and stop current scan | New operator scan request |
+| Wi-Fi scan result-read failure | Client communication scan workflow | Preserve scan error text and stop current scan | New operator scan request |

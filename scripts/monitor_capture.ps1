@@ -42,9 +42,25 @@ try {
     }
 } finally {
     if ($serial.IsOpen) {
+        try {
+            $serial.DiscardInBuffer()
+        } catch {
+        }
+        try {
+            $serial.DiscardOutBuffer()
+        } catch {
+        }
         $serial.Close()
     }
+    try {
+        $serial.BaseStream.Close()
+    } catch {
+    }
     $serial.Dispose()
+    $serial = $null
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
+    Start-Sleep -Milliseconds 200
 }
 
 $buffer.ToString()

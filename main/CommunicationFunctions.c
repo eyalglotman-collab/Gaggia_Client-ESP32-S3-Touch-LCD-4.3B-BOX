@@ -34,6 +34,8 @@
 #define COMMUNICATION_DEFAULT_WIFI_TIMEOUT   (10000)
 #define COMMUNICATION_DEFAULT_TCP_TIMEOUT    (3000)
 #define COMMUNICATION_DEFAULT_KEEPALIVE_MS   (100)
+#define COMMUNICATION_SCAN_WINDOW_MS         (10000)
+#define COMMUNICATION_SCAN_MAX_APS           (10)
 
 static const char *TAG = "CommunicationFunctions";
 
@@ -46,6 +48,7 @@ typedef struct {
     bool disconnect_requested;
     bool wifi_connect_started;
     bool tcp_connect_started;
+    int64_t scan_started_us;
     int socket_fd;
     int64_t state_started_us;
     int64_t last_keep_alive_us;
@@ -60,6 +63,7 @@ static communication_context_t s_comm = {
     .disconnect_requested = false,
     .wifi_connect_started = false,
     .tcp_connect_started = false,
+    .scan_started_us = 0,
     .socket_fd = -1,
     .state_started_us = 0,
     .last_keep_alive_us = 0,
@@ -124,6 +128,24 @@ static void communication_close_socket_locked(void)
 
     s_comm.snapshot.tcp_connected = false;
     s_comm.tcp_connect_started = false;
+}
+
+/**
+ * @brief Reset the operator-triggered Wi-Fi scan workflow.
+ *
+ * @details Clears the visible scan status and previously discovered device list
+ * so each new scan begins from a deterministic baseline.
+ */
+static void communication_reset_scan_locked(void)
+{
+    s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_IDLE;
+    s_comm.snapshot.scan_requested = false;
+    s_comm.snapshot.scan_duration_ms = 0;
+    s_comm.snapshot.scan_device_count = 0;
+    s_comm.scan_started_us = 0;
+    snprintf(s_comm.snapshot.scan_results,
+             sizeof(s_comm.snapshot.scan_results),
+             "Press 'Scan for Devices' to discover available Wi-Fi devices.");
 }
 
 /**
@@ -195,6 +217,7 @@ static void communication_load_defaults_locked(void)
     s_comm.snapshot.config.wifi_connect_timeout_ms = COMMUNICATION_DEFAULT_WIFI_TIMEOUT;
     s_comm.snapshot.config.tcp_connect_timeout_ms = COMMUNICATION_DEFAULT_TCP_TIMEOUT;
     s_comm.snapshot.config.keep_alive_period_ms = COMMUNICATION_DEFAULT_KEEPALIVE_MS;
+    communication_reset_scan_locked();
 }
 
 /**
@@ -212,6 +235,7 @@ static void communication_start_reset_locked(void)
     s_comm.wifi_connect_started = false;
     communication_refresh_local_ip_locked();
     communication_refresh_rssi_locked();
+    communication_reset_scan_locked();
     communication_enter_state_locked(COMMUNICATION_STATE_RESET);
 }
 
@@ -339,6 +363,134 @@ static void communication_service_keep_alive_locked(void)
 }
 
 /**
+ * @brief Start the dedicated Wi-Fi device discovery scan.
+ *
+ * @details Clears the previous text immediately, requests a non-blocking scan
+ * from the ESP-IDF Wi-Fi driver, and marks the scan workflow as active.
+ */
+static void communication_begin_scan_locked(void)
+{
+    wifi_scan_config_t scan_cfg = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = true,
+    };
+
+    s_comm.snapshot.scan_requested = false;
+    s_comm.snapshot.scan_duration_ms = 0;
+    s_comm.snapshot.scan_device_count = 0;
+    snprintf(s_comm.snapshot.scan_results,
+             sizeof(s_comm.snapshot.scan_results),
+             "Scanning for devices...\nPlease wait 10 seconds.");
+
+    esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);
+    if (ret != ESP_OK) {
+        s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
+        snprintf(s_comm.snapshot.scan_results,
+                 sizeof(s_comm.snapshot.scan_results),
+                 "Scan failed to start: %s",
+                 esp_err_to_name(ret));
+        return;
+    }
+
+    s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_IN_PROGRESS;
+    s_comm.scan_started_us = esp_timer_get_time();
+}
+
+/**
+ * @brief Complete the 10-second Wi-Fi scan and format the discovered list.
+ *
+ * @details Stops the active scan window, reads back the strongest discovered
+ * APs, and stores a compact text report for the Connection Info overlay.
+ */
+static void communication_complete_scan_locked(void)
+{
+    wifi_ap_record_t ap_records[COMMUNICATION_SCAN_MAX_APS] = {0};
+    uint16_t ap_count = COMMUNICATION_SCAN_MAX_APS;
+    uint16_t total_ap_count = 0;
+    esp_err_t ret = ESP_OK;
+
+    (void)esp_wifi_scan_stop();
+
+    ret = esp_wifi_scan_get_ap_num(&total_ap_count);
+    if (ret != ESP_OK) {
+        s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
+        snprintf(s_comm.snapshot.scan_results,
+                 sizeof(s_comm.snapshot.scan_results),
+                 "Scan result read failed: %s",
+                 esp_err_to_name(ret));
+        return;
+    }
+
+    ret = esp_wifi_scan_get_ap_records(&ap_count, ap_records);
+    if (ret != ESP_OK) {
+        s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
+        snprintf(s_comm.snapshot.scan_results,
+                 sizeof(s_comm.snapshot.scan_results),
+                 "Scan device list failed: %s",
+                 esp_err_to_name(ret));
+        return;
+    }
+
+    s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_COMPLETE;
+    s_comm.snapshot.scan_duration_ms = COMMUNICATION_SCAN_WINDOW_MS;
+    s_comm.snapshot.scan_device_count = total_ap_count;
+
+    if (total_ap_count == 0 || ap_count == 0) {
+        snprintf(s_comm.snapshot.scan_results,
+                 sizeof(s_comm.snapshot.scan_results),
+                 "Scan complete in %u ms.\nNo devices were discovered.",
+                 (unsigned)s_comm.snapshot.scan_duration_ms);
+        return;
+    }
+
+    int offset = snprintf(s_comm.snapshot.scan_results,
+                          sizeof(s_comm.snapshot.scan_results),
+                          "Scan complete in %u ms.\nDiscovered devices: %u\n",
+                          (unsigned)s_comm.snapshot.scan_duration_ms,
+                          (unsigned)total_ap_count);
+    for (uint16_t index = 0; index < ap_count && offset > 0 && offset < (int)sizeof(s_comm.snapshot.scan_results); index++) {
+        const char *ssid_text = ((const char *)ap_records[index].ssid)[0] != '\0'
+                                    ? (const char *)ap_records[index].ssid
+                                    : "<hidden>";
+        int written = snprintf(&s_comm.snapshot.scan_results[offset],
+                               sizeof(s_comm.snapshot.scan_results) - (size_t)offset,
+                               "%u. %s | RSSI %d dBm | CH %u\n",
+                               (unsigned)(index + 1U),
+                               ssid_text,
+                               ap_records[index].rssi,
+                               (unsigned)ap_records[index].primary);
+        if (written < 0) {
+            break;
+        }
+        offset += written;
+    }
+}
+
+/**
+ * @brief Advance the dedicated device-scan state machine.
+ *
+ * @details Handles `requested -> in progress -> complete/error` transitions
+ * without blocking the UI thread. The visible results are replaced only after
+ * the fixed 10-second scan window expires.
+ */
+static void communication_service_scan_locked(void)
+{
+    if (s_comm.snapshot.scan_requested) {
+        s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_REQUESTED;
+        communication_begin_scan_locked();
+    }
+
+    if (s_comm.snapshot.scan_state == COMMUNICATION_SCAN_STATE_IN_PROGRESS) {
+        int64_t elapsed_ms = (esp_timer_get_time() - s_comm.scan_started_us) / 1000LL;
+        if (elapsed_ms >= COMMUNICATION_SCAN_WINDOW_MS) {
+            communication_complete_scan_locked();
+        }
+    }
+}
+
+/**
  * @brief Execute one low-level state-machine step.
  *
  * @details Polls Wi-Fi/IP readiness, reacts to operator reset/disconnect
@@ -353,6 +505,7 @@ static void communication_task_step(void)
 
     communication_refresh_local_ip_locked();
     communication_refresh_rssi_locked();
+    communication_service_scan_locked();
 
     if (s_comm.disconnect_requested) {
         s_comm.disconnect_requested = false;
@@ -512,6 +665,28 @@ void communication_functions_request_disconnect(void)
     }
 }
 
+/**
+ * @brief Request a Wi-Fi device discovery scan from the background task.
+ *
+ * @details Clears the previous visible scan text immediately and queues a new
+ * `requested -> in progress -> complete/error` scan sequence.
+ */
+void communication_functions_request_scan(void)
+{
+    if (!s_comm.initialized || s_comm.mutex == NULL) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) == pdTRUE) {
+        s_comm.snapshot.scan_requested = true;
+        s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_REQUESTED;
+        s_comm.snapshot.scan_duration_ms = 0;
+        s_comm.snapshot.scan_device_count = 0;
+        s_comm.snapshot.scan_results[0] = '\0';
+        xSemaphoreGive(s_comm.mutex);
+    }
+}
+
 esp_err_t communication_functions_get_snapshot(communication_snapshot_t *out_snapshot)
 {
     if (out_snapshot == NULL) {
@@ -521,7 +696,11 @@ esp_err_t communication_functions_get_snapshot(communication_snapshot_t *out_sna
     if (!s_comm.initialized || s_comm.mutex == NULL) {
         memset(out_snapshot, 0, sizeof(*out_snapshot));
         out_snapshot->state = COMMUNICATION_STATE_DISCONNECT;
+        out_snapshot->scan_state = COMMUNICATION_SCAN_STATE_IDLE;
         snprintf(out_snapshot->last_error, sizeof(out_snapshot->last_error), "Communication module not initialized");
+        snprintf(out_snapshot->scan_results,
+                 sizeof(out_snapshot->scan_results),
+                 "Communication module not initialized");
         return ESP_OK;
     }
 
@@ -546,6 +725,33 @@ const char *communication_functions_state_to_string(communication_state_t state)
     case COMMUNICATION_STATE_DISCONNECT:
         return "Disconnect";
     case COMMUNICATION_STATE_ERROR:
+        return "Error";
+    default:
+        return "Unknown";
+    }
+}
+
+/**
+ * @brief Convert a scan state enum into printable text.
+ *
+ * @details Returns a short constant string for UI and runtime logs.
+ *
+ * @param[in] state Scan workflow state.
+ *
+ * @return Constant scan state text.
+ */
+const char *communication_functions_scan_state_to_string(communication_scan_state_t state)
+{
+    switch (state) {
+    case COMMUNICATION_SCAN_STATE_IDLE:
+        return "Idle";
+    case COMMUNICATION_SCAN_STATE_REQUESTED:
+        return "Requested";
+    case COMMUNICATION_SCAN_STATE_IN_PROGRESS:
+        return "In Progress";
+    case COMMUNICATION_SCAN_STATE_COMPLETE:
+        return "Complete";
+    case COMMUNICATION_SCAN_STATE_ERROR:
         return "Error";
     default:
         return "Unknown";

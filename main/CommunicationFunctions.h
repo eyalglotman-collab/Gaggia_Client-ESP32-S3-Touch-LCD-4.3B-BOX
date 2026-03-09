@@ -32,6 +32,21 @@ typedef enum {
 } communication_state_t;
 
 /**
+ * @brief Wi-Fi access-point scan workflow state.
+ *
+ * @details Tracks the dedicated operator-triggered device discovery workflow
+ * used by the Connection Info screen. This scan state machine is independent of
+ * the main transport connection state machine.
+ */
+typedef enum {
+    COMMUNICATION_SCAN_STATE_IDLE = 0,
+    COMMUNICATION_SCAN_STATE_REQUESTED,
+    COMMUNICATION_SCAN_STATE_IN_PROGRESS,
+    COMMUNICATION_SCAN_STATE_COMPLETE,
+    COMMUNICATION_SCAN_STATE_ERROR,
+} communication_scan_state_t;
+
+/**
  * @brief Defaultable Wi-Fi server communication settings.
  *
  * @details Stores the station credentials and remote TCP endpoint required for
@@ -57,14 +72,19 @@ typedef struct {
  */
 typedef struct {
     communication_state_t state;
+    communication_scan_state_t scan_state;
     communication_config_t config;
     bool wifi_has_ip;
     bool tcp_connected;
     bool reset_requested;
+    bool scan_requested;
     uint32_t live_integer;
+    uint32_t scan_duration_ms;
+    uint16_t scan_device_count;
     int32_t wifi_rssi;
     char local_ip[16];
     char last_error[96];
+    char scan_results[640];
 } communication_snapshot_t;
 
 /**
@@ -97,6 +117,15 @@ void communication_functions_request_reset(void);
 void communication_functions_request_disconnect(void);
 
 /**
+ * @brief Request a Wi-Fi access-point scan from the communication task.
+ *
+ * @details Starts the dedicated scan state machine used by the Connection Info
+ * overlay. The overlay can poll the snapshot API to show progress and the final
+ * device list without blocking the UI thread.
+ */
+void communication_functions_request_scan(void);
+
+/**
  * @brief Read the latest communication snapshot.
  *
  * @details Copies the current low-level transport snapshot for UI and logging
@@ -120,6 +149,17 @@ esp_err_t communication_functions_get_snapshot(communication_snapshot_t *out_sna
  * @return Constant state name string.
  */
 const char *communication_functions_state_to_string(communication_state_t state);
+
+/**
+ * @brief Convert a scan state enum into printable text.
+ *
+ * @details Returns a constant string suitable for UI status labels and logs.
+ *
+ * @param[in] state Scan state value.
+ *
+ * @return Constant scan state name string.
+ */
+const char *communication_functions_scan_state_to_string(communication_scan_state_t state);
 
 #ifdef __cplusplus
 }

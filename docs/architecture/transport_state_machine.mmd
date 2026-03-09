@@ -19,3 +19,14 @@ stateDiagram-v2
         [*] --> link_establish
         link_establish --> keepalive_supervision
     }
+
+    state "client_scan_sub_state_machine" as client_scan {
+        [*] --> COMMUNICATION_SCAN_STATE_IDLE
+        COMMUNICATION_SCAN_STATE_IDLE --> COMMUNICATION_SCAN_STATE_REQUESTED: Scan for Devices button
+        COMMUNICATION_SCAN_STATE_REQUESTED --> COMMUNICATION_SCAN_STATE_IN_PROGRESS: esp_wifi_scan_start accepted
+        COMMUNICATION_SCAN_STATE_REQUESTED --> COMMUNICATION_SCAN_STATE_ERROR: scan start failure
+        COMMUNICATION_SCAN_STATE_IN_PROGRESS --> COMMUNICATION_SCAN_STATE_COMPLETE: 10 second window elapsed / AP list formatted
+        COMMUNICATION_SCAN_STATE_IN_PROGRESS --> COMMUNICATION_SCAN_STATE_ERROR: scan read failure
+        COMMUNICATION_SCAN_STATE_COMPLETE --> COMMUNICATION_SCAN_STATE_REQUESTED: new scan request
+        COMMUNICATION_SCAN_STATE_ERROR --> COMMUNICATION_SCAN_STATE_REQUESTED: retry scan request
+    }

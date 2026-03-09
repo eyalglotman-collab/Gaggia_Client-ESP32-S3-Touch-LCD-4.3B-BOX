@@ -52,6 +52,7 @@ typedef struct {
     lv_obj_t *clock_set_hour_roller;
     lv_obj_t *clock_set_minute_roller;
     lv_obj_t *connection_info_details_label;
+    bool connection_info_show_scan_results;
     lv_obj_t *content;
     lv_obj_t *brew_toggle_btn;
     lv_obj_t *steam_toggle_btn;
@@ -99,6 +100,7 @@ static ui_state_t s_ui = {
     .clock_set_hour_roller = NULL,
     .clock_set_minute_roller = NULL,
     .connection_info_details_label = NULL,
+    .connection_info_show_scan_results = false,
     .content = NULL,
     .brew_toggle_btn = NULL,
     .steam_toggle_btn = NULL,
@@ -535,6 +537,7 @@ static void ui_close_connection_info_overlay(void)
 
     s_ui.connection_info_overlay = NULL;
     s_ui.connection_info_details_label = NULL;
+    s_ui.connection_info_show_scan_results = false;
 }
 
 /**
@@ -568,6 +571,23 @@ static void ui_update_connection_info_overlay_contents(void)
         ESP_LOGW(TAG, "Communication snapshot read failed: %s", esp_err_to_name(comm_ret));
         snprintf(comm_snapshot.last_error, sizeof(comm_snapshot.last_error), "Snapshot unavailable");
         comm_snapshot.state = COMMUNICATION_STATE_ERROR;
+        comm_snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
+        snprintf(comm_snapshot.scan_results, sizeof(comm_snapshot.scan_results), "Scan snapshot unavailable");
+    }
+
+    if (s_ui.connection_info_show_scan_results) {
+        lv_label_set_text_fmt(s_ui.connection_info_details_label,
+                              "Device Scan\n"
+                              "Scan State: %s\n"
+                              "Detected Devices: %u\n"
+                              "Duration: %u ms\n"
+                              "\n"
+                              "%s",
+                              communication_functions_scan_state_to_string(comm_snapshot.scan_state),
+                              (unsigned)comm_snapshot.scan_device_count,
+                              (unsigned)comm_snapshot.scan_duration_ms,
+                              comm_snapshot.scan_results);
+        return;
     }
 
     lv_label_set_text_fmt(s_ui.connection_info_details_label,
@@ -589,6 +609,7 @@ static void ui_update_connection_info_overlay_contents(void)
                           "TCP Connected: %s\n"
                           "RSSI: %ld dBm\n"
                           "LiveInteger: %" PRIu32 "\n"
+                          "Scan State: %s\n"
                           "Last Error: %s",
                           info.ip_address,
                           info.port_text,
@@ -605,6 +626,7 @@ static void ui_update_connection_info_overlay_contents(void)
                           comm_snapshot.tcp_connected ? "Yes" : "No",
                           (long)comm_snapshot.wifi_rssi,
                           comm_snapshot.live_integer,
+                          communication_functions_scan_state_to_string(comm_snapshot.scan_state),
                           comm_snapshot.last_error);
 }
 
@@ -866,7 +888,28 @@ static void ui_connection_info_done_event_cb(lv_event_t *e)
 static void ui_connection_info_reset_event_cb(lv_event_t *e)
 {
     (void)e;
+    s_ui.connection_info_show_scan_results = false;
     communication_functions_request_reset();
+    ui_update_connection_info_overlay_contents();
+}
+
+/**
+ * @brief Start a Wi-Fi device scan from the Connection Info overlay.
+ *
+ * @details Clears the current text immediately, switches the overlay into scan
+ * view, and lets the background communication task populate the list after the
+ * fixed 10-second discovery window.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_connection_info_scan_event_cb(lv_event_t *e)
+{
+    (void)e;
+    s_ui.connection_info_show_scan_results = true;
+    if (s_ui.connection_info_details_label) {
+        lv_label_set_text(s_ui.connection_info_details_label, "");
+    }
+    communication_functions_request_scan();
     ui_update_connection_info_overlay_contents();
 }
 
@@ -918,8 +961,8 @@ static void ui_settings_connection_info_event_cb(lv_event_t *e)
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 16);
 
     lv_obj_t *reset_btn = lv_button_create(panel);
-    lv_obj_set_size(reset_btn, 250, 52);
-    lv_obj_align(reset_btn, LV_ALIGN_TOP_RIGHT, -20, 12);
+    lv_obj_set_size(reset_btn, 320, 52);
+    lv_obj_align(reset_btn, LV_ALIGN_TOP_LEFT, 20, 60);
     ui_style_action_button(reset_btn);
     lv_obj_add_event_cb(reset_btn, ui_connection_info_reset_event_cb, LV_EVENT_CLICKED, NULL);
 
@@ -928,9 +971,20 @@ static void ui_settings_connection_info_event_cb(lv_event_t *e)
     ui_style_button_label(reset_lbl);
     lv_obj_center(reset_lbl);
 
+    lv_obj_t *scan_btn = lv_button_create(panel);
+    lv_obj_set_size(scan_btn, 320, 52);
+    lv_obj_align(scan_btn, LV_ALIGN_TOP_RIGHT, -20, 60);
+    ui_style_action_button(scan_btn);
+    lv_obj_add_event_cb(scan_btn, ui_connection_info_scan_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *scan_lbl = lv_label_create(scan_btn);
+    lv_label_set_text(scan_lbl, "Scan for Devices");
+    ui_style_button_label(scan_lbl);
+    lv_obj_center(scan_lbl);
+
     lv_obj_t *info_body = lv_obj_create(panel);
-    lv_obj_set_size(info_body, 720, 282);
-    lv_obj_align(info_body, LV_ALIGN_TOP_MID, 0, 70);
+    lv_obj_set_size(info_body, 720, 220);
+    lv_obj_align(info_body, LV_ALIGN_TOP_MID, 0, 126);
     ui_style_card(info_body, UI_COLOR_CARD);
     lv_obj_set_scrollbar_mode(info_body, LV_SCROLLBAR_MODE_ACTIVE);
     lv_obj_set_style_pad_all(info_body, 18, 0);
@@ -950,6 +1004,7 @@ static void ui_settings_connection_info_event_cb(lv_event_t *e)
     lv_label_set_long_mode(s_ui.connection_info_details_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(s_ui.connection_info_details_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(s_ui.connection_info_details_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    s_ui.connection_info_show_scan_results = false;
     ui_update_connection_info_overlay_contents();
 
     lv_obj_t *done_btn = lv_button_create(panel);
@@ -1733,6 +1788,7 @@ void ui_screen_create(void)
     s_ui.connection_info_overlay = NULL;
     s_ui.system_constants_overlay = NULL;
     s_ui.connection_info_details_label = NULL;
+    s_ui.connection_info_show_scan_results = false;
     s_ui.clock_set_day_roller = NULL;
     s_ui.clock_set_month_roller = NULL;
     s_ui.clock_set_year_roller = NULL;
