@@ -159,10 +159,12 @@ We will get back to you as soon as possible.
 - The stored project playback file is a 1.5x faster version of the selected monkey clip so the pitch is higher and the cue is shorter.
 - When waiting for Eyal to do anything required to continue, including replying to a prompt, answering a question, approving a request, or simply not sending a new instruction while Codex is otherwise idle, play the project wait sound from `sounds/WaitSound.wav`.
 - For any such waiting state, play `sounds/WaitSound.wav` once immediately when the wait begins, then if 3 minutes pass without a response from Eyal, play it again and keep repeating it every additional 3 minutes until a response arrives or the task resumes.
+- Wait-sound playback is a best-effort local notification only. Codex can verify that the helper scripts start and stop successfully, but cannot verify that Eyal actually heard audio on the active output device.
 - Session hook for the wait sound:
   - at session start, run `.\scripts\stop_wait_sound.ps1` once to clear any stale wait-sound worker from a previous session
-  - immediately before sending a prompt, question, or approval request that requires Eyal to respond, run `.\scripts\start_wait_sound.ps1`
+  - immediately before sending an explicit chat prompt or question that requires Eyal to respond in the conversation, run `.\scripts\start_wait_sound.ps1`
   - immediately after Eyal responds, run `.\scripts\stop_wait_sound.ps1`
+  - do not rely on the wait sound for hidden tool-approval popups, internal sandbox approval flows, or other non-chat waits because Eyal may not hear or notice those cases
   - if VS Code closes, the wait-sound worker must terminate itself automatically so no orphan background sound process remains
   - the current working implementation uses `sounds/WaitSound.wav` for runtime playback and a dedicated playback helper in `.\scripts\play_wait_sound.ps1`
   - the repeat path was verified locally with a 20-second test interval before returning to the normal 3-minute rule
