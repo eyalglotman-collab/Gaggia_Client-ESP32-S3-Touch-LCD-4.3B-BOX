@@ -11,8 +11,10 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "lvgl.h"
 #include "CommunicationFunctions.h"
+#include "EspLogBuffer.h"
 #include "ui_screen.h"
 #include "hardware_init.h"
 #include "peripherals_manager.h"
@@ -46,12 +48,17 @@ typedef struct {
     lv_obj_t *clock_set_overlay;
     lv_obj_t *connection_info_overlay;
     lv_obj_t *system_constants_overlay;
+    lv_obj_t *esp_log_overlay;
     lv_obj_t *clock_set_day_roller;
     lv_obj_t *clock_set_month_roller;
     lv_obj_t *clock_set_year_roller;
     lv_obj_t *clock_set_hour_roller;
     lv_obj_t *clock_set_minute_roller;
     lv_obj_t *connection_info_details_label;
+    lv_obj_t *esp_log_text_label;
+    lv_obj_t *esp_log_checkbox_i;
+    lv_obj_t *esp_log_checkbox_w;
+    lv_obj_t *esp_log_checkbox_e;
     bool connection_info_show_scan_results;
     lv_obj_t *content;
     lv_obj_t *brew_toggle_btn;
@@ -94,12 +101,17 @@ static ui_state_t s_ui = {
     .clock_set_overlay = NULL,
     .connection_info_overlay = NULL,
     .system_constants_overlay = NULL,
+    .esp_log_overlay = NULL,
     .clock_set_day_roller = NULL,
     .clock_set_month_roller = NULL,
     .clock_set_year_roller = NULL,
     .clock_set_hour_roller = NULL,
     .clock_set_minute_roller = NULL,
     .connection_info_details_label = NULL,
+    .esp_log_text_label = NULL,
+    .esp_log_checkbox_i = NULL,
+    .esp_log_checkbox_w = NULL,
+    .esp_log_checkbox_e = NULL,
     .connection_info_show_scan_results = false,
     .content = NULL,
     .brew_toggle_btn = NULL,
@@ -140,14 +152,20 @@ static ui_state_t s_ui = {
 #define UI_TABVIEW_HEIGHT      (432)
 #define UI_CLOCK_BAR_HEIGHT    (56)
 #define UI_SYSTEM_CONSTANTS_TEXT_MAX (4096)
+#define UI_ESP_LOG_TEXT_MAX    (32768)
 
 static const system_constants_data_t *ui_get_constants(void);
 static const system_constants_profile_t *ui_get_profile_constants(int profile_index);
 static void ui_apply_profile_defaults(int profile_index);
 static const char *ui_get_system_constants_pretty_text(void);
 static void ui_update_connection_info_overlay_contents(void);
+static void ui_update_esp_log_overlay_contents(void);
+static esp_err_t ui_ensure_esp_log_storage(void);
 
 static char s_system_constants_pretty_text[UI_SYSTEM_CONSTANTS_TEXT_MAX];
+static char *s_esp_log_text = NULL;
+static esp_log_buffer_entry_t *s_esp_log_snapshot_entries = NULL;
+static size_t s_esp_log_snapshot_count = 0;
 
 /**
  * @brief Handle the startup-mode `Yes` / `No` prompt selection.
@@ -646,6 +664,121 @@ static void ui_close_system_constants_overlay(void)
 }
 
 /**
+ * @brief Close the ESP LOG overlay.
+ *
+ * @details Deletes the modal ESP log viewer and clears the frozen snapshot
+ * widgets so a later open captures a fresh set of the latest 300 log lines.
+ */
+static void ui_close_esp_log_overlay(void)
+{
+    if (s_ui.esp_log_overlay) {
+        lv_obj_del(s_ui.esp_log_overlay);
+    }
+
+    s_ui.esp_log_overlay = NULL;
+    s_ui.esp_log_text_label = NULL;
+    s_ui.esp_log_checkbox_i = NULL;
+    s_ui.esp_log_checkbox_w = NULL;
+    s_ui.esp_log_checkbox_e = NULL;
+    s_esp_log_snapshot_count = 0;
+    s_esp_log_text[0] = '\0';
+}
+
+/**
+ * @brief Apply the selected `I`, `W`, and `E` log filters to the frozen log snapshot.
+ *
+ * @details Uses the snapshot captured when the ESP LOG overlay was opened and
+ * rebuilds the visible text without collecting any new log messages.
+ */
+static void ui_update_esp_log_overlay_contents(void)
+{
+    if (!s_ui.esp_log_text_label) {
+        return;
+    }
+    if (s_esp_log_text == NULL || s_esp_log_snapshot_entries == NULL) {
+        lv_label_set_text(s_ui.esp_log_text_label, "ESP log storage is unavailable.");
+        return;
+    }
+
+    bool show_i = (s_ui.esp_log_checkbox_i != NULL) &&
+                  lv_obj_has_state(s_ui.esp_log_checkbox_i, LV_STATE_CHECKED);
+    bool show_w = (s_ui.esp_log_checkbox_w != NULL) &&
+                  lv_obj_has_state(s_ui.esp_log_checkbox_w, LV_STATE_CHECKED);
+    bool show_e = (s_ui.esp_log_checkbox_e != NULL) &&
+                  lv_obj_has_state(s_ui.esp_log_checkbox_e, LV_STATE_CHECKED);
+
+    size_t used = 0;
+    size_t matched = 0;
+    s_esp_log_text[0] = '\0';
+
+    for (size_t index = 0; index < s_esp_log_snapshot_count && used + 1U < sizeof(s_esp_log_text); index++) {
+        char level = s_esp_log_snapshot_entries[index].level;
+        bool include = ((level == 'I') && show_i) ||
+                       ((level == 'W') && show_w) ||
+                       ((level == 'E') && show_e);
+        if (!include) {
+            continue;
+        }
+
+        int written = snprintf(s_esp_log_text + used,
+                               sizeof(s_esp_log_text) - used,
+                               "%s",
+                               s_esp_log_snapshot_entries[index].text);
+        if (written <= 0) {
+            break;
+        }
+        if ((size_t)written >= (sizeof(s_esp_log_text) - used)) {
+            used = sizeof(s_esp_log_text) - 1U;
+            break;
+        }
+
+        used += (size_t)written;
+        matched++;
+    }
+
+    if (matched == 0U) {
+        snprintf(s_esp_log_text,
+                 UI_ESP_LOG_TEXT_MAX,
+                 "No log entries match the selected filters.");
+    }
+
+    lv_label_set_text(s_ui.esp_log_text_label, s_esp_log_text);
+}
+
+/**
+ * @brief Allocate storage for the frozen ESP log snapshot and filtered text.
+ *
+ * @details Uses PSRAM-backed heap storage so the 1000-entry snapshot does not
+ * consume scarce internal DRAM.
+ *
+ * @return
+ *      - ESP_OK: Storage is available
+ *      - ESP_ERR_NO_MEM: One or more allocations failed
+ */
+static esp_err_t ui_ensure_esp_log_storage(void)
+{
+    if (s_esp_log_text == NULL) {
+        s_esp_log_text = heap_caps_calloc(UI_ESP_LOG_TEXT_MAX,
+                                          sizeof(char),
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_esp_log_text == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    if (s_esp_log_snapshot_entries == NULL) {
+        s_esp_log_snapshot_entries = heap_caps_calloc(ESP_LOG_BUFFER_MAX_ENTRIES,
+                                                      sizeof(*s_esp_log_snapshot_entries),
+                                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_esp_log_snapshot_entries == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    return ESP_OK;
+}
+
+/**
  * @brief Format loaded system constants into a tree-style text view.
  *
  * @details Converts the active constants snapshot into a readable outline so
@@ -925,6 +1058,169 @@ static void ui_system_constants_done_event_cb(lv_event_t *e)
 {
     (void)e;
     ui_close_system_constants_overlay();
+}
+
+/**
+ * @brief Close the ESP LOG overlay and return to Settings.
+ *
+ * @details Dismisses the modal log view created from the Settings page.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_esp_log_done_event_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_close_esp_log_overlay();
+}
+
+/**
+ * @brief Reapply the current ESP LOG filters to the frozen snapshot.
+ *
+ * @details Uses the checkbox states to rebuild the displayed text from the
+ * snapshot captured when the ESP LOG screen was opened.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_esp_log_apply_event_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_update_esp_log_overlay_contents();
+}
+
+/**
+ * @brief Open the ESP LOG viewer from the Settings tab.
+ *
+ * @details Captures a frozen snapshot of the latest 1000 ESP log entries, then
+ * shows them inside a modal text window with `I`, `W`, and `E` filter checkboxes
+ * plus an `Apply` action that re-filters only the frozen snapshot.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_settings_esp_log_event_cb(lv_event_t *e)
+{
+    (void)e;
+
+    ui_close_esp_log_overlay();
+
+    esp_err_t storage_ret = ui_ensure_esp_log_storage();
+    if (storage_ret != ESP_OK) {
+        s_esp_log_snapshot_count = 0;
+        if (s_esp_log_text != NULL) {
+            snprintf(s_esp_log_text,
+                     UI_ESP_LOG_TEXT_MAX,
+                     "ESP log storage allocation failed: %s",
+                     esp_err_to_name(storage_ret));
+        }
+    }
+
+    esp_err_t log_ret = esp_log_buffer_copy_entries(s_esp_log_snapshot_entries,
+                                                    ESP_LOG_BUFFER_MAX_ENTRIES,
+                                                    &s_esp_log_snapshot_count);
+    if (storage_ret != ESP_OK) {
+        log_ret = storage_ret;
+    } else if (log_ret != ESP_OK) {
+        s_esp_log_snapshot_count = 0;
+        snprintf(s_esp_log_text,
+                 UI_ESP_LOG_TEXT_MAX,
+                 "ESP log snapshot unavailable: %s",
+                 esp_err_to_name(log_ret));
+    } else if (s_esp_log_snapshot_count == 0U) {
+        snprintf(s_esp_log_text,
+                 UI_ESP_LOG_TEXT_MAX,
+                 "No ESP log entries captured yet.");
+    }
+
+    lv_obj_t *scr = lv_screen_active();
+    s_ui.esp_log_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_ui.esp_log_overlay);
+    lv_obj_set_size(s_ui.esp_log_overlay, 800, 480);
+    lv_obj_set_style_bg_color(s_ui.esp_log_overlay, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(s_ui.esp_log_overlay, LV_OPA_COVER, 0);
+
+    lv_obj_t *panel = lv_obj_create(s_ui.esp_log_overlay);
+    lv_obj_set_size(panel, 760, 440);
+    lv_obj_center(panel);
+    ui_style_card(panel, UI_COLOR_PANEL);
+
+    lv_obj_t *title = lv_label_create(panel);
+    lv_label_set_text(title, "ESP LOG");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 16);
+
+    s_ui.esp_log_checkbox_i = lv_checkbox_create(panel);
+    lv_checkbox_set_text(s_ui.esp_log_checkbox_i, "");
+    lv_obj_add_state(s_ui.esp_log_checkbox_i, LV_STATE_CHECKED);
+    lv_obj_align(s_ui.esp_log_checkbox_i, LV_ALIGN_TOP_LEFT, 20, 64);
+    lv_obj_t *checkbox_i_lbl = lv_label_create(panel);
+    lv_label_set_text(checkbox_i_lbl, "I");
+    lv_obj_set_style_text_font(checkbox_i_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(checkbox_i_lbl, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align_to(checkbox_i_lbl, s_ui.esp_log_checkbox_i, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+
+    s_ui.esp_log_checkbox_w = lv_checkbox_create(panel);
+    lv_checkbox_set_text(s_ui.esp_log_checkbox_w, "");
+    lv_obj_add_state(s_ui.esp_log_checkbox_w, LV_STATE_CHECKED);
+    lv_obj_align(s_ui.esp_log_checkbox_w, LV_ALIGN_TOP_LEFT, 84, 64);
+    lv_obj_t *checkbox_w_lbl = lv_label_create(panel);
+    lv_label_set_text(checkbox_w_lbl, "W");
+    lv_obj_set_style_text_font(checkbox_w_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(checkbox_w_lbl, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align_to(checkbox_w_lbl, s_ui.esp_log_checkbox_w, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+
+    s_ui.esp_log_checkbox_e = lv_checkbox_create(panel);
+    lv_checkbox_set_text(s_ui.esp_log_checkbox_e, "");
+    lv_obj_add_state(s_ui.esp_log_checkbox_e, LV_STATE_CHECKED);
+    lv_obj_align(s_ui.esp_log_checkbox_e, LV_ALIGN_TOP_LEFT, 148, 64);
+    lv_obj_t *checkbox_e_lbl = lv_label_create(panel);
+    lv_label_set_text(checkbox_e_lbl, "E");
+    lv_obj_set_style_text_font(checkbox_e_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(checkbox_e_lbl, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align_to(checkbox_e_lbl, s_ui.esp_log_checkbox_e, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+
+    lv_obj_t *apply_btn = lv_button_create(panel);
+    lv_obj_set_size(apply_btn, 180, 44);
+    lv_obj_align(apply_btn, LV_ALIGN_TOP_RIGHT, -20, 56);
+    ui_style_action_button(apply_btn);
+    lv_obj_add_event_cb(apply_btn, ui_esp_log_apply_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *apply_lbl = lv_label_create(apply_btn);
+    lv_label_set_text(apply_lbl, "Apply");
+    ui_style_button_label(apply_lbl);
+    lv_obj_center(apply_lbl);
+
+    lv_obj_t *log_body = lv_obj_create(panel);
+    lv_obj_set_size(log_body, 720, 250);
+    lv_obj_align(log_body, LV_ALIGN_TOP_MID, 0, 112);
+    ui_style_card(log_body, UI_COLOR_CARD);
+    lv_obj_set_scrollbar_mode(log_body, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_style_pad_all(log_body, 18, 0);
+
+    s_ui.esp_log_text_label = lv_label_create(log_body);
+    lv_obj_set_width(s_ui.esp_log_text_label, 680);
+    lv_label_set_long_mode(s_ui.esp_log_text_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(s_ui.esp_log_text_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_ui.esp_log_text_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    if (s_esp_log_snapshot_count == 0U) {
+        lv_label_set_text(s_ui.esp_log_text_label, s_esp_log_text);
+    } else {
+        ui_update_esp_log_overlay_contents();
+    }
+
+    lv_obj_t *done_btn = lv_button_create(panel);
+    lv_obj_set_size(done_btn, 300, 58);
+    ui_style_action_button(done_btn);
+    lv_obj_add_event_cb(done_btn, ui_esp_log_done_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *done_lbl = lv_label_create(done_btn);
+    lv_label_set_text(done_lbl, "Done");
+    ui_style_button_label(done_lbl);
+    lv_obj_center(done_lbl);
+
+    lv_obj_update_layout(panel);
+    lv_obj_set_pos(done_btn,
+                   (lv_obj_get_width(panel) - lv_obj_get_width(done_btn)) / 2,
+                   lv_obj_get_y(log_body) + lv_obj_get_height(log_body) + 18);
 }
 
 /**
@@ -1590,6 +1886,17 @@ static void ui_build_page_settings(void)
     lv_label_set_text(system_constants_lbl, "System Constants");
     ui_style_button_label(system_constants_lbl);
     lv_obj_center(system_constants_lbl);
+
+    lv_obj_t *esp_log_btn = lv_button_create(s_ui.content);
+    lv_obj_set_size(esp_log_btn, action_btn_width, action_btn_height);
+    lv_obj_align(esp_log_btn, LV_ALIGN_TOP_LEFT, action_right_x, action_row3_y);
+    ui_style_action_button(esp_log_btn);
+    lv_obj_add_event_cb(esp_log_btn, ui_settings_esp_log_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *esp_log_lbl = lv_label_create(esp_log_btn);
+    lv_label_set_text(esp_log_lbl, "ESP LOG");
+    ui_style_button_label(esp_log_lbl);
+    lv_obj_center(esp_log_lbl);
 }
 
 /**
@@ -1787,7 +2094,12 @@ void ui_screen_create(void)
     s_ui.clock_set_overlay = NULL;
     s_ui.connection_info_overlay = NULL;
     s_ui.system_constants_overlay = NULL;
+    s_ui.esp_log_overlay = NULL;
     s_ui.connection_info_details_label = NULL;
+    s_ui.esp_log_text_label = NULL;
+    s_ui.esp_log_checkbox_i = NULL;
+    s_ui.esp_log_checkbox_w = NULL;
+    s_ui.esp_log_checkbox_e = NULL;
     s_ui.connection_info_show_scan_results = false;
     s_ui.clock_set_day_roller = NULL;
     s_ui.clock_set_month_roller = NULL;

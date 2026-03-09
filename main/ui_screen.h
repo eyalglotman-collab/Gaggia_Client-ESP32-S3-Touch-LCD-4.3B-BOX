@@ -120,6 +120,16 @@ void ui_screen_show_main(void);
  */
 bool ui_screen_take_reinit_request(void);
 
+/**
+ * @brief Synchronize the Settings backlight control with runtime state.
+ *
+ * @details Keeps the Settings-page backlight control visually consistent with
+ * runtime state changes such as automatic screen-off.
+ *
+ * @param[in] enabled `true` when the backlight is on, `false` when off.
+ */
+void ui_screen_set_backlight_toggle_state(bool enabled);
+
 #ifdef __cplusplus
 }
 #endif

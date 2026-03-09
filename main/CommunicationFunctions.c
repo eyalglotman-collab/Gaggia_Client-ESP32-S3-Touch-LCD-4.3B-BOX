@@ -440,8 +440,7 @@ static void communication_complete_scan_locked(void)
     if (total_ap_count == 0 || ap_count == 0) {
         snprintf(s_comm.snapshot.scan_results,
                  sizeof(s_comm.snapshot.scan_results),
-                 "Scan complete in %u ms.\nNo devices were discovered.",
-                 (unsigned)s_comm.snapshot.scan_duration_ms);
+                 "No devices found...");
         return;
     }
 
@@ -682,7 +681,9 @@ void communication_functions_request_scan(void)
         s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_REQUESTED;
         s_comm.snapshot.scan_duration_ms = 0;
         s_comm.snapshot.scan_device_count = 0;
-        s_comm.snapshot.scan_results[0] = '\0';
+        snprintf(s_comm.snapshot.scan_results,
+                 sizeof(s_comm.snapshot.scan_results),
+                 "Scanning for devices...\nPlease wait 10 seconds.");
         xSemaphoreGive(s_comm.mutex);
     }
 }

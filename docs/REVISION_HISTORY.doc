@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.7\par
+0.2.8\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -34,6 +34,7 @@
 - Settings page now includes a symmetric two-column action layout and a `Connection Info` overlay with live IP/port/telemetry text.\par
 - Connection Info now includes a `Reset Connection` action backed by a dedicated low-level Wi-Fi/TCP communication state machine with default server settings and live runtime status.\par
 - Connection Info now includes a `Scan for Devices` action backed by a dedicated 10-second Wi-Fi discovery workflow, plus a hardened serial monitor capture helper that releases COM ports cleanly after log capture.\par
+- Settings now includes an `ESP LOG` viewer with filterable captured messages, and the log snapshot depth is increased to 1000 entries.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par
@@ -228,6 +229,14 @@
 - Timestamp: 2026-03-09 14:31:52\par
 - Summary: Added device scanning to Connection Info and hardened the raw monitor capture script to release COM ports correctly.\par
 - Notes: `main/ui_screen.c` now places `Reset Connection` and `Scan for Devices` in the standard two-column action row, switches the Connection Info text box into scan-results mode, and clears previous text immediately on scan start. `main/CommunicationFunctions.*` now includes a dedicated scan sub-state machine with `COMMUNICATION_SCAN_STATE_IDLE / REQUESTED / IN_PROGRESS / COMPLETE / ERROR`, a fixed 10-second Wi-Fi AP discovery window, and formatted result storage for the UI. `docs/architecture/*` and `docs/EyalEspressoDetailedDesign.docx` were updated to describe the scan workflow, and `scripts/monitor_capture.ps1` now explicitly closes and disposes the serial handle so COM9 is released after log capture. Verified with successful local build, direct flash to `COM9`, and a 20-second post-flash monitor run that released the port cleanly even though no serial text was emitted during that capture window.\par
+- Resolved Defects:\par
+  - None in this release.\par
+\par
+\b 2026-03-09\b0\par
+- Version: 0.2.8\par
+- Timestamp: 2026-03-09 15:04:15\par
+- Summary: Added the ESP LOG viewer, improved scan feedback text, and expanded the frozen log snapshot to 1000 entries.\par
+- Notes: `main/EspLogBuffer.*` now hooks the ESP log output and stores up to 1000 formatted log entries using PSRAM-backed heap storage. `main/ui_screen.c` now adds a Settings `ESP LOG` button that opens a modal log screen with a frozen snapshot, explicit `I`, `W`, and `E` filter labels next to their checkboxes, an `Apply` action that re-filters without collecting new messages, and a `Done` action to return to Settings. The Connection Info scan flow now displays immediate progress text and shows `No devices found...` when the Wi-Fi scan completes with zero devices. Verified with successful local build, direct flash to `COM9`, and 20-second post-flash serial log capture showing clean boot through UI creation.\par
 - Resolved Defects:\par
   - None in this release.\par
 \par
