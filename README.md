@@ -39,7 +39,7 @@ ESP-IDF application for the Waveshare ESP32-S3-Touch-LCD-4.3B platform. This REA
   - do not disable the 1-second heartbeat timer in `main/ui_screen.c` again as an isolation step; that test resulted in a totally white screen
   - compare panel timing values in `main/hardware_init.c` against the exact board example and test porch/burst changes one at a time
   - after every flash, capture the first 20 seconds of logs and remember there is still an existing startup warning about flash-size mismatch
-  - for waits that need user input, use `.\scripts\start_wait_sound.ps1` before asking and `.\scripts\stop_wait_sound.ps1` after the next user reply
+  - for waits that need user input on this Windows host, use `powershell -ExecutionPolicy Bypass -File .\scripts\start_wait_sound.ps1` before asking and `powershell -ExecutionPolicy Bypass -File .\scripts\stop_wait_sound.ps1` after the next user reply
 
 ## Getting Started
 
@@ -173,9 +173,9 @@ We will get back to you as soon as possible.
 - For any such waiting state, play `sounds/WaitSound.wav` once immediately when the wait begins, then if 3 minutes pass without a response from Eyal, play it again and keep repeating it every additional 3 minutes until a response arrives or the task resumes.
 - Wait-sound playback is a best-effort local notification only. Codex can verify that the helper scripts start and stop successfully, but cannot verify that Eyal actually heard audio on the active output device.
 - Session hook for the wait sound:
-  - at session start, run `.\scripts\stop_wait_sound.ps1` once to clear any stale wait-sound worker from a previous session
-  - immediately before sending an explicit chat prompt or question that requires Eyal to respond in the conversation, run `.\scripts\start_wait_sound.ps1`
-  - immediately after Eyal responds, run `.\scripts\stop_wait_sound.ps1`
+  - at session start, run `powershell -ExecutionPolicy Bypass -File .\scripts\stop_wait_sound.ps1` once to clear any stale wait-sound worker from a previous session
+  - immediately before sending an explicit chat prompt or question that requires Eyal to respond in the conversation, run `powershell -ExecutionPolicy Bypass -File .\scripts\start_wait_sound.ps1`
+  - immediately after Eyal responds, run `powershell -ExecutionPolicy Bypass -File .\scripts\stop_wait_sound.ps1`
   - do not rely on the wait sound for hidden tool-approval popups, internal sandbox approval flows, or other non-chat waits because Eyal may not hear or notice those cases
   - if VS Code closes, the wait-sound worker must terminate itself automatically so no orphan background sound process remains
   - the current working implementation uses `sounds/WaitSound.wav` for runtime playback and a dedicated playback helper in `.\scripts\play_wait_sound.ps1`
@@ -212,6 +212,7 @@ References:
 - `.\scripts\start_wait_sound.ps1`: also exits automatically if no `Code.exe` process remains, which covers VS Code shutdown.
 - `.\scripts\play_wait_sound.ps1`: one-shot WAV playback helper used by the repeating wait worker for reliable replay.
 - `.\scripts\stop_wait_sound.ps1`: stops the hidden wait-sound worker referenced by `.cache\wait_sound.pid`.
+- On this Windows host, invoke PowerShell helper scripts with execution-policy bypass, for example: `powershell -ExecutionPolicy Bypass -File .\scripts\start_wait_sound.ps1`.
 - `.\scripts\monitor_capture.ps1`: fallback 20-second raw serial log capture that attaches to the port without resetting the board and is the approved monitoring method on this host when `idf.py monitor` fails.
 - `./scripts/import_waveshare_examples.sh <path>`: imports external Waveshare ESP-IDF demo examples.
 - `docs/ESP32_S3_TOUCH_LCD_4_3B_SETUP.md`: hardware and bring-up notes for the Waveshare ESP32-S3 Touch LCD 4.3B kit.
