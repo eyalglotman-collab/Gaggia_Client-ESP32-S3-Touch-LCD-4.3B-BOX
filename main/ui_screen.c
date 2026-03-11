@@ -607,8 +607,14 @@ static void ui_update_connection_info_overlay_contents(void)
                           "Server: %s:%u\n"
                           "Local IP: %s\n"
                           "TCP Connected: %s\n"
+                          "Initialize Passed: %s\n"
+                          "Connect Passed: %s\n"
+                          "Send Data Enabled: %s\n"
                           "RSSI: %ld dBm\n"
-                          "LiveInteger: %" PRIu32 "\n"
+                          "HostLiveInteger: %" PRIu32 "\n"
+                          "DeviceLiveInteger: %" PRIu32 "\n"
+                          "Sequence: %u\n"
+                          "Last Received Text: %s\n"
                           "Scan State: %s\n"
                           "Last Error: %s",
                           info.ip_address,
@@ -624,8 +630,14 @@ static void ui_update_connection_info_overlay_contents(void)
                           (unsigned)comm_snapshot.config.server_port,
                           comm_snapshot.local_ip,
                           comm_snapshot.tcp_connected ? "Yes" : "No",
+                          comm_snapshot.initialize_passed ? "Yes" : "No",
+                          comm_snapshot.connect_passed ? "Yes" : "No",
+                          comm_snapshot.send_data_enabled ? "Yes" : "No",
                           (long)comm_snapshot.wifi_rssi,
-                          comm_snapshot.live_integer,
+                          comm_snapshot.host_live_integer,
+                          comm_snapshot.device_live_integer,
+                          (unsigned)comm_snapshot.sequence,
+                          comm_snapshot.last_received_text,
                           communication_functions_scan_state_to_string(comm_snapshot.scan_state),
                           comm_snapshot.last_error);
 }

@@ -39,6 +39,24 @@
 #define COMMUNICATION_SCAN_WINDOW_MS         (10000)
 #define COMMUNICATION_SCAN_MAX_APS           (10)
 #define COMMUNICATION_CONNECT_PRECHECK_APS   (16)
+#define COMMUNICATION_WATCHDOG_GRACE_MS      (350)
+#define COMMUNICATION_FRAME_SOF0             (0xA5U)
+#define COMMUNICATION_FRAME_SOF1             (0x5AU)
+#define COMMUNICATION_FRAME_HEADER_BYTES     (15U)
+#define COMMUNICATION_FRAME_CRC_BYTES        (2U)
+#define COMMUNICATION_FRAME_MAX_PAYLOAD      (160U)
+#define COMMUNICATION_RX_BUFFER_BYTES        (512U)
+
+typedef enum {
+    COMMUNICATION_MESSAGE_RESET = 1,
+    COMMUNICATION_MESSAGE_INITIALIZE = 2,
+    COMMUNICATION_MESSAGE_CONNECT = 3,
+    COMMUNICATION_MESSAGE_DISCONNECT = 4,
+    COMMUNICATION_MESSAGE_KEEPALIVE = 5,
+    COMMUNICATION_MESSAGE_ERROR = 6,
+    COMMUNICATION_MESSAGE_ACK = 7,
+    COMMUNICATION_MESSAGE_DATA = 8,
+} communication_message_type_t;
 
 static const char *TAG = "CommunicationFunctions";
 
@@ -51,10 +69,15 @@ typedef struct {
     bool disconnect_requested;
     bool wifi_connect_started;
     bool tcp_connect_started;
+    bool keepalive_ack_pending;
+    int64_t connect_requested_us;
+    int64_t last_valid_rx_us;
     int64_t scan_started_us;
     int socket_fd;
     int64_t state_started_us;
     int64_t last_keep_alive_us;
+    size_t rx_buffer_len;
+    uint8_t rx_buffer[COMMUNICATION_RX_BUFFER_BYTES];
 } communication_context_t;
 
 static communication_context_t s_comm = {
@@ -66,11 +89,22 @@ static communication_context_t s_comm = {
     .disconnect_requested = false,
     .wifi_connect_started = false,
     .tcp_connect_started = false,
+    .keepalive_ack_pending = false,
+    .connect_requested_us = 0,
+    .last_valid_rx_us = 0,
     .scan_started_us = 0,
     .socket_fd = -1,
     .state_started_us = 0,
     .last_keep_alive_us = 0,
+    .rx_buffer_len = 0,
+    .rx_buffer = {0},
 };
+
+static void communication_close_socket_locked(void);
+static void communication_enter_state_locked(communication_state_t next_state);
+static void communication_set_error_locked(const char *error_text);
+static size_t communication_append_text(char *buffer, size_t buffer_len, size_t offset, const char *text);
+static size_t communication_append_u32(char *buffer, size_t buffer_len, size_t offset, uint32_t value);
 
 /**
  * @brief Format a precise AP-offline error for the configured SSID.
@@ -120,6 +154,336 @@ static void communication_set_generic_failure_locked(const char *stage_text, con
              "%s failure: %s",
              (stage_text != NULL) ? stage_text : "Transport",
              (detail_text != NULL) ? detail_text : "Unknown");
+}
+
+/**
+ * @brief Compute CRC16-CCITT over framed transport bytes.
+ *
+ * @details Uses the same integrity algorithm as the server simulator so both
+ * sides can validate one canonical low-level frame format.
+ *
+ * @param[in] data Source bytes.
+ * @param[in] length Number of source bytes.
+ *
+ * @return CRC16-CCITT value.
+ */
+static uint16_t communication_crc16_ccitt(const uint8_t *data, size_t length)
+{
+    uint16_t crc = 0xFFFFU;
+
+    for (size_t index = 0; index < length; index++) {
+        crc ^= (uint16_t)data[index] << 8;
+        for (int bit = 0; bit < 8; bit++) {
+            if ((crc & 0x8000U) != 0U) {
+                crc = (uint16_t)(((uint16_t)(crc << 1)) ^ 0x1021U);
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+
+    return crc;
+}
+
+/**
+ * @brief Reset framed-link bookkeeping while keeping configured defaults.
+ *
+ * @details Clears counters, RX buffering, and staged progression flags so the
+ * next reset sequence begins from a clean low-level transport baseline.
+ */
+static void communication_clear_transport_flow_locked(void)
+{
+    s_comm.snapshot.initialize_passed = false;
+    s_comm.snapshot.connect_passed = false;
+    s_comm.snapshot.send_data_enabled = false;
+    s_comm.snapshot.host_live_integer = 0;
+    s_comm.snapshot.device_live_integer = 0;
+    s_comm.snapshot.sequence = 0;
+    s_comm.keepalive_ack_pending = false;
+    s_comm.connect_requested_us = 0;
+    s_comm.last_valid_rx_us = 0;
+    s_comm.last_keep_alive_us = 0;
+    s_comm.rx_buffer_len = 0;
+    snprintf(s_comm.snapshot.last_received_text,
+             sizeof(s_comm.snapshot.last_received_text),
+             "No peer text received yet");
+}
+
+/**
+ * @brief Append plain text into a bounded payload buffer.
+ *
+ * @details Writes as much text as fits, always preserving NUL termination when
+ * the destination buffer length is non-zero. The returned offset reflects the
+ * virtual untruncated length so additional truncation checks can be inferred by
+ * callers without risking format warnings.
+ *
+ * @param[out] buffer Destination buffer.
+ * @param[in] buffer_len Destination buffer size in bytes.
+ * @param[in] offset Current write offset.
+ * @param[in] text NUL-terminated text to append.
+ *
+ * @return Virtual offset after the append attempt.
+ */
+static size_t communication_append_text(char *buffer, size_t buffer_len, size_t offset, const char *text)
+{
+    size_t text_len = 0;
+    size_t copy_len = 0;
+
+    if (text == NULL) {
+        text = "";
+    }
+
+    text_len = strlen(text);
+    if (buffer_len > 0U && offset < (buffer_len - 1U)) {
+        copy_len = buffer_len - 1U - offset;
+        if (copy_len > text_len) {
+            copy_len = text_len;
+        }
+        memcpy(&buffer[offset], text, copy_len);
+        buffer[offset + copy_len] = '\0';
+    } else if (buffer_len > 0U) {
+        buffer[buffer_len - 1U] = '\0';
+    }
+
+    return offset + text_len;
+}
+
+/**
+ * @brief Append one unsigned integer into a bounded payload buffer.
+ *
+ * @details Formats the integer into a small temporary buffer first so the
+ * shared initialize payload can be assembled without a monolithic `snprintf`
+ * that triggers truncation warnings under `-Werror`.
+ *
+ * @param[out] buffer Destination buffer.
+ * @param[in] buffer_len Destination buffer size in bytes.
+ * @param[in] offset Current write offset.
+ * @param[in] value Integer value to append.
+ *
+ * @return Virtual offset after the append attempt.
+ */
+static size_t communication_append_u32(char *buffer, size_t buffer_len, size_t offset, uint32_t value)
+{
+    char value_text[16] = {0};
+
+    snprintf(value_text, sizeof(value_text), "%" PRIu32, value);
+    return communication_append_text(buffer, buffer_len, offset, value_text);
+}
+
+/**
+ * @brief Build the framed initialize payload using the active defaults.
+ *
+ * @details Mirrors the server simulator key-value transport contract so the
+ * ESP32-S3 client emits the same config payload shape during initialize.
+ *
+ * @param[out] buffer Destination text buffer.
+ * @param[in] buffer_len Destination buffer length.
+ */
+static void communication_build_initialize_payload_locked(char *buffer, size_t buffer_len)
+{
+    size_t offset = 0;
+
+    if (buffer_len == 0U) {
+        return;
+    }
+
+    buffer[0] = '\0';
+    offset = communication_append_text(buffer, buffer_len, offset, "ssid=");
+    offset = communication_append_text(buffer, buffer_len, offset, s_comm.snapshot.config.wifi_ssid);
+    offset = communication_append_text(buffer, buffer_len, offset, ";password=");
+    offset = communication_append_text(buffer, buffer_len, offset, s_comm.snapshot.config.wifi_password);
+    offset = communication_append_text(buffer, buffer_len, offset, ";server_ip=");
+    offset = communication_append_text(buffer, buffer_len, offset, s_comm.snapshot.config.server_ip);
+    offset = communication_append_text(buffer, buffer_len, offset, ";server_port=");
+    offset = communication_append_u32(buffer, buffer_len, offset, s_comm.snapshot.config.server_port);
+    offset = communication_append_text(buffer, buffer_len, offset, ";wifi_timeout_ms=");
+    offset = communication_append_u32(buffer, buffer_len, offset, s_comm.snapshot.config.wifi_connect_timeout_ms);
+    offset = communication_append_text(buffer, buffer_len, offset, ";tcp_timeout_ms=");
+    offset = communication_append_u32(buffer, buffer_len, offset, s_comm.snapshot.config.tcp_connect_timeout_ms);
+    offset = communication_append_text(buffer, buffer_len, offset, ";keepalive_ms=");
+    (void)communication_append_u32(buffer, buffer_len, offset, s_comm.snapshot.config.keep_alive_period_ms);
+}
+
+/**
+ * @brief Send one framed low-level message over the active TCP socket.
+ *
+ * @details Serializes the shared framed transport contract: SOF, message type,
+ * payload length, host/device counters, sequence, payload, and CRC16.
+ *
+ * @param[in] message_type Low-level transport message type.
+ * @param[in] payload_text Optional UTF-8 payload text.
+ *
+ * @return
+ *      - ESP_OK on success
+ *      - ESP_FAIL when the socket write fails
+ */
+static esp_err_t communication_send_frame_locked(communication_message_type_t message_type, const char *payload_text)
+{
+    uint8_t frame[COMMUNICATION_FRAME_HEADER_BYTES + COMMUNICATION_FRAME_MAX_PAYLOAD + COMMUNICATION_FRAME_CRC_BYTES] = {0};
+    size_t payload_len = 0U;
+    size_t frame_len = 0U;
+    const char *safe_payload = (payload_text != NULL) ? payload_text : "";
+
+    if (s_comm.socket_fd < 0 || !s_comm.snapshot.tcp_connected) {
+        communication_set_generic_failure_locked("Frame send", "Socket is not connected");
+        return ESP_FAIL;
+    }
+
+    payload_len = strnlen(safe_payload, COMMUNICATION_FRAME_MAX_PAYLOAD);
+    frame[0] = COMMUNICATION_FRAME_SOF0;
+    frame[1] = COMMUNICATION_FRAME_SOF1;
+    frame[2] = (uint8_t)message_type;
+    frame[3] = (uint8_t)(payload_len & 0xFFU);
+    frame[4] = (uint8_t)((payload_len >> 8) & 0xFFU);
+    frame[5] = (uint8_t)(s_comm.snapshot.host_live_integer & 0xFFU);
+    frame[6] = (uint8_t)((s_comm.snapshot.host_live_integer >> 8) & 0xFFU);
+    frame[7] = (uint8_t)((s_comm.snapshot.host_live_integer >> 16) & 0xFFU);
+    frame[8] = (uint8_t)((s_comm.snapshot.host_live_integer >> 24) & 0xFFU);
+    frame[9] = (uint8_t)(s_comm.snapshot.device_live_integer & 0xFFU);
+    frame[10] = (uint8_t)((s_comm.snapshot.device_live_integer >> 8) & 0xFFU);
+    frame[11] = (uint8_t)((s_comm.snapshot.device_live_integer >> 16) & 0xFFU);
+    frame[12] = (uint8_t)((s_comm.snapshot.device_live_integer >> 24) & 0xFFU);
+    s_comm.snapshot.sequence = (uint16_t)((s_comm.snapshot.sequence + 1U) & 0xFFFFU);
+    frame[13] = (uint8_t)(s_comm.snapshot.sequence & 0xFFU);
+    frame[14] = (uint8_t)((s_comm.snapshot.sequence >> 8) & 0xFFU);
+    if (payload_len > 0U) {
+        memcpy(&frame[COMMUNICATION_FRAME_HEADER_BYTES], safe_payload, payload_len);
+    }
+
+    frame_len = COMMUNICATION_FRAME_HEADER_BYTES + payload_len + COMMUNICATION_FRAME_CRC_BYTES;
+    uint16_t crc = communication_crc16_ccitt(frame, frame_len - COMMUNICATION_FRAME_CRC_BYTES);
+    frame[frame_len - 2U] = (uint8_t)(crc & 0xFFU);
+    frame[frame_len - 1U] = (uint8_t)((crc >> 8) & 0xFFU);
+
+    int bytes_sent = send(s_comm.socket_fd, frame, frame_len, 0);
+    if (bytes_sent != (int)frame_len) {
+        communication_set_generic_failure_locked("Frame send", strerror(errno));
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+/**
+ * @brief Consume one validated framed packet from the TCP stream.
+ *
+ * @details Parses the shared framed protocol from the non-blocking socket and
+ * updates client-side state progression, counters, and last received text.
+ */
+static void communication_poll_received_frames_locked(void)
+{
+    uint8_t temp[128];
+
+    if (s_comm.socket_fd < 0 || !s_comm.snapshot.tcp_connected) {
+        return;
+    }
+
+    while (true) {
+        int bytes_read = recv(s_comm.socket_fd, temp, sizeof(temp), MSG_DONTWAIT);
+        if (bytes_read > 0) {
+            size_t copy_len = (size_t)bytes_read;
+            if ((s_comm.rx_buffer_len + copy_len) > sizeof(s_comm.rx_buffer)) {
+                communication_set_error_locked("RX buffer overflow");
+                communication_close_socket_locked();
+                return;
+            }
+            memcpy(&s_comm.rx_buffer[s_comm.rx_buffer_len], temp, copy_len);
+            s_comm.rx_buffer_len += copy_len;
+        } else {
+            if (bytes_read == 0) {
+                communication_set_error_locked("TCP peer closed socket");
+                communication_close_socket_locked();
+            }
+            break;
+        }
+    }
+
+    while (s_comm.rx_buffer_len >= (COMMUNICATION_FRAME_HEADER_BYTES + COMMUNICATION_FRAME_CRC_BYTES)) {
+        size_t sof_index = 0U;
+        while (sof_index + 1U < s_comm.rx_buffer_len) {
+            if (s_comm.rx_buffer[sof_index] == COMMUNICATION_FRAME_SOF0 &&
+                s_comm.rx_buffer[sof_index + 1U] == COMMUNICATION_FRAME_SOF1) {
+                break;
+            }
+            sof_index++;
+        }
+
+        if (sof_index > 0U) {
+            memmove(s_comm.rx_buffer, &s_comm.rx_buffer[sof_index], s_comm.rx_buffer_len - sof_index);
+            s_comm.rx_buffer_len -= sof_index;
+        }
+
+        if (s_comm.rx_buffer_len < (COMMUNICATION_FRAME_HEADER_BYTES + COMMUNICATION_FRAME_CRC_BYTES)) {
+            return;
+        }
+
+        size_t payload_len = (size_t)s_comm.rx_buffer[3] | ((size_t)s_comm.rx_buffer[4] << 8);
+        size_t frame_len = COMMUNICATION_FRAME_HEADER_BYTES + payload_len + COMMUNICATION_FRAME_CRC_BYTES;
+        if (payload_len > COMMUNICATION_FRAME_MAX_PAYLOAD) {
+            communication_set_error_locked("RX payload too large");
+            communication_close_socket_locked();
+            return;
+        }
+        if (s_comm.rx_buffer_len < frame_len) {
+            return;
+        }
+
+        uint16_t expected_crc = (uint16_t)s_comm.rx_buffer[frame_len - 2U] |
+                                ((uint16_t)s_comm.rx_buffer[frame_len - 1U] << 8);
+        uint16_t actual_crc = communication_crc16_ccitt(s_comm.rx_buffer, frame_len - COMMUNICATION_FRAME_CRC_BYTES);
+        if (expected_crc != actual_crc) {
+            communication_set_error_locked("CRC mismatch");
+            communication_close_socket_locked();
+            return;
+        }
+
+        communication_message_type_t message_type = (communication_message_type_t)s_comm.rx_buffer[2];
+        s_comm.snapshot.device_live_integer =
+            (uint32_t)s_comm.rx_buffer[9] |
+            ((uint32_t)s_comm.rx_buffer[10] << 8) |
+            ((uint32_t)s_comm.rx_buffer[11] << 16) |
+            ((uint32_t)s_comm.rx_buffer[12] << 24);
+        s_comm.last_valid_rx_us = esp_timer_get_time();
+
+        char payload_text[COMMUNICATION_FRAME_MAX_PAYLOAD + 1U] = {0};
+        if (payload_len > 0U) {
+            memcpy(payload_text, &s_comm.rx_buffer[COMMUNICATION_FRAME_HEADER_BYTES], payload_len);
+            payload_text[payload_len] = '\0';
+        }
+
+        if (message_type == COMMUNICATION_MESSAGE_ERROR) {
+            communication_set_error_locked((payload_text[0] != '\0') ? payload_text : "Peer reported error");
+            communication_close_socket_locked();
+            return;
+        }
+
+        if (message_type == COMMUNICATION_MESSAGE_DATA) {
+            snprintf(s_comm.snapshot.last_received_text,
+                     sizeof(s_comm.snapshot.last_received_text),
+                     "%s",
+                     (payload_text[0] != '\0') ? payload_text : "Empty peer payload");
+            s_comm.snapshot.send_data_enabled = true;
+            communication_enter_state_locked(COMMUNICATION_STATE_SEND_DATA);
+        }
+
+        if (s_comm.snapshot.state == COMMUNICATION_STATE_CONNECT &&
+            (strcmp(payload_text, "client_connected") == 0 ||
+             strcmp(payload_text, "connect_success") == 0 ||
+             strcmp(payload_text, "tcp_connected") == 0 ||
+             strcmp(payload_text, "connect_ack") == 0)) {
+            s_comm.snapshot.connect_passed = true;
+            s_comm.snapshot.send_data_enabled = true;
+            s_comm.keepalive_ack_pending = false;
+            communication_enter_state_locked(COMMUNICATION_STATE_KEEPALIVE);
+        }
+
+        if (message_type == COMMUNICATION_MESSAGE_KEEPALIVE || message_type == COMMUNICATION_MESSAGE_ACK) {
+            s_comm.keepalive_ack_pending = false;
+        }
+
+        memmove(s_comm.rx_buffer, &s_comm.rx_buffer[frame_len], s_comm.rx_buffer_len - frame_len);
+        s_comm.rx_buffer_len -= frame_len;
+    }
 }
 
 /**
@@ -360,8 +724,7 @@ static void communication_enter_state_locked(communication_state_t next_state)
     s_comm.snapshot.state = next_state;
     s_comm.state_started_us = esp_timer_get_time();
 
-    if (next_state != COMMUNICATION_STATE_CONNECT) {
-        s_comm.snapshot.live_integer = 0;
+    if (next_state == COMMUNICATION_STATE_RESET) {
         s_comm.last_keep_alive_us = 0;
     }
 }
@@ -376,10 +739,15 @@ static void communication_enter_state_locked(communication_state_t next_state)
  */
 static void communication_set_error_locked(const char *error_text)
 {
-    snprintf(s_comm.snapshot.last_error,
-             sizeof(s_comm.snapshot.last_error),
-             "%s",
-             (error_text != NULL) ? error_text : "Unknown communication error");
+    const char *resolved_error = error_text;
+    char error_copy[sizeof(s_comm.snapshot.last_error)] = {0};
+
+    if (resolved_error == NULL) {
+        resolved_error = "Unknown communication error";
+    }
+
+    snprintf(error_copy, sizeof(error_copy), "%s", resolved_error);
+    memcpy(s_comm.snapshot.last_error, error_copy, sizeof(s_comm.snapshot.last_error));
     communication_enter_state_locked(COMMUNICATION_STATE_ERROR);
 }
 
@@ -392,7 +760,7 @@ static void communication_set_error_locked(const char *error_text)
 static void communication_load_defaults_locked(void)
 {
     memset(&s_comm.snapshot, 0, sizeof(s_comm.snapshot));
-    s_comm.snapshot.state = COMMUNICATION_STATE_DISCONNECT;
+    s_comm.snapshot.state = COMMUNICATION_STATE_RESET;
     s_comm.snapshot.wifi_rssi = -127;
     snprintf(s_comm.snapshot.local_ip, sizeof(s_comm.snapshot.local_ip), "Not assigned");
     snprintf(s_comm.snapshot.last_error, sizeof(s_comm.snapshot.last_error), "No error");
@@ -409,7 +777,11 @@ static void communication_load_defaults_locked(void)
     s_comm.snapshot.config.wifi_connect_timeout_ms = COMMUNICATION_DEFAULT_WIFI_TIMEOUT;
     s_comm.snapshot.config.tcp_connect_timeout_ms = COMMUNICATION_DEFAULT_TCP_TIMEOUT;
     s_comm.snapshot.config.keep_alive_period_ms = COMMUNICATION_DEFAULT_KEEPALIVE_MS;
+    snprintf(s_comm.snapshot.last_received_text,
+             sizeof(s_comm.snapshot.last_received_text),
+             "No peer text received yet");
     communication_reset_scan_locked();
+    communication_clear_transport_flow_locked();
 }
 
 /**
@@ -425,9 +797,11 @@ static void communication_start_reset_locked(void)
     s_comm.snapshot.reset_requested = false;
     snprintf(s_comm.snapshot.last_error, sizeof(s_comm.snapshot.last_error), "No error");
     s_comm.wifi_connect_started = false;
+    s_comm.tcp_connect_started = false;
     communication_refresh_local_ip_locked();
     communication_refresh_rssi_locked();
     communication_reset_scan_locked();
+    communication_clear_transport_flow_locked();
     communication_enter_state_locked(COMMUNICATION_STATE_RESET);
 }
 
@@ -542,7 +916,23 @@ static esp_err_t communication_open_tcp_socket_locked(void)
     s_comm.socket_fd = socket_fd;
     s_comm.snapshot.tcp_connected = true;
     s_comm.tcp_connect_started = true;
-    s_comm.last_keep_alive_us = 0;
+    communication_clear_transport_flow_locked();
+    s_comm.snapshot.tcp_connected = true;
+
+    char initialize_payload[COMMUNICATION_FRAME_MAX_PAYLOAD + 1U] = {0};
+    communication_build_initialize_payload_locked(initialize_payload, sizeof(initialize_payload));
+    if (communication_send_frame_locked(COMMUNICATION_MESSAGE_INITIALIZE, initialize_payload) != ESP_OK) {
+        communication_close_socket_locked();
+        return ESP_FAIL;
+    }
+
+    s_comm.snapshot.initialize_passed = true;
+    if (communication_send_frame_locked(COMMUNICATION_MESSAGE_CONNECT, "client_connect") != ESP_OK) {
+        communication_close_socket_locked();
+        return ESP_FAIL;
+    }
+
+    s_comm.connect_requested_us = esp_timer_get_time();
     communication_enter_state_locked(COMMUNICATION_STATE_CONNECT);
     return ESP_OK;
 }
@@ -565,21 +955,14 @@ static void communication_service_keep_alive_locked(void)
         return;
     }
 
-    char payload[48];
-    int payload_len = snprintf(payload, sizeof(payload), "LIVE:%" PRIu32 "\n", s_comm.snapshot.live_integer + 1U);
-    int bytes_sent = send(s_comm.socket_fd, payload, (size_t)payload_len, 0);
-    if (bytes_sent != payload_len) {
-        char error_text[96];
-        snprintf(error_text,
-                 sizeof(error_text),
-                 "Keep-alive send failed (%d)",
-                 errno);
-        communication_set_error_locked(error_text);
+    s_comm.snapshot.host_live_integer++;
+    if (communication_send_frame_locked(COMMUNICATION_MESSAGE_KEEPALIVE, "keepalive") != ESP_OK) {
+        communication_set_error_locked(s_comm.snapshot.last_error);
         communication_close_socket_locked();
         return;
     }
 
-    s_comm.snapshot.live_integer++;
+    s_comm.keepalive_ack_pending = true;
     s_comm.last_keep_alive_us = now_us;
 }
 
@@ -735,9 +1118,9 @@ static void communication_service_scan_locked(void)
 /**
  * @brief Execute one low-level state-machine step.
  *
- * @details Polls Wi-Fi/IP readiness, reacts to operator reset/disconnect
- * requests, opens the TCP transport when Wi-Fi is ready, and latches failures
- * into the `ERROR` state for explicit operator recovery.
+ * @details Polls Wi-Fi/IP readiness, reacts to operator reset requests, opens
+ * the TCP transport when Wi-Fi is ready, services framed low-level RX/TX, and
+ * latches failures into the `ERROR` state for explicit operator recovery.
  */
 static void communication_task_step(void)
 {
@@ -748,15 +1131,11 @@ static void communication_task_step(void)
     communication_refresh_local_ip_locked();
     communication_refresh_rssi_locked();
     communication_service_scan_locked();
+    communication_poll_received_frames_locked();
 
     if (s_comm.disconnect_requested) {
         s_comm.disconnect_requested = false;
-        communication_close_socket_locked();
-        (void)esp_wifi_disconnect();
-        communication_enter_state_locked(COMMUNICATION_STATE_DISCONNECT);
-        snprintf(s_comm.snapshot.last_error, sizeof(s_comm.snapshot.last_error), "Disconnected by operator");
-        xSemaphoreGive(s_comm.mutex);
-        return;
+        communication_start_reset_locked();
     }
 
     if (s_comm.reset_requested) {
@@ -806,10 +1185,35 @@ static void communication_task_step(void)
             communication_set_error_locked("TCP socket lost");
             break;
         }
-        communication_service_keep_alive_locked();
+        if (s_comm.connect_requested_us != 0 &&
+            ((uint32_t)((esp_timer_get_time() - s_comm.connect_requested_us) / 1000LL) >=
+             s_comm.snapshot.config.tcp_connect_timeout_ms)) {
+            communication_set_error_locked("Connect response timeout");
+            communication_close_socket_locked();
+            break;
+        }
         break;
 
-    case COMMUNICATION_STATE_DISCONNECT:
+    case COMMUNICATION_STATE_KEEPALIVE:
+    case COMMUNICATION_STATE_SEND_DATA:
+        if (!s_comm.snapshot.wifi_has_ip) {
+            communication_set_error_locked("Wi-Fi link lost");
+            communication_close_socket_locked();
+            break;
+        }
+        if (!s_comm.snapshot.tcp_connected || s_comm.socket_fd < 0) {
+            communication_set_error_locked("TCP socket lost");
+            break;
+        }
+        communication_service_keep_alive_locked();
+        if (s_comm.keepalive_ack_pending &&
+            s_comm.last_keep_alive_us != 0 &&
+            ((uint32_t)((esp_timer_get_time() - s_comm.last_keep_alive_us) / 1000LL) >= COMMUNICATION_WATCHDOG_GRACE_MS)) {
+            communication_set_error_locked("Keepalive response timeout");
+            communication_close_socket_locked();
+        }
+        break;
+
     case COMMUNICATION_STATE_ERROR:
     default:
         break;
@@ -936,9 +1340,12 @@ esp_err_t communication_functions_get_snapshot(communication_snapshot_t *out_sna
 
     if (!s_comm.initialized || s_comm.mutex == NULL) {
         memset(out_snapshot, 0, sizeof(*out_snapshot));
-        out_snapshot->state = COMMUNICATION_STATE_DISCONNECT;
+        out_snapshot->state = COMMUNICATION_STATE_RESET;
         out_snapshot->scan_state = COMMUNICATION_SCAN_STATE_IDLE;
         snprintf(out_snapshot->last_error, sizeof(out_snapshot->last_error), "Communication module not initialized");
+        snprintf(out_snapshot->last_received_text,
+                 sizeof(out_snapshot->last_received_text),
+                 "Communication module not initialized");
         snprintf(out_snapshot->scan_results,
                  sizeof(out_snapshot->scan_results),
                  "Communication module not initialized");
@@ -963,8 +1370,10 @@ const char *communication_functions_state_to_string(communication_state_t state)
         return "Initialize";
     case COMMUNICATION_STATE_CONNECT:
         return "Connect";
-    case COMMUNICATION_STATE_DISCONNECT:
-        return "Disconnect";
+    case COMMUNICATION_STATE_KEEPALIVE:
+        return "Keepalive";
+    case COMMUNICATION_STATE_SEND_DATA:
+        return "Send Data";
     case COMMUNICATION_STATE_ERROR:
         return "Error";
     default:

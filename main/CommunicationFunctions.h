@@ -19,15 +19,16 @@ extern "C" {
  * @brief Low-level Wi-Fi transport state.
  *
  * @details Tracks the transport-side workflow used to prepare the ESP32-S3 for
- * TCP communication with the remote Wi-Fi server. The steady-state connected
- * condition is represented by the `CONNECT` state together with a live TCP
- * socket in the runtime snapshot.
+ * framed TCP communication with the remote Wi-Fi server. The low-level link
+ * uses the same state topology as the server simulator: `reset -> initialize
+ * -> connect -> keepalive -> send_data -> error`.
  */
 typedef enum {
     COMMUNICATION_STATE_RESET = 0,
     COMMUNICATION_STATE_INITIALIZE,
     COMMUNICATION_STATE_CONNECT,
-    COMMUNICATION_STATE_DISCONNECT,
+    COMMUNICATION_STATE_KEEPALIVE,
+    COMMUNICATION_STATE_SEND_DATA,
     COMMUNICATION_STATE_ERROR,
 } communication_state_t;
 
@@ -67,8 +68,8 @@ typedef struct {
  * @brief Snapshot of current communication-task runtime state.
  *
  * @details Provides a UI-friendly summary of the current low-level state,
- * active defaults, TCP/Wi-Fi link readiness, and the latest keep-alive/error
- * bookkeeping maintained by the communication task.
+ * active defaults, TCP/Wi-Fi link readiness, frame counters, and the latest
+ * keep-alive/error bookkeeping maintained by the communication task.
  */
 typedef struct {
     communication_state_t state;
@@ -76,14 +77,20 @@ typedef struct {
     communication_config_t config;
     bool wifi_has_ip;
     bool tcp_connected;
+    bool initialize_passed;
+    bool connect_passed;
+    bool send_data_enabled;
     bool reset_requested;
     bool scan_requested;
-    uint32_t live_integer;
+    uint32_t host_live_integer;
+    uint32_t device_live_integer;
+    uint16_t sequence;
     uint32_t scan_duration_ms;
     uint16_t scan_device_count;
     int32_t wifi_rssi;
     char local_ip[16];
     char last_error[96];
+    char last_received_text[160];
     char scan_results[640];
 } communication_snapshot_t;
 
@@ -91,8 +98,8 @@ typedef struct {
  * @brief Initialize the communication task and load default settings.
  *
  * @details Creates the background task that owns the low-level Wi-Fi/TCP state
- * machine. The task starts in the `DISCONNECT` state until the operator presses
- * `Reset Connection`.
+ * machine. The task starts in the `RESET` state and the worker owns the
+ * automatic reset-to-keepalive sequencing once reset is requested.
  *
  * @return
  *      - ESP_OK: Module initialized successfully or was already initialized
@@ -109,10 +116,11 @@ esp_err_t communication_functions_init(void);
 void communication_functions_request_reset(void);
 
 /**
- * @brief Request a transport disconnect cycle.
+ * @brief Request a transport stop/reset cycle.
  *
- * @details Schedules an asynchronous transition into the `DISCONNECT` state so
- * sockets are closed and the current Wi-Fi station session is released.
+ * @details Preserved for compatibility with existing UI call sites. The client
+ * transport no longer exposes a dedicated `disconnect` state, so this request
+ * now maps to a reset-style teardown.
  */
 void communication_functions_request_disconnect(void);
 

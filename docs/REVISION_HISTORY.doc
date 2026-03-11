@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.9\par
+0.2.11\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -36,8 +36,14 @@
 - Connection Info now includes a `Scan for Devices` action backed by a dedicated 10-second Wi-Fi discovery workflow, plus a hardened serial monitor capture helper that releases COM ports cleanly after log capture.\par
 - Wi-Fi hardware bring-up is now working from the low-level communication path, including lazy driver initialization before reset/connect and scan operations.\par
 - Connection Info reset/scan crashes caused by `comm_link` stack overflow are fixed by increasing task stack budget and moving scan AP-record buffers off the task stack.\par
+- Connection Info reset now drives the framed low-level transport reset flow, and the client transport topology now matches the server-side `reset -> initialize -> connect -> keepalive -> send_data -> error` sequence with shared CRC16 frame structure and richer runtime telemetry.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
+\par
+\b 2026-03-11 17:55:00\b0\par
+- Version: 0.2.11\par
+- Summary: Hooked Connection Info reset into the aligned framed transport flow and flashed the updated client build.\par
+- Notes: `main/ui_screen.c` keeps `Reset Connection` routed into `communication_functions_request_reset()`, while `main/CommunicationFunctions.*` now exposes the server-aligned low-level states `RESET / INITIALIZE / CONNECT / KEEPALIVE / SEND_DATA / ERROR`, framed CRC16 packet handling, host/device live integers, sequence tracking, and last-received text in the snapshot. Verified with successful reconfigure, successful build, successful flash to `COM9`, and a 20-second post-flash log capture showing the new image booting; the capture also shows the current configured Wi-Fi AP is not available, so the communication task transitions `Reset -> Error` until a suitable AP appears.\par
 \par
 \b 2026-03-09 18:10:00\b0\par
 - Version: 0.2.9\par
