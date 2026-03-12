@@ -48,6 +48,26 @@ Use the standard ESP-IDF setup flow for ESP32-S3 targets:
 - [ESP32 Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/stable/get-started/index.html)
 - [ESP32-S3 Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/index.html)
 
+## Build And Flash Rule
+
+- Build and flash must be run sequentially, never in parallel.
+- The required order is:
+  - `.\scripts\idfw.cmd build`
+  - `.\scripts\idfw.cmd -p <PORT> flash`
+- Always build first so flash uses the completed binary from the latest successful build.
+- After every `flash` or `monitor` call on a COM port, close all processes attached to that COM port before continuing.
+- Do not leave `idf.py`, `idf_monitor.py`, PowerShell wrappers, Python wrappers, or any other PID attached to the target COM port after the command completes.
+
+## Build And Flash Rule
+
+- Build and flash must be run sequentially, never in parallel.
+- The required order is:
+  - `.\scripts\idfw.cmd build`
+  - `.\scripts\idfw.cmd -p <PORT> flash`
+- Always build first so flash uses the completed binary from the latest successful build.
+- After every `flash` or `monitor` call on a COM port, close all processes attached to that COM port before continuing.
+- Do not leave `idf.py`, `idf_monitor.py`, PowerShell wrappers, Python wrappers, or any other PID attached to the target COM port after the command completes.
+
 ## Project Layout
 
 The repository contains one main ESP-IDF application at the root and a set of reference/demo projects under `ESP-IDF_DEMO_Files/`.
@@ -146,6 +166,7 @@ We will get back to you as soon as possible.
 - The post-flash monitor attach command shall use ESP-IDF monitor without resetting the board again: `.\scripts\idfw.cmd monitor --port COM9 --no-reset`.
 - If ESP-IDF monitor fails on this Windows host with `PermissionError: [WinError 5] Access is denied`, use the local fallback capture helper instead: `powershell -ExecutionPolicy Bypass -File .\scripts\monitor_capture.ps1 -Port COM9 -DurationSec 20`.
 - The fallback capture helper is a good monitoring method on this host because it attaches to the serial port without resetting the board and has already captured a valid startup log through full UI bring-up.
+- After any `flash`, `monitor`, or fallback serial-capture command on `COM9` or any other COM port, Codex must close all attached monitor/capture/helper processes and verify that no stale PID remains attached to that COM port.
 - Codex must verify that the first 20 seconds of post-flash logs contain no warnings or errors before reporting success.
 - Maintain `DefectRegister.rtf` in the repository root as the running defect log.
 - For every defect found by Eyal or Codex, add a new entry to `DefectRegister.rtf`.
