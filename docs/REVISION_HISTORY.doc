@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.13\par
+0.2.14\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -39,6 +39,12 @@
 - Connection Info reset now drives the framed low-level transport reset flow, and the client transport topology now matches the server-side `reset -> initialize -> connect -> keepalive -> send_data -> error` sequence with shared CRC16 frame structure and richer runtime telemetry.\par
 - Client low-level transport now reaches stable keepalive with the ESP32-C3 bridge, uses a larger guarded RX buffer, and supports reset-driven reconnect against bridge-side stale-session replacement.\par
 - Sound helper scripts now launch tracked background playback/loop workers, store descriptive PID metadata under `.cache\sound_processes`, and the same helper set is duplicated into the `08_lvgl_Porting` demo project with its own local version file.\par
+- Startup mode prompt now auto-selects Online after a 5-second visible countdown while carrying an explicit Offline placeholder flag through the staged initialization flow.\par
+\par
+\b 2026-03-12 12:45:00\b0\par
+- Version: 0.2.14\par
+- Summary: Added a 5-second startup-mode countdown with Online as the default and preserved Offline as a placeholder initialization flag.\par
+- Notes: `main/ui_screen.c` now shows `Offline` and `Online` buttons, updates the question text once per second with a visible countdown, and auto-selects `Online` after 5 seconds if the operator does nothing. `main/Eyal_espresso_ESP32_main.c` now normalizes the startup selection into an explicit options structure with `offline_mode_requested` carried through the initialization sequence while Wi-Fi, communication, controller handshake, and version checks still use the live server path for both startup choices. Verified with successful host reconfigure, successful host build, successful flash to `COM9`, and a 20-second post-flash monitor capture showing the client booting, associating to `EyalSimulatorAP`, obtaining `192.168.4.2`, and reaching `Connect -> Keepalive`, though the startup window still includes an existing controller-status failure and Wi-Fi warning that are not resolved by this UI change.\par
 \par
 \b 2026-03-12 12:25:00\b0\par
 - Version: 0.2.13\par

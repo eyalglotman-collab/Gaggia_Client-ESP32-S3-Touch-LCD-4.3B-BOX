@@ -33,6 +33,7 @@ typedef struct {
     lv_obj_t *init_title_label;
     lv_obj_t *init_status_label;
     lv_obj_t *init_mode_prompt_label;
+    lv_obj_t *init_mode_countdown_label;
     lv_obj_t *init_fail_label;
     lv_obj_t *init_mode_yes_btn;
     lv_obj_t *init_mode_no_btn;
@@ -64,8 +65,10 @@ typedef struct {
     lv_obj_t *settings_preinf_value;
     lv_obj_t *settings_backlight_toggle;
     lv_timer_t *heartbeat_timer;
+    lv_timer_t *init_mode_countdown_timer;
     ui_page_t active_page;
     ui_init_mode_t init_mode_selection;
+    uint32_t init_mode_countdown_seconds;
     bool brewing;
     bool steaming;
     int active_profile;
@@ -81,6 +84,7 @@ static ui_state_t s_ui = {
     .init_title_label = NULL,
     .init_status_label = NULL,
     .init_mode_prompt_label = NULL,
+    .init_mode_countdown_label = NULL,
     .init_fail_label = NULL,
     .init_mode_yes_btn = NULL,
     .init_mode_no_btn = NULL,
@@ -112,8 +116,10 @@ static ui_state_t s_ui = {
     .settings_preinf_value = NULL,
     .settings_backlight_toggle = NULL,
     .heartbeat_timer = NULL,
+    .init_mode_countdown_timer = NULL,
     .active_page = UI_PAGE_HOME,
     .init_mode_selection = UI_INIT_MODE_NONE,
+    .init_mode_countdown_seconds = 0,
     .brewing = false,
     .steaming = false,
     .active_profile = 1,
@@ -146,8 +152,10 @@ static const system_constants_profile_t *ui_get_profile_constants(int profile_in
 static void ui_apply_profile_defaults(int profile_index);
 static const char *ui_get_system_constants_pretty_text(void);
 static void ui_update_connection_info_overlay_contents(void);
+static void ui_update_init_mode_prompt_text(void);
 
 static char s_system_constants_pretty_text[UI_SYSTEM_CONSTANTS_TEXT_MAX];
+static const uint32_t UI_INIT_MODE_DEFAULT_COUNTDOWN_SEC = 5U;
 
 /**
  * @brief Handle the startup-mode `Yes` / `No` prompt selection.
@@ -165,6 +173,69 @@ static void ui_init_mode_select_event_cb(lv_event_t *e)
     } else {
         s_ui.init_mode_selection = UI_INIT_MODE_ONLINE;
     }
+
+    if (s_ui.init_mode_countdown_timer != NULL) {
+        lv_timer_del(s_ui.init_mode_countdown_timer);
+        s_ui.init_mode_countdown_timer = NULL;
+    }
+}
+
+/**
+ * @brief Refresh the startup-mode prompt and countdown text.
+ *
+ * @details Keeps the operator-facing explanation aligned with the current
+ * 5-second auto-select countdown while documenting that both choices still
+ * keep server communication enabled for now.
+ */
+static void ui_update_init_mode_prompt_text(void)
+{
+    if (s_ui.init_mode_prompt_label != NULL) {
+        lv_label_set_text_fmt(
+            s_ui.init_mode_prompt_label,
+            "Online keeps the current full startup with server communication enabled.\n"
+            "Offline currently sets only a startup mode flag placeholder; server communication remains enabled.\n"
+            "Defaulting to Online in %u second%s.",
+            (unsigned)s_ui.init_mode_countdown_seconds,
+            (s_ui.init_mode_countdown_seconds == 1U) ? "" : "s");
+    }
+
+    if (s_ui.init_mode_countdown_label != NULL) {
+        lv_label_set_text_fmt(s_ui.init_mode_countdown_label,
+                              "Automatic selection: Online in %u",
+                              (unsigned)s_ui.init_mode_countdown_seconds);
+    }
+}
+
+/**
+ * @brief Advance the startup-mode countdown timer.
+ *
+ * @details Updates the visible once-per-second countdown and auto-selects the
+ * default Online mode when the timeout expires without operator input.
+ *
+ * @param[in] timer LVGL timer payload.
+ */
+static void ui_init_mode_countdown_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+
+    if (s_ui.init_mode_selection != UI_INIT_MODE_NONE) {
+        return;
+    }
+
+    if (s_ui.init_mode_countdown_seconds > 0U) {
+        s_ui.init_mode_countdown_seconds--;
+    }
+
+    if (s_ui.init_mode_countdown_seconds == 0U) {
+        s_ui.init_mode_selection = UI_INIT_MODE_ONLINE;
+        if (s_ui.init_mode_countdown_timer != NULL) {
+            lv_timer_del(s_ui.init_mode_countdown_timer);
+            s_ui.init_mode_countdown_timer = NULL;
+        }
+        return;
+    }
+
+    ui_update_init_mode_prompt_text();
 }
 
 /**
@@ -1792,6 +1863,7 @@ void ui_screen_create(void)
     s_ui.init_title_label = NULL;
     s_ui.init_status_label = NULL;
     s_ui.init_mode_prompt_label = NULL;
+    s_ui.init_mode_countdown_label = NULL;
     s_ui.init_fail_label = NULL;
     s_ui.init_mode_yes_btn = NULL;
     s_ui.init_mode_no_btn = NULL;
@@ -1815,7 +1887,12 @@ void ui_screen_create(void)
     s_ui.brew_toggle_btn = NULL;
     s_ui.steam_toggle_btn = NULL;
     s_ui.init_mode_selection = UI_INIT_MODE_NONE;
+    s_ui.init_mode_countdown_seconds = UI_INIT_MODE_DEFAULT_COUNTDOWN_SEC;
     s_ui.init_failure_confirm_requested = false;
+    if (s_ui.init_mode_countdown_timer != NULL) {
+        lv_timer_del(s_ui.init_mode_countdown_timer);
+        s_ui.init_mode_countdown_timer = NULL;
+    }
 
     lv_obj_t *splash = lv_obj_create(scr);
     lv_obj_remove_style_all(splash);
@@ -1824,19 +1901,24 @@ void ui_screen_create(void)
     lv_obj_set_style_bg_color(splash, lv_color_hex(UI_COLOR_BG), 0);
 
     s_ui.init_title_label = lv_label_create(splash);
-    lv_label_set_text(s_ui.init_title_label, "Run in Offline Mode?");
+    lv_label_set_text(s_ui.init_title_label, "Select Startup Mode");
     lv_obj_set_style_text_font(s_ui.init_title_label, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(s_ui.init_title_label, lv_color_hex(UI_COLOR_TEXT), 0);
     lv_obj_align(s_ui.init_title_label, LV_ALIGN_CENTER, 0, -78);
 
     s_ui.init_mode_prompt_label = lv_label_create(splash);
-    lv_label_set_text(s_ui.init_mode_prompt_label,
-                      "Select 'Yes' to simulate the server and skip real Wi-Fi.\n"
-                      "Select 'No' to run the full online initialization.");
     lv_obj_set_style_text_font(s_ui.init_mode_prompt_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(s_ui.init_mode_prompt_label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
     lv_obj_set_style_text_align(s_ui.init_mode_prompt_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_ui.init_mode_prompt_label, LV_ALIGN_CENTER, 0, -20);
+    ui_update_init_mode_prompt_text();
+
+    s_ui.init_mode_countdown_label = lv_label_create(splash);
+    lv_obj_set_style_text_font(s_ui.init_mode_countdown_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(s_ui.init_mode_countdown_label, lv_color_hex(UI_COLOR_ACCENT), 0);
+    lv_obj_set_style_text_align(s_ui.init_mode_countdown_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_ui.init_mode_countdown_label, LV_ALIGN_CENTER, 0, 28);
+    ui_update_init_mode_prompt_text();
 
     s_ui.init_mode_yes_btn = lv_button_create(splash);
     lv_obj_set_size(s_ui.init_mode_yes_btn, 220, 58);
@@ -1848,7 +1930,7 @@ void ui_screen_create(void)
                         (void *)(intptr_t)UI_INIT_MODE_OFFLINE);
 
     lv_obj_t *yes_lbl = lv_label_create(s_ui.init_mode_yes_btn);
-    lv_label_set_text(yes_lbl, "Yes");
+    lv_label_set_text(yes_lbl, "Offline");
     ui_style_button_label(yes_lbl);
     lv_obj_center(yes_lbl);
 
@@ -1862,7 +1944,7 @@ void ui_screen_create(void)
                         (void *)(intptr_t)UI_INIT_MODE_ONLINE);
 
     lv_obj_t *no_lbl = lv_label_create(s_ui.init_mode_no_btn);
-    lv_label_set_text(no_lbl, "No");
+    lv_label_set_text(no_lbl, "Online");
     ui_style_button_label(no_lbl);
     lv_obj_center(no_lbl);
 
@@ -1871,7 +1953,7 @@ void ui_screen_create(void)
     lv_obj_set_style_text_font(s_ui.init_status_label, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_ui.init_status_label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
     lv_obj_set_style_text_align(s_ui.init_status_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(s_ui.init_status_label, LV_ALIGN_CENTER, 0, 42);
+    lv_obj_align(s_ui.init_status_label, LV_ALIGN_CENTER, 0, 72);
     lv_obj_add_flag(s_ui.init_status_label, LV_OBJ_FLAG_HIDDEN);
 
     s_ui.init_fail_label = lv_label_create(splash);
@@ -1892,6 +1974,8 @@ void ui_screen_create(void)
     lv_label_set_text(confirm_lbl, "Confirm");
     ui_style_button_label(confirm_lbl);
     lv_obj_center(confirm_lbl);
+
+    s_ui.init_mode_countdown_timer = lv_timer_create(ui_init_mode_countdown_timer_cb, 1000, NULL);
 
     ESP_LOGI(TAG, "Initialization splash screen created");
 }
@@ -1950,6 +2034,11 @@ void ui_screen_set_init_failed(bool failed)
  */
 void ui_screen_begin_initialization(ui_init_mode_t mode)
 {
+    if (s_ui.init_mode_countdown_timer != NULL) {
+        lv_timer_del(s_ui.init_mode_countdown_timer);
+        s_ui.init_mode_countdown_timer = NULL;
+    }
+
     if (s_ui.init_title_label) {
         lv_label_set_text(s_ui.init_title_label, "Initializing System...");
         lv_obj_align(s_ui.init_title_label, LV_ALIGN_CENTER, 0, -74);
@@ -1957,10 +2046,13 @@ void ui_screen_begin_initialization(ui_init_mode_t mode)
 
     if (s_ui.init_mode_prompt_label) {
         const char *mode_text = (mode == UI_INIT_MODE_OFFLINE)
-                                    ? "Offline mode selected. Starting simulated initialization..."
-                                    : "Online mode selected. Starting full initialization...";
+                                    ? "Offline placeholder mode selected. Startup continues with server communication enabled."
+                                    : "Online mode selected. Startup continues with server communication enabled.";
         lv_label_set_text(s_ui.init_mode_prompt_label, mode_text);
         lv_obj_align(s_ui.init_mode_prompt_label, LV_ALIGN_CENTER, 0, -30);
+    }
+    if (s_ui.init_mode_countdown_label) {
+        lv_obj_add_flag(s_ui.init_mode_countdown_label, LV_OBJ_FLAG_HIDDEN);
     }
 
     if (s_ui.init_mode_yes_btn) {

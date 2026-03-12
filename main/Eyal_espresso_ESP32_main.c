@@ -28,6 +28,12 @@ static const char *TAG = "espresso";
 #define UI_INIT_STATUS_SHOW_MS (300)
 #define UI_INIT_ERROR_TEXT_MAX (320)
 
+typedef struct {
+    ui_init_mode_t selected_mode;
+    bool offline_mode_requested;
+    bool server_communication_enabled;
+} espresso_startup_options_t;
+
 /**
  * @brief Update the initialization splash with the current startup step.
  *
@@ -160,16 +166,42 @@ static esp_err_t espresso_run_internal_checks(void)
 }
 
 /**
+ * @brief Build normalized startup options from the selected UI mode.
+ *
+ * @details Keeps the current behavior explicit: both Online and Offline choices
+ * continue to use server communication for now, while the Offline choice is
+ * preserved as a dedicated startup flag for future scoping.
+ *
+ * @param[in] init_mode Selected startup mode from the splash UI.
+ *
+ * @return Startup options structure used by the staged initialization flow.
+ */
+static espresso_startup_options_t espresso_make_startup_options(ui_init_mode_t init_mode)
+{
+    espresso_startup_options_t options = {
+        .selected_mode = init_mode,
+        .offline_mode_requested = (init_mode == UI_INIT_MODE_OFFLINE),
+        .server_communication_enabled = true,
+    };
+
+    return options;
+}
+
+/**
  * @brief Execute the staged client initialization flow.
  *
  * @details Shows the splash progress steps, runs internal and peripheral checks,
  * requests controller initialization status, and then returns the UI to the
  * main screen.
  */
-static bool espresso_run_client_initialization_sequence(ui_init_mode_t init_mode)
+static bool espresso_run_client_initialization_sequence(const espresso_startup_options_t *startup_options)
 {
+    if (startup_options == NULL) {
+        return false;
+    }
+
     if (lvgl_port_lock(-1)) {
-        ui_screen_begin_initialization(init_mode);
+        ui_screen_begin_initialization(startup_options->selected_mode);
         lvgl_port_unlock();
     }
 
@@ -199,19 +231,19 @@ static bool espresso_run_client_initialization_sequence(ui_init_mode_t init_mode
         return espresso_handle_init_failure("TF card", esp_err_to_name(tf_ret));
     }
 
-    if (init_mode == UI_INIT_MODE_OFFLINE) {
-        ui_set_init_status_and_yield("Offline mode selected: simulating Wi-Fi...");
-        peripherals_manager_set_connection_simulation(false, PERIPHERALS_CONTROLLER_STATUS_READY);
-        ESP_LOGI(TAG, "Offline mode: Wi-Fi initialization simulated");
+    ui_set_init_status_and_yield("Initializing Wi-Fi...");
+    if (startup_options->offline_mode_requested) {
+        /* TODO: Pass `startup_options->offline_mode_requested` into Wi-Fi init when
+         * offline behavior is formally scoped. Server communication stays enabled
+         * for both startup choices in the current implementation. */
+        ESP_LOGI(TAG, "Offline placeholder flag is set; Wi-Fi init still runs normally");
+    }
+    esp_err_t wifi_ret = peripherals_manager_init_wifi();
+    if (wifi_ret == ESP_OK) {
+        ESP_LOGI(TAG, "Wi-Fi initialized successfully");
     } else {
-        ui_set_init_status_and_yield("Initializing Wi-Fi...");
-        esp_err_t wifi_ret = peripherals_manager_init_wifi();
-        if (wifi_ret == ESP_OK) {
-            ESP_LOGI(TAG, "Wi-Fi initialized successfully");
-        } else {
-            ESP_LOGW(TAG, "Wi-Fi initialization failed: %s", esp_err_to_name(wifi_ret));
-            return espresso_handle_init_failure("Wi-Fi", esp_err_to_name(wifi_ret));
-        }
+        ESP_LOGW(TAG, "Wi-Fi initialization failed: %s", esp_err_to_name(wifi_ret));
+        return espresso_handle_init_failure("Wi-Fi", esp_err_to_name(wifi_ret));
     }
 
     ui_set_init_status_and_yield("Loading system constants...");
@@ -224,6 +256,12 @@ static bool espresso_run_client_initialization_sequence(ui_init_mode_t init_mode
     }
 
     ui_set_init_status_and_yield("Preparing communication state machine...");
+    if (startup_options->offline_mode_requested) {
+        /* TODO: Pass `startup_options->offline_mode_requested` into
+         * communication_functions_init()` once the communication module has an
+         * explicit offline-aware startup argument. */
+        ESP_LOGI(TAG, "Offline placeholder flag is set; communication init still runs normally");
+    }
     esp_err_t comm_ret = communication_functions_init();
     if (comm_ret == ESP_OK) {
         ESP_LOGI(TAG, "Communication state machine initialized successfully");
@@ -233,52 +271,52 @@ static bool espresso_run_client_initialization_sequence(ui_init_mode_t init_mode
     }
 
     peripherals_controller_status_t controller_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
-    if (init_mode == UI_INIT_MODE_OFFLINE) {
-        ui_set_init_status_and_yield("Simulating Gaggia BIT and status check...");
-        controller_status = PERIPHERALS_CONTROLLER_STATUS_READY;
-        peripherals_manager_set_connection_simulation(false, controller_status);
-        ESP_LOGI(TAG, "Offline mode: controller initialization simulated as READY");
-    } else {
-        ui_set_init_status_and_yield("Requesting Gaggia Controller status...");
-        esp_err_t controller_ret = peripherals_manager_request_controller_init(&controller_status);
-        if (controller_ret != ESP_OK ||
-            controller_status == PERIPHERALS_CONTROLLER_STATUS_OFFLINE ||
-            controller_status == PERIPHERALS_CONTROLLER_STATUS_UNKNOWN ||
-            controller_status == PERIPHERALS_CONTROLLER_STATUS_ERROR) {
-            const char *failure_text = (controller_ret == ESP_OK)
-                                           ? peripherals_manager_controller_status_to_string(controller_status)
-                                           : esp_err_to_name(controller_ret);
-            ESP_LOGW(TAG, "Controller initialization failed: %s", failure_text);
-            return espresso_handle_init_failure("Gaggia BIT and status check", failure_text);
-        }
-        ESP_LOGI(TAG,
-                 "Controller initialization status: %s",
-                 peripherals_manager_controller_status_to_string(controller_status));
+    ui_set_init_status_and_yield("Requesting Gaggia Controller status...");
+    if (startup_options->offline_mode_requested) {
+        /* TODO: Pass `startup_options->offline_mode_requested` into controller
+         * startup/handshake routines when Offline behavior is defined beyond a
+         * placeholder flag. */
+        ESP_LOGI(TAG, "Offline placeholder flag is set; controller init still runs normally");
     }
+    esp_err_t controller_ret = peripherals_manager_request_controller_init(&controller_status);
+    if (controller_ret != ESP_OK ||
+        controller_status == PERIPHERALS_CONTROLLER_STATUS_OFFLINE ||
+        controller_status == PERIPHERALS_CONTROLLER_STATUS_UNKNOWN ||
+        controller_status == PERIPHERALS_CONTROLLER_STATUS_ERROR) {
+        const char *failure_text = (controller_ret == ESP_OK)
+                                       ? peripherals_manager_controller_status_to_string(controller_status)
+                                       : esp_err_to_name(controller_ret);
+        ESP_LOGW(TAG, "Controller initialization failed: %s", failure_text);
+        return espresso_handle_init_failure("Gaggia BIT and status check", failure_text);
+    }
+    ESP_LOGI(TAG,
+             "Controller initialization status: %s",
+             peripherals_manager_controller_status_to_string(controller_status));
 
     ui_set_init_status_and_yield("Checking version compatibility...");
     const system_constants_data_t *constants = system_constants_get();
-    if (init_mode == UI_INIT_MODE_OFFLINE) {
-        if (!espresso_version_matches_pattern(constants->client_version, constants->compatible_client_version)) {
-            return espresso_handle_init_failure("Version compatibility check",
-                                                "Offline compatibility simulation failed.");
-        }
-        ESP_LOGI(TAG, "Offline mode: version compatibility simulated as PASS");
-    } else {
-        char controller_version[64];
-        esp_err_t version_ret = peripherals_manager_request_controller_version(controller_version,
-                                                                               sizeof(controller_version));
-        if (version_ret != ESP_OK) {
-            return espresso_handle_init_failure("Version compatibility check", esp_err_to_name(version_ret));
-        }
-        if (!espresso_version_matches_pattern(controller_version, constants->compatible_client_version)) {
-            return espresso_handle_init_failure("Version compatibility check",
-                                                "Controller version is not compatible with the client.");
-        }
-        ESP_LOGI(TAG,
-                 "Controller version %s is compatible with %s",
-                 controller_version,
-                 constants->compatible_client_version);
+    if (startup_options->offline_mode_requested) {
+        /* TODO: Pass `startup_options->offline_mode_requested` into version and
+         * compatibility negotiation once Offline mode gets real scoped behavior. */
+        ESP_LOGI(TAG, "Offline placeholder flag is set; version compatibility still uses the live server path");
+    }
+    char controller_version[64];
+    esp_err_t version_ret = peripherals_manager_request_controller_version(controller_version,
+                                                                           sizeof(controller_version));
+    if (version_ret != ESP_OK) {
+        return espresso_handle_init_failure("Version compatibility check", esp_err_to_name(version_ret));
+    }
+    if (!espresso_version_matches_pattern(controller_version, constants->compatible_client_version)) {
+        return espresso_handle_init_failure("Version compatibility check",
+                                            "Controller version is not compatible with the client.");
+    }
+    ESP_LOGI(TAG,
+             "Controller version %s is compatible with %s",
+             controller_version,
+             constants->compatible_client_version);
+    if (!startup_options->server_communication_enabled) {
+        return espresso_handle_init_failure("Startup configuration",
+                                            "Server communication is disabled, which is not supported yet.");
     }
 
     if (lvgl_port_lock(-1)) {
@@ -389,7 +427,8 @@ void app_main(void)
                 vTaskDelay(pdMS_TO_TICKS(100));
             }
 
-            espresso_run_client_initialization_sequence(init_mode);
+            espresso_startup_options_t startup_options = espresso_make_startup_options(init_mode);
+            espresso_run_client_initialization_sequence(&startup_options);
         } else {
             ESP_LOGE(TAG, "LVGL initialization failed");
         }
@@ -407,7 +446,8 @@ void app_main(void)
                 init_mode = ui_screen_take_init_mode_selection();
                 vTaskDelay(pdMS_TO_TICKS(100));
             }
-            espresso_run_client_initialization_sequence(init_mode);
+            espresso_startup_options_t startup_options = espresso_make_startup_options(init_mode);
+            espresso_run_client_initialization_sequence(&startup_options);
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
