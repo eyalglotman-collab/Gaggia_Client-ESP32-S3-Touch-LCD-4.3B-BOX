@@ -489,8 +489,12 @@ static void communication_poll_received_frames_locked(void)
  */
 static esp_err_t communication_ensure_wifi_stack_ready_locked(void)
 {
-    esp_err_t ret = peripherals_manager_init_wifi();
+    ESP_LOGI(TAG, "Communication init helper begin: ensure Wi-Fi stack ready");
+    esp_err_t ret = peripherals_manager_init_wifi(false);
+    ESP_LOGI(TAG, "Communication init helper result: peripherals_manager_init_wifi(false) -> %s",
+             esp_err_to_name(ret));
     if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Communication init helper end: Wi-Fi stack ready");
         return ESP_OK;
     }
 
@@ -800,13 +804,18 @@ static void communication_start_reset_locked(void)
  */
 static esp_err_t communication_begin_initialize_locked(void)
 {
+    ESP_LOGI(TAG, "Communication initialize begin");
     esp_err_t ret = communication_ensure_wifi_stack_ready_locked();
+    ESP_LOGI(TAG, "Communication initialize step result: ensure Wi-Fi stack -> %s", esp_err_to_name(ret));
     if (ret != ESP_OK) {
         communication_set_generic_failure_locked("Wi-Fi hardware init", esp_err_to_name(ret));
         return ret;
     }
 
+    ESP_LOGI(TAG, "Communication initialize step: validate target AP visibility");
     ret = communication_validate_target_ap_visible_locked();
+    ESP_LOGI(TAG, "Communication initialize step result: validate target AP visibility -> %s",
+             esp_err_to_name(ret));
     if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND) {
         if (ret != ESP_ERR_INVALID_STATE && ret != ESP_ERR_NO_MEM) {
             communication_set_generic_failure_locked("Initialize precheck", esp_err_to_name(ret));
@@ -830,19 +839,25 @@ static esp_err_t communication_begin_initialize_locked(void)
     wifi_cfg.sta.pmf_cfg.capable = true;
     wifi_cfg.sta.pmf_cfg.required = false;
 
+    ESP_LOGI(TAG, "Communication initialize step: esp_wifi_set_mode(STA)");
     ret = esp_wifi_set_mode(WIFI_MODE_STA);
+    ESP_LOGI(TAG, "Communication initialize step result: esp_wifi_set_mode -> %s", esp_err_to_name(ret));
     if (ret != ESP_OK) {
         communication_set_generic_failure_locked("Wi-Fi mode set", esp_err_to_name(ret));
         return ret;
     }
 
+    ESP_LOGI(TAG, "Communication initialize step: esp_wifi_set_config(STA)");
     ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
+    ESP_LOGI(TAG, "Communication initialize step result: esp_wifi_set_config -> %s", esp_err_to_name(ret));
     if (ret != ESP_OK) {
         communication_set_generic_failure_locked("Wi-Fi config", esp_err_to_name(ret));
         return ret;
     }
 
+    ESP_LOGI(TAG, "Communication initialize step: esp_wifi_connect");
     ret = esp_wifi_connect();
+    ESP_LOGI(TAG, "Communication initialize step result: esp_wifi_connect -> %s", esp_err_to_name(ret));
     if (ret != ESP_OK) {
         communication_set_generic_failure_locked("Wi-Fi connect", esp_err_to_name(ret));
         return ret;
@@ -850,6 +865,7 @@ static esp_err_t communication_begin_initialize_locked(void)
 
     s_comm.wifi_connect_started = true;
     communication_enter_state_locked(COMMUNICATION_STATE_INITIALIZE);
+    ESP_LOGI(TAG, "Communication initialize end -> %s", esp_err_to_name(ESP_OK));
     return ESP_OK;
 }
 
@@ -865,6 +881,7 @@ static esp_err_t communication_begin_initialize_locked(void)
  */
 static esp_err_t communication_open_tcp_socket_locked(void)
 {
+    ESP_LOGI(TAG, "Communication TCP connect begin");
     struct sockaddr_in server_addr = {
         .sin_family = AF_INET,
         .sin_port = htons(s_comm.snapshot.config.server_port),
@@ -875,7 +892,9 @@ static esp_err_t communication_open_tcp_socket_locked(void)
         return ESP_ERR_INVALID_ARG;
     }
 
+    ESP_LOGI(TAG, "Communication TCP step: socket()");
     int socket_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    ESP_LOGI(TAG, "Communication TCP step result: socket -> fd=%d", socket_fd);
     if (socket_fd < 0) {
         communication_set_generic_failure_locked("TCP socket create", strerror(errno));
         return ESP_FAIL;
@@ -888,8 +907,14 @@ static esp_err_t communication_open_tcp_socket_locked(void)
     (void)setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
     (void)setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
+    ESP_LOGI(TAG, "Communication TCP step: connect(%s:%u)",
+             s_comm.snapshot.config.server_ip,
+             (unsigned)s_comm.snapshot.config.server_port);
     if (connect(socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) != 0) {
         int socket_errno = errno;
+        ESP_LOGI(TAG, "Communication TCP step result: connect -> errno=%d (%s)",
+                 socket_errno,
+                 strerror(socket_errno));
         close(socket_fd);
         errno = socket_errno;
         if (socket_errno == ECONNREFUSED ||
@@ -902,6 +927,7 @@ static esp_err_t communication_open_tcp_socket_locked(void)
         }
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "Communication TCP step result: connect -> OK");
 
     s_comm.socket_fd = socket_fd;
     s_comm.snapshot.tcp_connected = true;
@@ -911,19 +937,24 @@ static esp_err_t communication_open_tcp_socket_locked(void)
 
     char initialize_payload[COMMUNICATION_FRAME_MAX_PAYLOAD + 1U] = {0};
     communication_build_initialize_payload_locked(initialize_payload, sizeof(initialize_payload));
+    ESP_LOGI(TAG, "Communication TCP step: send INITIALIZE frame");
     if (communication_send_frame_locked(COMMUNICATION_MESSAGE_INITIALIZE, initialize_payload) != ESP_OK) {
         communication_close_socket_locked();
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "Communication TCP step result: send INITIALIZE frame -> OK");
 
     s_comm.snapshot.initialize_passed = true;
+    ESP_LOGI(TAG, "Communication TCP step: send CONNECT frame");
     if (communication_send_frame_locked(COMMUNICATION_MESSAGE_CONNECT, "client_connect") != ESP_OK) {
         communication_close_socket_locked();
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "Communication TCP step result: send CONNECT frame -> OK");
 
     s_comm.connect_requested_us = esp_timer_get_time();
     communication_enter_state_locked(COMMUNICATION_STATE_CONNECT);
+    ESP_LOGI(TAG, "Communication TCP connect end -> %s", esp_err_to_name(ESP_OK));
     return ESP_OK;
 }
 
@@ -1235,35 +1266,68 @@ static void communication_task(void *arg)
     }
 }
 
-esp_err_t communication_functions_init(void)
+/**
+ * @brief Initialize the communication task and load default settings.
+ *
+ * @details Creates the background task that owns the low-level Wi-Fi/TCP state
+ * machine. The `offline` argument does not skip initialization; it documents
+ * that startup callers may downgrade failures to warnings while still running
+ * the same initialization sequence.
+ *
+ * @param[in] offline Startup offline-mode flag.
+ *
+ * @return
+ *      - ESP_OK: Module initialized successfully or was already initialized
+ *      - ESP_ERR_NO_MEM: Task or synchronization primitives could not be created
+ */
+esp_err_t communication_functions_init(bool offline)
 {
+    ESP_LOGI(TAG, "Communication module init begin (offline=%d)", offline);
+    if (offline) {
+        ESP_LOGI(TAG, "Communication init running in offline mode; caller downgrades failures to warnings");
+    }
+
     if (s_comm.initialized) {
+        ESP_LOGI(TAG, "Communication module init end -> already initialized");
         return ESP_OK;
     }
 
+    ESP_LOGI(TAG, "Communication module init step: xSemaphoreCreateMutex");
     s_comm.mutex = xSemaphoreCreateMutex();
+    ESP_LOGI(TAG, "Communication module init step result: xSemaphoreCreateMutex -> %s",
+             (s_comm.mutex != NULL) ? "OK" : "NULL");
     if (s_comm.mutex == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
+    ESP_LOGI(TAG, "Communication module init step: xSemaphoreTake(mutex)");
     if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGW(TAG, "Communication module init step result: xSemaphoreTake(mutex) -> FAILED");
         vSemaphoreDelete(s_comm.mutex);
         s_comm.mutex = NULL;
         return ESP_ERR_NO_MEM;
     }
+    ESP_LOGI(TAG, "Communication module init step result: xSemaphoreTake(mutex) -> OK");
 
+    ESP_LOGI(TAG, "Communication module init step: communication_load_defaults_locked");
     communication_load_defaults_locked();
+    ESP_LOGI(TAG, "Communication module init step result: communication_load_defaults_locked -> OK");
     s_comm.socket_fd = -1;
     s_comm.state_started_us = esp_timer_get_time();
     s_comm.last_keep_alive_us = 0;
+    ESP_LOGI(TAG, "Communication module init step: xSemaphoreGive(mutex)");
     xSemaphoreGive(s_comm.mutex);
+    ESP_LOGI(TAG, "Communication module init step result: xSemaphoreGive(mutex) -> OK");
 
+    ESP_LOGI(TAG, "Communication module init step: xTaskCreate(communication_task)");
     BaseType_t task_ret = xTaskCreate(communication_task,
                                       COMMUNICATION_TASK_NAME,
                                       COMMUNICATION_TASK_STACK_BYTES,
                                       NULL,
                                       COMMUNICATION_TASK_PRIORITY,
                                       &s_comm.task_handle);
+    ESP_LOGI(TAG, "Communication module init step result: xTaskCreate -> %s",
+             (task_ret == pdPASS) ? "pdPASS" : "FAILED");
     if (task_ret != pdPASS) {
         vSemaphoreDelete(s_comm.mutex);
         s_comm.mutex = NULL;
@@ -1277,6 +1341,7 @@ esp_err_t communication_functions_init(void)
              s_comm.snapshot.config.server_ip,
              (unsigned)s_comm.snapshot.config.server_port,
              s_comm.snapshot.config.wifi_ssid);
+    ESP_LOGI(TAG, "Communication module init end -> %s", esp_err_to_name(ESP_OK));
     return ESP_OK;
 }
 

@@ -1,4 +1,7 @@
 flowchart TD
+    START["staged initialization step fails"] --> MODE{"startup mode"}
+    MODE -->|Online| EUI["error screen"]
+    MODE -->|Offline| OWARN["warning log and continue startup"]
     CRC["CRC failure"] --> ERR["error state"]
     HOST["Host watchdog failure"] --> ERR
     DEV["Device watchdog failure"] --> ERR

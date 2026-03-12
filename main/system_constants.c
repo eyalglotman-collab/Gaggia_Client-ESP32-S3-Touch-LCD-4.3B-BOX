@@ -287,23 +287,33 @@ static void parse_profiles(const char *xml_start, const char *xml_end)
  */
 esp_err_t system_constants_load(void)
 {
+    ESP_LOGI(TAG, "System constants load begin");
+    ESP_LOGI(TAG, "System constants step: applying built-in defaults");
     system_constants_set_defaults();
+    ESP_LOGI(TAG, "System constants step result: built-in defaults applied");
 
     const char *xml_start = SystemConstants_xml_start;
     const char *xml_end = SystemConstants_xml_end;
+    ESP_LOGI(TAG, "System constants step: validating embedded XML pointers");
     ESP_RETURN_ON_FALSE(xml_start != NULL && xml_end != NULL && xml_end > xml_start,
                         ESP_ERR_INVALID_STATE,
                         TAG,
                         "Embedded SystemConstants.xml is unavailable");
+    ESP_LOGI(TAG, "System constants step result: embedded XML pointers valid");
 
+    ESP_LOGI(TAG, "System constants step: parse global values");
     parse_global_values(xml_start, xml_end);
+    ESP_LOGI(TAG, "System constants step result: parse global values complete");
+    ESP_LOGI(TAG, "System constants step: parse profiles");
     parse_profiles(xml_start, xml_end);
+    ESP_LOGI(TAG, "System constants step result: parse profiles complete");
 
     ESP_LOGI(TAG,
              "Loaded SystemConstants.xml: profiles=%d client=%s compatible=%s",
              s_constants.profile_count,
              s_constants.client_version,
              s_constants.compatible_client_version);
+    ESP_LOGI(TAG, "System constants load end -> %s", esp_err_to_name(ESP_OK));
     return ESP_OK;
 }
 

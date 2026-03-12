@@ -192,16 +192,17 @@ static void ui_update_init_mode_prompt_text(void)
     if (s_ui.init_mode_prompt_label != NULL) {
         lv_label_set_text_fmt(
             s_ui.init_mode_prompt_label,
-            "Online keeps the current full startup with server communication enabled.\n"
-            "Offline currently sets only a startup mode flag placeholder; server communication remains enabled.\n"
-            "Defaulting to Online in %u second%s.",
+            "Offline completes the full startup sequence and logs init failures as warnings.\n"
+            "Online keeps the same full startup sequence but treats init failures as blocking errors.\n"
+            "Both modes keep server communication enabled for now.\n"
+            "Defaulting to Offline in %u second%s.",
             (unsigned)s_ui.init_mode_countdown_seconds,
             (s_ui.init_mode_countdown_seconds == 1U) ? "" : "s");
     }
 
     if (s_ui.init_mode_countdown_label != NULL) {
         lv_label_set_text_fmt(s_ui.init_mode_countdown_label,
-                              "Automatic selection: Online in %u",
+                              "Automatic selection: Offline in %u",
                               (unsigned)s_ui.init_mode_countdown_seconds);
     }
 }
@@ -210,7 +211,7 @@ static void ui_update_init_mode_prompt_text(void)
  * @brief Advance the startup-mode countdown timer.
  *
  * @details Updates the visible once-per-second countdown and auto-selects the
- * default Online mode when the timeout expires without operator input.
+ * default Offline mode when the timeout expires without operator input.
  *
  * @param[in] timer LVGL timer payload.
  */
@@ -227,7 +228,7 @@ static void ui_init_mode_countdown_timer_cb(lv_timer_t *timer)
     }
 
     if (s_ui.init_mode_countdown_seconds == 0U) {
-        s_ui.init_mode_selection = UI_INIT_MODE_ONLINE;
+        s_ui.init_mode_selection = UI_INIT_MODE_OFFLINE;
         if (s_ui.init_mode_countdown_timer != NULL) {
             lv_timer_del(s_ui.init_mode_countdown_timer);
             s_ui.init_mode_countdown_timer = NULL;
@@ -1922,12 +1923,16 @@ void ui_screen_create(void)
 
     s_ui.init_mode_yes_btn = lv_button_create(splash);
     lv_obj_set_size(s_ui.init_mode_yes_btn, 220, 58);
-    lv_obj_align(s_ui.init_mode_yes_btn, LV_ALIGN_CENTER, -130, 62);
     ui_style_action_button(s_ui.init_mode_yes_btn);
     lv_obj_add_event_cb(s_ui.init_mode_yes_btn,
                         ui_init_mode_select_event_cb,
                         LV_EVENT_CLICKED,
                         (void *)(intptr_t)UI_INIT_MODE_OFFLINE);
+    lv_obj_align_to(s_ui.init_mode_yes_btn,
+                    s_ui.init_mode_countdown_label,
+                    LV_ALIGN_OUT_BOTTOM_MID,
+                    -130,
+                    10);
 
     lv_obj_t *yes_lbl = lv_label_create(s_ui.init_mode_yes_btn);
     lv_label_set_text(yes_lbl, "Offline");
@@ -1936,12 +1941,16 @@ void ui_screen_create(void)
 
     s_ui.init_mode_no_btn = lv_button_create(splash);
     lv_obj_set_size(s_ui.init_mode_no_btn, 220, 58);
-    lv_obj_align(s_ui.init_mode_no_btn, LV_ALIGN_CENTER, 130, 62);
     ui_style_action_button(s_ui.init_mode_no_btn);
     lv_obj_add_event_cb(s_ui.init_mode_no_btn,
                         ui_init_mode_select_event_cb,
                         LV_EVENT_CLICKED,
                         (void *)(intptr_t)UI_INIT_MODE_ONLINE);
+    lv_obj_align_to(s_ui.init_mode_no_btn,
+                    s_ui.init_mode_countdown_label,
+                    LV_ALIGN_OUT_BOTTOM_MID,
+                    130,
+                    10);
 
     lv_obj_t *no_lbl = lv_label_create(s_ui.init_mode_no_btn);
     lv_label_set_text(no_lbl, "Online");
@@ -2046,8 +2055,8 @@ void ui_screen_begin_initialization(ui_init_mode_t mode)
 
     if (s_ui.init_mode_prompt_label) {
         const char *mode_text = (mode == UI_INIT_MODE_OFFLINE)
-                                    ? "Offline placeholder mode selected. Startup continues with server communication enabled."
-                                    : "Online mode selected. Startup continues with server communication enabled.";
+                                    ? "Offline mode selected. Full initialization continues and failures are logged as warnings."
+                                    : "Online mode selected. Full initialization continues and failures remain blocking errors.";
         lv_label_set_text(s_ui.init_mode_prompt_label, mode_text);
         lv_obj_align(s_ui.init_mode_prompt_label, LV_ALIGN_CENTER, 0, -30);
     }

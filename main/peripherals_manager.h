@@ -54,11 +54,13 @@ typedef struct {
  * RS485 UART, and TWAI bus. Non-critical peripheral failures are logged and
  * do not stop the application from running.
  *
+ * @param[in] offline Startup offline-mode flag.
+ *
  * @return
  *      - ESP_OK: Manager startup task created
  *      - ESP_ERR_*: Failed to create manager task
  */
-esp_err_t peripherals_manager_start(void);
+esp_err_t peripherals_manager_start(bool offline);
 
 /**
  * @brief Initialize and verify the TF card interface.
@@ -68,11 +70,13 @@ esp_err_t peripherals_manager_start(void);
  * This API is intended for normal application startup when only TF support is
  * required without enabling the other demo peripheral tasks.
  *
+ * @param[in] offline Startup offline-mode flag.
+ *
  * @return
  *      - ESP_OK: TF card mounted and basic read/write verification passed
  *      - ESP_ERR_*: TF card initialization or verification failed
  */
-esp_err_t peripherals_manager_init_tf_card(void);
+esp_err_t peripherals_manager_init_tf_card(bool offline);
 
 /**
  * @brief Initialize the RTC and only set it when retained time is invalid.
@@ -82,11 +86,13 @@ esp_err_t peripherals_manager_init_tf_card(void);
  * `__DATE__` and `__TIME__` macros when the clock contents are invalid. This
  * preserves RTC-backed time across power cycles when backup power is present.
  *
+ * @param[in] offline Startup offline-mode flag.
+ *
  * @return
  *      - ESP_OK: RTC initialized and timestamp written successfully
  *      - ESP_ERR_*: RTC communication or timestamp parsing failed
  */
-esp_err_t peripherals_manager_init_rtc_now(void);
+esp_err_t peripherals_manager_init_rtc_now(bool offline);
 
 /**
  * @brief Read the current RTC time into a `struct tm`.
@@ -139,11 +145,13 @@ bool peripherals_manager_is_tf_card_ready(void);
  * Wi-Fi station interface. After startup it performs a blocking scan and logs
  * the number of visible access points as a radio-path verification step.
  *
+ * @param[in] offline Startup offline-mode flag.
+ *
  * @return
  *      - ESP_OK: Wi-Fi initialized and scan test completed successfully
  *      - ESP_ERR_*: Wi-Fi stack initialization or scan failed
  */
-esp_err_t peripherals_manager_init_wifi(void);
+esp_err_t peripherals_manager_init_wifi(bool offline);
 
 /**
  * @brief Request initialization from the remote machine controller.
@@ -153,6 +161,7 @@ esp_err_t peripherals_manager_init_wifi(void);
  * response to a coarse controller status. If no response arrives before the
  * timeout, the controller is reported as offline.
  *
+ * @param[in] offline Startup offline-mode flag.
  * @param[out] out_status Destination status value.
  *
  * @return
@@ -160,7 +169,8 @@ esp_err_t peripherals_manager_init_wifi(void);
  *      - ESP_ERR_INVALID_ARG: `out_status` is NULL
  *      - ESP_ERR_*: RS485 path could not be initialized or used
  */
-esp_err_t peripherals_manager_request_controller_init(peripherals_controller_status_t *out_status);
+esp_err_t peripherals_manager_request_controller_init(bool offline,
+                                                      peripherals_controller_status_t *out_status);
 
 /**
  * @brief Request the remote controller software version string.
@@ -168,6 +178,7 @@ esp_err_t peripherals_manager_request_controller_init(peripherals_controller_sta
  * @details Sends a compact `VER?` query over RS485 and copies the first textual
  * reply into the caller buffer for compatibility checks during initialization.
  *
+ * @param[in] offline Startup offline-mode flag.
  * @param[out] out_version Destination string buffer.
  * @param[in] out_len Destination buffer size in bytes.
  *
@@ -176,7 +187,9 @@ esp_err_t peripherals_manager_request_controller_init(peripherals_controller_sta
  *      - ESP_ERR_INVALID_ARG: Output buffer is invalid
  *      - ESP_ERR_*: RS485 transport path could not be initialized or used
  */
-esp_err_t peripherals_manager_request_controller_version(char *out_version, size_t out_len);
+esp_err_t peripherals_manager_request_controller_version(bool offline,
+                                                         char *out_version,
+                                                         size_t out_len);
 
 /**
  * @brief Override the cached connection state for UI simulation flows.

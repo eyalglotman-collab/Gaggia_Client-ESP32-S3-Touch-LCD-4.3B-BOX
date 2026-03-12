@@ -102,11 +102,13 @@ typedef struct {
  * machine. The task starts in the `RESET` state and the worker owns the
  * automatic reset-to-keepalive sequencing once reset is requested.
  *
+ * @param[in] offline Startup offline-mode flag.
+ *
  * @return
  *      - ESP_OK: Module initialized successfully or was already initialized
  *      - ESP_ERR_NO_MEM: Task or synchronization primitives could not be created
  */
-esp_err_t communication_functions_init(void);
+esp_err_t communication_functions_init(bool offline);
 
 /**
  * @brief Request a transport reset and reconnect cycle.

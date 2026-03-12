@@ -54,3 +54,4 @@ CONFIG_LV_USE_LABEL=y
 CONFIG_LV_USE_OBSERVER=y
 
 # Touch I2C pins are defined in main/hardware_init.c (SCL=20, SDA=19)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

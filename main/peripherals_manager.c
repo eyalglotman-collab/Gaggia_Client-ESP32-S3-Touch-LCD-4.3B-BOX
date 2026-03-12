@@ -398,45 +398,70 @@ esp_err_t peripherals_manager_get_rtc_time(struct tm *out_tm)
  * This preserves RTC-backed time across normal power cycles when backup power
  * is present.
  *
+ * @param[in] offline Startup offline-mode flag.
+ *
  * @return
  *      - ESP_OK: RTC configured successfully
  *      - ESP_ERR_*: RTC communication or timestamp parsing failed
  */
-esp_err_t peripherals_manager_init_rtc_now(void)
+esp_err_t peripherals_manager_init_rtc_now(bool offline)
 {
+    ESP_LOGI(TAG, "RTC init begin (offline=%d)", offline);
+    if (offline) {
+        ESP_LOGI(TAG, "RTC init running in offline mode; caller downgrades failures to warnings");
+    }
+
     esp_err_t ret;
     uint8_t ctrl1_data[2] = {
         RTC_REG_CTRL1,
         RTC_CTRL1_CAP_SEL,
     };
+    ESP_LOGI(TAG, "RTC init step: writing control register");
     ret = hardware_i2c_write_raw(RTC_ADDR, ctrl1_data, sizeof(ctrl1_data));
+    ESP_LOGI(TAG, "RTC init step result: control register write -> %s", esp_err_to_name(ret));
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "RTC control init failed");
         s_rtc_ready = false;
+        ESP_LOGW(TAG, "RTC init end -> %s", esp_err_to_name(ret));
         return ret;
     }
 
     uint8_t raw[7] = {0};
     bool time_valid = false;
+    ESP_LOGI(TAG, "RTC init step: reading retained RTC time");
     ret = rtc_read_raw_time(raw, &time_valid);
+    ESP_LOGI(TAG,
+             "RTC init step result: retained RTC read -> %s (time_valid=%d)",
+             esp_err_to_name(ret),
+             time_valid);
     if (ret == ESP_OK && time_valid) {
         s_rtc_ready = true;
         ESP_LOGI(TAG, "RTC retained time is valid; keeping current clock");
-        return rtc_log_now();
-    }
-
-    struct tm build_tm = {0};
-    ret = parse_build_time(&build_tm);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "RTC build-time parse failed");
-        s_rtc_ready = false;
+        ESP_LOGI(TAG, "RTC init step: logging current RTC time");
+        ret = rtc_log_now();
+        ESP_LOGI(TAG, "RTC init step result: rtc_log_now -> %s", esp_err_to_name(ret));
+        ESP_LOGI(TAG, "RTC init end -> %s", esp_err_to_name(ret));
         return ret;
     }
 
+    struct tm build_tm = {0};
+    ESP_LOGI(TAG, "RTC init step: parsing build timestamp");
+    ret = parse_build_time(&build_tm);
+    ESP_LOGI(TAG, "RTC init step result: parse build timestamp -> %s", esp_err_to_name(ret));
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "RTC build-time parse failed");
+        s_rtc_ready = false;
+        ESP_LOGW(TAG, "RTC init end -> %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "RTC init step: writing parsed build timestamp into RTC");
     ret = peripherals_manager_set_rtc_time(&build_tm);
+    ESP_LOGI(TAG, "RTC init step result: set RTC time -> %s", esp_err_to_name(ret));
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "RTC datetime set failed");
         s_rtc_ready = false;
+        ESP_LOGW(TAG, "RTC init end -> %s", esp_err_to_name(ret));
         return ret;
     }
 
@@ -449,7 +474,11 @@ esp_err_t peripherals_manager_init_rtc_now(void)
              build_tm.tm_hour,
              build_tm.tm_min,
              build_tm.tm_sec);
-    return rtc_log_now();
+    ESP_LOGI(TAG, "RTC init step: logging current RTC time");
+    ret = rtc_log_now();
+    ESP_LOGI(TAG, "RTC init step result: rtc_log_now -> %s", esp_err_to_name(ret));
+    ESP_LOGI(TAG, "RTC init end -> %s", esp_err_to_name(ret));
+    return ret;
 }
 
 /**
@@ -464,25 +493,37 @@ esp_err_t peripherals_manager_init_rtc_now(void)
  */
 static esp_err_t wifi_stack_init_once(void)
 {
+    ESP_LOGI(TAG, "Wi-Fi stack init begin");
     esp_err_t ret = nvs_flash_init();
+    ESP_LOGI(TAG, "Wi-Fi stack step result: nvs_flash_init -> %s", esp_err_to_name(ret));
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_RETURN_ON_ERROR(nvs_flash_erase(), TAG, "NVS erase failed");
+        ESP_LOGW(TAG, "Wi-Fi stack step: NVS requires erase before re-init");
+        ret = nvs_flash_erase();
+        ESP_LOGI(TAG, "Wi-Fi stack step result: nvs_flash_erase -> %s", esp_err_to_name(ret));
+        ESP_RETURN_ON_ERROR(ret, TAG, "NVS erase failed");
+        ESP_LOGI(TAG, "Wi-Fi stack step: retrying nvs_flash_init after erase");
         ret = nvs_flash_init();
+        ESP_LOGI(TAG, "Wi-Fi stack step result: nvs_flash_init retry -> %s", esp_err_to_name(ret));
     }
     ESP_RETURN_ON_ERROR(ret, TAG, "NVS init failed");
 
+    ESP_LOGI(TAG, "Wi-Fi stack step: esp_netif_init");
     ret = esp_netif_init();
+    ESP_LOGI(TAG, "Wi-Fi stack step result: esp_netif_init -> %s", esp_err_to_name(ret));
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "esp_netif init failed");
         return ret;
     }
 
+    ESP_LOGI(TAG, "Wi-Fi stack step: esp_event_loop_create_default");
     ret = esp_event_loop_create_default();
+    ESP_LOGI(TAG, "Wi-Fi stack step result: esp_event_loop_create_default -> %s", esp_err_to_name(ret));
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "Default event loop init failed");
         return ret;
     }
 
+    ESP_LOGI(TAG, "Wi-Fi stack init end -> %s", esp_err_to_name(ESP_OK));
     return ESP_OK;
 }
 
@@ -493,36 +534,63 @@ static esp_err_t wifi_stack_init_once(void)
  * Wi-Fi driver, performs a blocking access-point scan, and logs the number of
  * visible networks as a functional bring-up test.
  *
+ * @param[in] offline Startup offline-mode flag.
+ *
  * @return
  *      - ESP_OK: Wi-Fi initialized and scan completed successfully
  *      - ESP_ERR_*: Wi-Fi init/start/scan failed
  */
-esp_err_t peripherals_manager_init_wifi(void)
+esp_err_t peripherals_manager_init_wifi(bool offline)
 {
+    ESP_LOGI(TAG, "Wi-Fi init begin (offline=%d)", offline);
+    if (offline) {
+        ESP_LOGI(TAG, "Wi-Fi init running in offline mode; caller downgrades failures to warnings");
+    }
+
     if (s_wifi_ready) {
+        ESP_LOGI(TAG, "Wi-Fi init end -> already ready");
         return ESP_OK;
     }
 
-    ESP_RETURN_ON_ERROR(wifi_stack_init_once(), TAG, "Wi-Fi support stack init failed");
+    ESP_LOGI(TAG, "Wi-Fi init step: wifi_stack_init_once");
+    esp_err_t ret = wifi_stack_init_once();
+    ESP_LOGI(TAG, "Wi-Fi init step result: wifi_stack_init_once -> %s", esp_err_to_name(ret));
+    ESP_RETURN_ON_ERROR(ret, TAG, "Wi-Fi support stack init failed");
 
+    ESP_LOGI(TAG, "Wi-Fi init step: checking default STA netif");
     if (esp_netif_get_handle_from_ifkey("WIFI_STA_DEF") == NULL) {
+        ESP_LOGI(TAG, "Wi-Fi init step: creating default STA netif");
         if (esp_netif_create_default_wifi_sta() == NULL) {
             ESP_LOGW(TAG, "Failed to create default Wi-Fi STA netif");
             return ESP_FAIL;
         }
+        ESP_LOGI(TAG, "Wi-Fi init step result: create default STA netif -> OK");
+    } else {
+        ESP_LOGI(TAG, "Wi-Fi init step result: default STA netif already exists");
     }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_err_t ret = esp_wifi_init(&cfg);
+    ESP_LOGI(TAG, "Wi-Fi init step: esp_wifi_init");
+    ret = esp_wifi_init(&cfg);
+    ESP_LOGI(TAG, "Wi-Fi init step result: esp_wifi_init -> %s", esp_err_to_name(ret));
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "Wi-Fi driver init failed");
         return ret;
     }
 
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "Wi-Fi mode set failed");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "Wi-Fi storage set failed");
+    ESP_LOGI(TAG, "Wi-Fi init step: esp_wifi_set_mode(STA)");
+    ret = esp_wifi_set_mode(WIFI_MODE_STA);
+    ESP_LOGI(TAG, "Wi-Fi init step result: esp_wifi_set_mode -> %s", esp_err_to_name(ret));
+    ESP_RETURN_ON_ERROR(ret, TAG, "Wi-Fi mode set failed");
 
+    ESP_LOGI(TAG, "Wi-Fi init step: esp_wifi_set_storage(RAM)");
+    ret = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    ESP_LOGI(TAG, "Wi-Fi init step result: esp_wifi_set_storage -> %s", esp_err_to_name(ret));
+    ESP_RETURN_ON_ERROR(ret, TAG, "Wi-Fi storage set failed");
+
+    ESP_LOGI(TAG, "Wi-Fi init step: esp_wifi_start");
     ret = esp_wifi_start();
+    ESP_LOGI(TAG, "Wi-Fi init step result: esp_wifi_start -> %s", esp_err_to_name(ret));
     if (ret != ESP_OK && ret != ESP_ERR_WIFI_CONN) {
         ESP_LOGW(TAG, "Wi-Fi start failed");
         return ret;
@@ -536,10 +604,18 @@ esp_err_t peripherals_manager_init_wifi(void)
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
     };
 
-    ESP_RETURN_ON_ERROR(esp_wifi_scan_start(&scan_cfg, true), TAG, "Wi-Fi scan failed");
+    ESP_LOGI(TAG, "Wi-Fi init step: blocking AP scan start");
+    ret = esp_wifi_scan_start(&scan_cfg, true);
+    ESP_LOGI(TAG, "Wi-Fi init step result: esp_wifi_scan_start -> %s", esp_err_to_name(ret));
+    ESP_RETURN_ON_ERROR(ret, TAG, "Wi-Fi scan failed");
 
     uint16_t ap_count = 0;
-    ESP_RETURN_ON_ERROR(esp_wifi_scan_get_ap_num(&ap_count), TAG, "Wi-Fi AP count read failed");
+    ESP_LOGI(TAG, "Wi-Fi init step: reading AP count");
+    ret = esp_wifi_scan_get_ap_num(&ap_count);
+    ESP_LOGI(TAG, "Wi-Fi init step result: esp_wifi_scan_get_ap_num -> %s (ap_count=%u)",
+             esp_err_to_name(ret),
+             ap_count);
+    ESP_RETURN_ON_ERROR(ret, TAG, "Wi-Fi AP count read failed");
     s_last_wifi_ap_count = ap_count;
     ESP_LOGI(TAG, "Wi-Fi scan complete: %u APs found", ap_count);
 
@@ -547,7 +623,13 @@ esp_err_t peripherals_manager_init_wifi(void)
     uint16_t ap_records_count = 5;
     if (ap_count > 0) {
         ap_records_count = ap_count < ap_records_count ? ap_count : ap_records_count;
-        if (esp_wifi_scan_get_ap_records(&ap_records_count, ap_records) == ESP_OK) {
+        ESP_LOGI(TAG, "Wi-Fi init step: reading up to %u AP records", ap_records_count);
+        ret = esp_wifi_scan_get_ap_records(&ap_records_count, ap_records);
+        ESP_LOGI(TAG,
+                 "Wi-Fi init step result: esp_wifi_scan_get_ap_records -> %s (records=%u)",
+                 esp_err_to_name(ret),
+                 ap_records_count);
+        if (ret == ESP_OK) {
             for (uint16_t i = 0; i < ap_records_count; ++i) {
                 ESP_LOGI(TAG,
                          "Wi-Fi AP[%u]: SSID='%s' RSSI=%d channel=%u",
@@ -560,6 +642,7 @@ esp_err_t peripherals_manager_init_wifi(void)
     }
 
     s_wifi_ready = true;
+    ESP_LOGI(TAG, "Wi-Fi init end -> %s", esp_err_to_name(ESP_OK));
     return ESP_OK;
 }
 
@@ -599,6 +682,177 @@ static void rs485_send_heartbeat(void)
         return;
     }
     uart_write_bytes(RS485_UART_PORT, payload, strlen(payload));
+}
+
+/**
+ * @brief Normalize an RS485 reply into a compact printable string.
+ *
+ * @details Removes non-printable bytes, collapses whitespace runs, and keeps
+ * only ASCII-visible content so controller parsing does not depend on raw UART
+ * framing noise or echoed delimiters.
+ *
+ * @param[in] input Raw reply buffer.
+ * @param[in] input_len Raw reply length in bytes.
+ * @param[out] output Destination printable string buffer.
+ * @param[in] output_len Destination buffer size in bytes.
+ */
+static void rs485_normalize_reply_text(const uint8_t *input,
+                                       size_t input_len,
+                                       char *output,
+                                       size_t output_len)
+{
+    if (output == NULL || output_len == 0U) {
+        return;
+    }
+
+    size_t out_index = 0U;
+    bool last_was_space = true;
+    output[0] = '\0';
+
+    for (size_t index = 0; index < input_len && out_index + 1U < output_len; index++) {
+        unsigned char ch = input[index];
+        bool is_space = (ch == ' ' || ch == '\r' || ch == '\n' || ch == '\t');
+        bool is_printable = (ch >= 32U && ch <= 126U);
+
+        if (is_space) {
+            if (!last_was_space && out_index + 1U < output_len) {
+                output[out_index++] = ' ';
+            }
+            last_was_space = true;
+            continue;
+        }
+
+        if (!is_printable) {
+            continue;
+        }
+
+        output[out_index++] = (char)ch;
+        last_was_space = false;
+    }
+
+    while (out_index > 0U && output[out_index - 1U] == ' ') {
+        out_index--;
+    }
+
+    output[out_index] = '\0';
+}
+
+/**
+ * @brief Read and normalize one RS485 controller reply.
+ *
+ * @details Collects UART bytes until the configured timeout expires or a short
+ * quiet window follows the first received bytes, then returns a compact
+ * printable reply string for status/version parsing.
+ *
+ * @param[out] out_reply Destination normalized reply string.
+ * @param[in] out_len Destination buffer size in bytes.
+ *
+ * @return
+ *      - ESP_OK: Reply read and normalized successfully
+ *      - ESP_ERR_INVALID_ARG: Output buffer invalid
+ *      - ESP_ERR_TIMEOUT: No reply bytes received before timeout
+ */
+static esp_err_t rs485_read_normalized_reply(char *out_reply, size_t out_len)
+{
+    ESP_RETURN_ON_FALSE(out_reply != NULL && out_len > 1U,
+                        ESP_ERR_INVALID_ARG,
+                        TAG,
+                        "Invalid RS485 normalized reply buffer");
+
+    uint8_t raw_reply[128] = {0};
+    size_t total_len = 0U;
+    bool saw_data = false;
+    int64_t start_us = esp_timer_get_time();
+    int64_t last_data_us = start_us;
+
+    while (((esp_timer_get_time() - start_us) / 1000LL) < RS485_CONTROLLER_TIMEOUT_MS &&
+           total_len < sizeof(raw_reply) - 1U) {
+        int rx_len = uart_read_bytes(RS485_UART_PORT,
+                                     &raw_reply[total_len],
+                                     sizeof(raw_reply) - 1U - total_len,
+                                     pdMS_TO_TICKS(60));
+        if (rx_len > 0) {
+            total_len += (size_t)rx_len;
+            saw_data = true;
+            last_data_us = esp_timer_get_time();
+            continue;
+        }
+
+        if (saw_data && ((esp_timer_get_time() - last_data_us) / 1000LL) >= 80LL) {
+            break;
+        }
+    }
+
+    if (!saw_data) {
+        out_reply[0] = '\0';
+        return ESP_ERR_TIMEOUT;
+    }
+
+    rs485_normalize_reply_text(raw_reply, total_len, out_reply, out_len);
+    return ESP_OK;
+}
+
+/**
+ * @brief Extract a version-like token from a normalized controller reply.
+ *
+ * @details Scans the normalized reply for the first token that looks like a
+ * dotted software version so echoed request text or status prefixes do not
+ * become the stored version string.
+ *
+ * @param[in] normalized_reply Printable normalized reply string.
+ * @param[out] out_version Destination version string buffer.
+ * @param[in] out_len Destination buffer size in bytes.
+ *
+ * @return `true` when a version-like token was extracted.
+ */
+static bool rs485_extract_version_token(const char *normalized_reply,
+                                        char *out_version,
+                                        size_t out_len)
+{
+    if (normalized_reply == NULL || out_version == NULL || out_len <= 1U) {
+        return false;
+    }
+
+    const char *cursor = normalized_reply;
+    while (*cursor != '\0') {
+        while (*cursor == ' ') {
+            cursor++;
+        }
+
+        if (*cursor == '\0') {
+            break;
+        }
+
+        const char *token_start = cursor;
+        while (*cursor != '\0' && *cursor != ' ') {
+            cursor++;
+        }
+
+        size_t token_len = (size_t)(cursor - token_start);
+        bool has_digit = false;
+        bool has_dot = false;
+        bool valid_chars = true;
+        for (size_t i = 0; i < token_len; i++) {
+            char ch = token_start[i];
+            if (ch >= '0' && ch <= '9') {
+                has_digit = true;
+            } else if (ch == '.') {
+                has_dot = true;
+            } else {
+                valid_chars = false;
+                break;
+            }
+        }
+
+        if (valid_chars && has_digit && has_dot) {
+            size_t copy_len = (token_len < (out_len - 1U)) ? token_len : (out_len - 1U);
+            memcpy(out_version, token_start, copy_len);
+            out_version[copy_len] = '\0';
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -653,6 +907,7 @@ void peripherals_manager_set_connection_simulation(bool wifi_ready,
  * briefly for a short textual response. Missing responses are treated as an
  * offline controller state so the application can continue in a known mode.
  *
+ * @param[in] offline Startup offline-mode flag.
  * @param[out] out_status Destination status value.
  *
  * @return
@@ -660,50 +915,74 @@ void peripherals_manager_set_connection_simulation(bool wifi_ready,
  *      - ESP_ERR_INVALID_ARG: `out_status` is NULL
  *      - ESP_ERR_*: RS485 transport path could not be initialized or used
  */
-esp_err_t peripherals_manager_request_controller_init(peripherals_controller_status_t *out_status)
+esp_err_t peripherals_manager_request_controller_init(bool offline,
+                                                      peripherals_controller_status_t *out_status)
 {
+    ESP_LOGI(TAG, "Controller init request begin (offline=%d)", offline);
+    if (offline) {
+        ESP_LOGI(TAG, "Controller init probe running in offline mode; caller downgrades failures to warnings");
+    }
+
     ESP_RETURN_ON_FALSE(out_status != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid controller status buffer");
 
     if (!s_rs485_ready) {
+        ESP_LOGI(TAG, "Controller init step: rs485_init");
         rs485_init();
+        ESP_LOGI(TAG, "Controller init step result: rs485_init -> ready=%d", s_rs485_ready);
     }
     ESP_RETURN_ON_FALSE(s_rs485_ready, ESP_FAIL, TAG, "RS485 not ready");
 
     static const char *request = "INIT?\r\n";
-    uint8_t rx_buf[64] = {0};
+    char normalized_reply[96] = {0};
     *out_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
     s_last_controller_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
 
+    ESP_LOGI(TAG, "Controller init step: uart_flush_input");
     uart_flush_input(RS485_UART_PORT);
+    ESP_LOGI(TAG, "Controller init step result: uart_flush_input -> done");
+    ESP_LOGI(TAG, "Controller init step: sending INIT? request");
     ESP_RETURN_ON_FALSE(uart_write_bytes(RS485_UART_PORT, request, strlen(request)) >= 0,
                         ESP_FAIL,
                         TAG,
                         "Controller init request send failed");
+    ESP_LOGI(TAG, "Controller init step result: INIT? request send -> OK");
+    ESP_LOGI(TAG, "Controller init step: waiting for TX completion");
+    esp_err_t tx_ret = uart_wait_tx_done(RS485_UART_PORT, pdMS_TO_TICKS(100));
+    ESP_LOGI(TAG, "Controller init step result: uart_wait_tx_done -> %s", esp_err_to_name(tx_ret));
 
-    int rx_len = uart_read_bytes(RS485_UART_PORT,
-                                 rx_buf,
-                                 sizeof(rx_buf) - 1,
-                                 pdMS_TO_TICKS(RS485_CONTROLLER_TIMEOUT_MS));
-    if (rx_len <= 0) {
+    ESP_LOGI(TAG, "Controller init step: reading INIT? response");
+    esp_err_t read_ret = rs485_read_normalized_reply(normalized_reply, sizeof(normalized_reply));
+    ESP_LOGI(TAG,
+             "Controller init step result: rs485_read_normalized_reply -> %s reply='%s'",
+             esp_err_to_name(read_ret),
+             normalized_reply);
+    if (read_ret == ESP_ERR_TIMEOUT || normalized_reply[0] == '\0') {
         *out_status = PERIPHERALS_CONTROLLER_STATUS_OFFLINE;
         s_last_controller_status = *out_status;
         ESP_LOGW(TAG, "Controller init request timed out");
+        ESP_LOGI(TAG, "Controller init end -> status=%s ret=%s",
+                 peripherals_manager_controller_status_to_string(*out_status),
+                 esp_err_to_name(ESP_OK));
         return ESP_OK;
     }
+    ESP_RETURN_ON_ERROR(read_ret, TAG, "Controller init reply read failed");
 
-    rx_buf[rx_len] = '\0';
-    if (strstr((const char *)rx_buf, "READY") != NULL) {
+    if (strstr(normalized_reply, "READY") != NULL) {
         *out_status = PERIPHERALS_CONTROLLER_STATUS_READY;
-    } else if (strstr((const char *)rx_buf, "BUSY") != NULL) {
+    } else if (strstr(normalized_reply, "BUSY") != NULL) {
         *out_status = PERIPHERALS_CONTROLLER_STATUS_BUSY;
-    } else if (strstr((const char *)rx_buf, "ERR") != NULL) {
+    } else if (strstr(normalized_reply, "ERR") != NULL ||
+               strstr(normalized_reply, "ERROR") != NULL) {
         *out_status = PERIPHERALS_CONTROLLER_STATUS_ERROR;
     } else {
         *out_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
     }
 
     s_last_controller_status = *out_status;
-    ESP_LOGI(TAG, "Controller init response: %s", (const char *)rx_buf);
+    ESP_LOGI(TAG, "Controller init response: %s", normalized_reply);
+    ESP_LOGI(TAG, "Controller init end -> status=%s ret=%s",
+             peripherals_manager_controller_status_to_string(*out_status),
+             esp_err_to_name(ESP_OK));
     return ESP_OK;
 }
 
@@ -714,6 +993,7 @@ esp_err_t peripherals_manager_request_controller_init(peripherals_controller_sta
  * for startup compatibility checks. Missing or empty replies are treated as a
  * transport failure.
  *
+ * @param[in] offline Startup offline-mode flag.
  * @param[out] out_version Destination string buffer.
  * @param[in] out_len Destination buffer length.
  *
@@ -722,34 +1002,54 @@ esp_err_t peripherals_manager_request_controller_init(peripherals_controller_sta
  *      - ESP_ERR_INVALID_ARG: Output buffer is invalid
  *      - ESP_ERR_*: RS485 path could not be initialized or the query failed
  */
-esp_err_t peripherals_manager_request_controller_version(char *out_version, size_t out_len)
+esp_err_t peripherals_manager_request_controller_version(bool offline,
+                                                         char *out_version,
+                                                         size_t out_len)
 {
+    ESP_LOGI(TAG, "Controller version request begin (offline=%d)", offline);
+    if (offline) {
+        ESP_LOGI(TAG, "Controller version probe running in offline mode; caller downgrades failures to warnings");
+    }
+
     ESP_RETURN_ON_FALSE(out_version != NULL && out_len > 1U, ESP_ERR_INVALID_ARG, TAG, "Invalid version buffer");
 
     if (!s_rs485_ready) {
+        ESP_LOGI(TAG, "Controller version step: rs485_init");
         rs485_init();
+        ESP_LOGI(TAG, "Controller version step result: rs485_init -> ready=%d", s_rs485_ready);
     }
     ESP_RETURN_ON_FALSE(s_rs485_ready, ESP_FAIL, TAG, "RS485 not ready");
 
     static const char *request = "VER?\r\n";
-    uint8_t rx_buf[64] = {0};
+    char normalized_reply[96] = {0};
     out_version[0] = '\0';
 
+    ESP_LOGI(TAG, "Controller version step: uart_flush_input");
     uart_flush_input(RS485_UART_PORT);
+    ESP_LOGI(TAG, "Controller version step result: uart_flush_input -> done");
+    ESP_LOGI(TAG, "Controller version step: sending VER? request");
     ESP_RETURN_ON_FALSE(uart_write_bytes(RS485_UART_PORT, request, strlen(request)) >= 0,
                         ESP_FAIL,
                         TAG,
                         "Controller version request send failed");
+    ESP_LOGI(TAG, "Controller version step result: VER? request send -> OK");
+    ESP_LOGI(TAG, "Controller version step: waiting for TX completion");
+    esp_err_t tx_ret = uart_wait_tx_done(RS485_UART_PORT, pdMS_TO_TICKS(100));
+    ESP_LOGI(TAG, "Controller version step result: uart_wait_tx_done -> %s", esp_err_to_name(tx_ret));
 
-    int rx_len = uart_read_bytes(RS485_UART_PORT,
-                                 rx_buf,
-                                 sizeof(rx_buf) - 1,
-                                 pdMS_TO_TICKS(RS485_CONTROLLER_TIMEOUT_MS));
-    ESP_RETURN_ON_FALSE(rx_len > 0, ESP_ERR_TIMEOUT, TAG, "Controller version request timed out");
+    ESP_LOGI(TAG, "Controller version step: reading VER? response");
+    esp_err_t read_ret = rs485_read_normalized_reply(normalized_reply, sizeof(normalized_reply));
+    ESP_LOGI(TAG,
+             "Controller version step result: rs485_read_normalized_reply -> %s reply='%s'",
+             esp_err_to_name(read_ret),
+             normalized_reply);
+    ESP_RETURN_ON_ERROR(read_ret, TAG, "Controller version request timed out");
 
-    rx_buf[rx_len] = '\0';
-    snprintf(out_version, out_len, "%s", (const char *)rx_buf);
+    if (!rs485_extract_version_token(normalized_reply, out_version, out_len)) {
+        snprintf(out_version, out_len, "%s", normalized_reply);
+    }
     ESP_LOGI(TAG, "Controller version response: %s", out_version);
+    ESP_LOGI(TAG, "Controller version request end -> %s", esp_err_to_name(ESP_OK));
     return ESP_OK;
 }
 
@@ -949,22 +1249,39 @@ static void sd_card_init(void)
  * @details Mounts the card if needed and performs a simple file IO smoke test so
  * callers can fail or warn early during normal application startup.
  *
+ * @param[in] offline Startup offline-mode flag.
+ *
  * @return
  *      - ESP_OK: TF card mounted and read/write test passed
  *      - ESP_ERR_*: Mount or verification failed
  */
-esp_err_t peripherals_manager_init_tf_card(void)
+esp_err_t peripherals_manager_init_tf_card(bool offline)
 {
+    ESP_LOGI(TAG, "TF card init begin (offline=%d)", offline);
+    if (offline) {
+        ESP_LOGI(TAG, "TF card init running in offline mode; caller downgrades failures to warnings");
+    }
+
     if (s_sd_ready && s_sd_card != NULL) {
+        ESP_LOGI(TAG, "TF card init end -> already ready");
         return ESP_OK;
     }
 
+    ESP_LOGI(TAG, "TF card init step: sd_card_init");
     sd_card_init();
+    ESP_LOGI(TAG, "TF card init step result: sd_card_init -> ready=%d card=%p",
+             s_sd_ready,
+             (void *)s_sd_card);
     if (!s_sd_ready || s_sd_card == NULL) {
+        ESP_LOGW(TAG, "TF card init end -> %s", esp_err_to_name(ESP_FAIL));
         return ESP_FAIL;
     }
 
-    return sd_card_verify_file_io();
+    ESP_LOGI(TAG, "TF card init step: sd_card_verify_file_io");
+    esp_err_t ret = sd_card_verify_file_io();
+    ESP_LOGI(TAG, "TF card init step result: sd_card_verify_file_io -> %s", esp_err_to_name(ret));
+    ESP_LOGI(TAG, "TF card init end -> %s", esp_err_to_name(ret));
+    return ret;
 }
 
 /**
@@ -1024,13 +1341,25 @@ static void peripherals_task(void *arg)
  * @brief Initialize and start all non-display board peripherals.
  *
  * @details Runs one-time setup derived from Waveshare demos and launches a
- * periodic service task that exercises integrated peripheral paths.
+ * periodic service task that exercises integrated peripheral paths. The
+ * `offline` flag keeps the same initialization sequence but documents that
+ * higher-level startup code may downgrade failures to warnings.
+ *
+ * @param[in] offline Startup offline-mode flag.
+ *
+ * @return
+ *      - ESP_OK: Manager startup task created
+ *      - ESP_ERR_*: Failed to create manager task
  */
-esp_err_t peripherals_manager_start(void)
+esp_err_t peripherals_manager_start(bool offline)
 {
+    if (offline) {
+        ESP_LOGI(TAG, "Peripheral manager start running in offline mode; caller downgrades failures to warnings");
+    }
+
     i2c_scan();
     io_self_test();
-    peripherals_manager_init_rtc_now();
+    peripherals_manager_init_rtc_now(offline);
     rs485_init();
     sd_card_init();
     twai_init();
