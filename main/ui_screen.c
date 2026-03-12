@@ -611,6 +611,7 @@ static void ui_update_connection_info_overlay_contents(void)
                           "Connect Passed: %s\n"
                           "Send Data Enabled: %s\n"
                           "RSSI: %ld dBm\n"
+                          "LiveInteger: %" PRIu32 "\n"
                           "HostLiveInteger: %" PRIu32 "\n"
                           "DeviceLiveInteger: %" PRIu32 "\n"
                           "Sequence: %u\n"
@@ -634,6 +635,7 @@ static void ui_update_connection_info_overlay_contents(void)
                           comm_snapshot.connect_passed ? "Yes" : "No",
                           comm_snapshot.send_data_enabled ? "Yes" : "No",
                           (long)comm_snapshot.wifi_rssi,
+                          comm_snapshot.live_integer,
                           comm_snapshot.host_live_integer,
                           comm_snapshot.device_live_integer,
                           (unsigned)comm_snapshot.sequence,

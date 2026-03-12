@@ -77,3 +77,9 @@ See the [Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/l
 ## Troubleshooting
 
 For any technical queries, please open an [issue](https://github.com/espressif/esp-iot-solution/issues) on GitHub. We will get back to you soon.
+
+## Local Project Helpers
+
+- Local project version is stored in `VERSION`.
+- Sound helper scripts live under `scripts/`.
+- Required local playback assets live under `sounds/`.

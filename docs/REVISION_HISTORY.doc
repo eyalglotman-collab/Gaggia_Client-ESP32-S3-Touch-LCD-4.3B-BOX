@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.11\par
+0.2.13\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -37,6 +37,18 @@
 - Wi-Fi hardware bring-up is now working from the low-level communication path, including lazy driver initialization before reset/connect and scan operations.\par
 - Connection Info reset/scan crashes caused by `comm_link` stack overflow are fixed by increasing task stack budget and moving scan AP-record buffers off the task stack.\par
 - Connection Info reset now drives the framed low-level transport reset flow, and the client transport topology now matches the server-side `reset -> initialize -> connect -> keepalive -> send_data -> error` sequence with shared CRC16 frame structure and richer runtime telemetry.\par
+- Client low-level transport now reaches stable keepalive with the ESP32-C3 bridge, uses a larger guarded RX buffer, and supports reset-driven reconnect against bridge-side stale-session replacement.\par
+- Sound helper scripts now launch tracked background playback/loop workers, store descriptive PID metadata under `.cache\sound_processes`, and the same helper set is duplicated into the `08_lvgl_Porting` demo project with its own local version file.\par
+\par
+\b 2026-03-12 12:25:00\b0\par
+- Version: 0.2.13\par
+- Summary: Refactored the sound notification helpers to use tracked background workers and duplicated the helper set into the `08_lvgl_Porting` demo project.\par
+- Notes: `scripts/start_wait_sound.ps1`, `scripts/stop_wait_sound.ps1`, `scripts/play_wait_sound.ps1`, and `scripts/play_build_success_sound.ps1` now use `scripts/sound_process_registry.ps1` to register descriptive PID metadata for wait-loop, wait-playback, and build-success playback processes under `.cache\sound_processes`. Host-level verification showed the previous immediate worker exit was caused by sandboxed process lifetime, not the loop logic itself. The same sound-helper scripts plus the required WAV assets were duplicated into `ESP-IDF_DEMO_Files/08_lvgl_Porting`, and that project now includes its own local `VERSION` file.\par
+\par
+\b 2026-03-11 22:10:00\b0\par
+- Version: 0.2.12\par
+- Summary: Stabilized low-level framed transport, documented the implemented upper-level and low-level state machines, and verified reconnect behavior after Reset Connection.\par
+- Notes: `main/CommunicationFunctions.c` now enlarges the framed RX buffer, clears buffered bytes instead of latching a hard error on transient overflow, logs explicit low-level error reasons, and continues using the implemented `reset -> initialize -> connect -> keepalive -> send_data -> error` transport sequence. The detailed design was expanded to describe both the upper-level application workflow state machine and the low-level communication state machine, including exact frame construction with `SOF=A55A`, little-endian length/counter/sequence fields, CRC16 coverage, keepalive ownership, and reconnect expectations. Verified with successful build, successful flash to `COM9`, and long monitor sessions showing `Connect -> Keepalive` plus successful reset-driven reconnect after the bridge-side stale-session fix.\par
 \par
 \b Revision Sections (Grouped by X.Y)\b0\par
 \par

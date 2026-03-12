@@ -82,6 +82,7 @@ typedef struct {
     bool send_data_enabled;
     bool reset_requested;
     bool scan_requested;
+    uint32_t live_integer;
     uint32_t host_live_integer;
     uint32_t device_live_integer;
     uint16_t sequence;

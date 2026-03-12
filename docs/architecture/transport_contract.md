@@ -56,14 +56,14 @@ This file is the canonical machine-readable design baseline for low-level transp
 | Step | Purpose | Action | Success Outcome | Failure Outcome |
 | --- | --- | --- | --- | --- |
 | `communication_ensure_wifi_stack_ready_locked()` | Guarantee Wi-Fi driver ownership exists before connect/scan logic runs. | Lazily call `peripherals_manager_init_wifi()` from the communication task. | Communication module may proceed into association preparation. | `last_error` records Wi-Fi hardware bring-up failure and the main state machine moves to `error`. |
-| `communication_validate_target_ap_visible_locked()` | Prevent blind association attempts against an unavailable AP. | Run a blocking AP visibility scan and compare the configured `wifi_ssid` against visible AP records. | The configured SSID is visible, so `esp_wifi_set_config()` and `esp_wifi_connect()` may run. | `last_error` records that the configured SSID is empty, scan failed, or the configured SSID is not visible; the main state machine moves to `error`. |
+| `communication_validate_target_ap_visible_locked()` | Give the initialize path an advisory view of AP visibility before association. | Run a blocking AP visibility scan and compare the configured `wifi_ssid` against visible AP records. | The configured SSID is visible, so `esp_wifi_set_config()` and `esp_wifi_connect()` may run with positive precheck evidence. | Empty SSID or scan-path failures still stop initialize immediately; an SSID-not-visible result is advisory only and the client still enters a bounded Wi-Fi retry window. |
 
 ## Transition Table
 
 | Current State | Trigger | Guard / Condition | Action | Next State | Timeout / Failure Behavior |
 | --- | --- | --- | --- | --- | --- |
 | `reset` | Self-test complete | Parameters valid | Prepare initialization inputs | `initialize` | Self-test failure moves to `error`. |
-| `initialize` | Initialize command completed | Configuration valid and configured SSID is currently visible | Arm transport resources and start Wi-Fi association | `connect` | Validation failure, Wi-Fi hardware bring-up failure, SSID visibility failure, or association timeout moves to `error`. |
+| `initialize` | Initialize command completed | Configuration valid | Arm transport resources and start Wi-Fi association | `connect` | Validation failure, Wi-Fi hardware bring-up failure, or association timeout moves to `error`. A non-visible SSID is tolerated during a bounded retry window. |
 | `connect` | Disconnect command | Intentional shutdown requested | Controlled teardown | `disconnect` | Teardown failure moves to `error`. |
 | `connect` | Fault detected | CRC fault, watchdog timeout, malformed frame, transport loss | Latch fault and stop forwarding | `error` | Fault is terminal until explicit recovery. |
 | `disconnect` | Teardown complete | Resources released | Return to clean baseline | `reset` | Incomplete teardown moves to `error`. |
@@ -85,6 +85,7 @@ This file is the canonical machine-readable design baseline for low-level transp
 
 ## Timing Rules
 
+- Wi-Fi association timeout in the client initialize state is `5000 mSec`.
 - Keep-alive cadence is `100 mSec`.
 - The host must advance `HostLiveInteger` every keep-alive period.
 - The device/bridge should return `DeviceLiveInteger` so liveness is observable in both directions.
@@ -99,7 +100,7 @@ This file is the canonical machine-readable design baseline for low-level transp
 | Device watchdog failure | Host side | Stop trusting link and latch fault | `reset` |
 | USB COM loss | Host or bridge | Stop transport and latch fault | `reset` after COM recovery |
 | Wi-Fi association failure | Bridge-side initialize/connect | Latch fault with Wi-Fi status | `initialize` or `reset` |
-| Configured SSID not visible | Client communication initialize precheck | Latch fault with configured SSID text before calling `esp_wifi_connect()` | `reset` after configuration or environment changes |
+| Configured SSID not visible | Client communication initialize precheck | Continue Wi-Fi association attempts during the bounded initialize retry window | `reset` after timeout or environment changes |
 | TCP server not found / not listening | Client communication TCP socket open | Latch fault with configured server IP/port and socket errno when `connect()` fails with reachability or refusal errors | `reset` or corrected server availability |
 | COM port not found on simulator host | PC simulator or ESP32-C3 bridge side only | Must be reported by the bridge/simulator protocol if it needs to appear as a distinct client-visible error | Not directly diagnosable by the client without explicit remote status reporting |
 | Generic unknown transport failure | Any transport stage not mapped to a more precise category | Latch stage-specific failure text and stop progressing the state machine | `reset`, `initialize`, or implementation-specific review |
@@ -113,7 +114,7 @@ This file is the canonical machine-readable design baseline for low-level transp
 
 | Condition | User-Facing Error Text | Notes |
 | --- | --- | --- |
-| Configured SSID not visible during initialize precheck | `Wi-Fi AP '<ssid>' is offline or not visible` | This is the preferred explicit wording for the default simulator AP `EyalSimulatorAP`. |
+| Configured SSID not available during the bounded initialize retry window | `Wi-Fi AP '<ssid>' not available after 5000 ms` | This is reported only after the client exhausts the initialize retry window. |
 | TCP `connect()` fails with `ECONNREFUSED`, `ETIMEDOUT`, `EHOSTUNREACH`, or `ENETUNREACH` | `TCP server <ip>:<port> not found or not listening (errno=<n>)` | Used only when socket-layer evidence supports a missing/unreachable listener diagnosis. |
 | Wi-Fi/TCP stage fails without a more precise classification | `<stage> failure: <detail>` | Preserves the failing stage without inventing unsupported root-cause claims. |
 | Simulator bridge COM port missing | Not directly shown by the client unless the bridge protocol reports it | The client must not claim `COM port not found` based only on local Wi-Fi/TCP observations. |

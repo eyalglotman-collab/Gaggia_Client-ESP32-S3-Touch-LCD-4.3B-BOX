@@ -33,7 +33,7 @@
 #define COMMUNICATION_DEFAULT_WIFI_PASSWORD  "espresso1234"
 #define COMMUNICATION_DEFAULT_SERVER_IP      "192.168.4.1"
 #define COMMUNICATION_DEFAULT_SERVER_PORT    (3333)
-#define COMMUNICATION_DEFAULT_WIFI_TIMEOUT   (10000)
+#define COMMUNICATION_DEFAULT_WIFI_TIMEOUT   (5000)
 #define COMMUNICATION_DEFAULT_TCP_TIMEOUT    (3000)
 #define COMMUNICATION_DEFAULT_KEEPALIVE_MS   (100)
 #define COMMUNICATION_SCAN_WINDOW_MS         (10000)
@@ -45,7 +45,7 @@
 #define COMMUNICATION_FRAME_HEADER_BYTES     (15U)
 #define COMMUNICATION_FRAME_CRC_BYTES        (2U)
 #define COMMUNICATION_FRAME_MAX_PAYLOAD      (160U)
-#define COMMUNICATION_RX_BUFFER_BYTES        (512U)
+#define COMMUNICATION_RX_BUFFER_BYTES        (2048U)
 
 typedef enum {
     COMMUNICATION_MESSAGE_RESET = 1,
@@ -105,20 +105,6 @@ static void communication_enter_state_locked(communication_state_t next_state);
 static void communication_set_error_locked(const char *error_text);
 static size_t communication_append_text(char *buffer, size_t buffer_len, size_t offset, const char *text);
 static size_t communication_append_u32(char *buffer, size_t buffer_len, size_t offset, uint32_t value);
-
-/**
- * @brief Format a precise AP-offline error for the configured SSID.
- *
- * @details Keeps the user-facing message stable and explicit when the client
- * cannot see the configured Wi-Fi AP during initialize precheck.
- */
-static void communication_set_ap_offline_error_locked(void)
-{
-    snprintf(s_comm.snapshot.last_error,
-             sizeof(s_comm.snapshot.last_error),
-             "Wi-Fi AP '%s' is offline or not visible",
-             s_comm.snapshot.config.wifi_ssid);
-}
 
 /**
  * @brief Format a precise TCP server availability error.
@@ -196,6 +182,7 @@ static void communication_clear_transport_flow_locked(void)
     s_comm.snapshot.initialize_passed = false;
     s_comm.snapshot.connect_passed = false;
     s_comm.snapshot.send_data_enabled = false;
+    s_comm.snapshot.live_integer = 0;
     s_comm.snapshot.host_live_integer = 0;
     s_comm.snapshot.device_live_integer = 0;
     s_comm.snapshot.sequence = 0;
@@ -383,9 +370,12 @@ static void communication_poll_received_frames_locked(void)
         if (bytes_read > 0) {
             size_t copy_len = (size_t)bytes_read;
             if ((s_comm.rx_buffer_len + copy_len) > sizeof(s_comm.rx_buffer)) {
-                communication_set_error_locked("RX buffer overflow");
-                communication_close_socket_locked();
-                return;
+                ESP_LOGW(TAG,
+                         "RX buffer overflow (%u + %u > %u), clearing buffered frames",
+                         (unsigned)s_comm.rx_buffer_len,
+                         (unsigned)copy_len,
+                         (unsigned)sizeof(s_comm.rx_buffer));
+                s_comm.rx_buffer_len = 0U;
             }
             memcpy(&s_comm.rx_buffer[s_comm.rx_buffer_len], temp, copy_len);
             s_comm.rx_buffer_len += copy_len;
@@ -614,9 +604,10 @@ static wifi_ap_record_t *communication_alloc_ap_records(size_t requested_count)
  * @brief Check whether the configured target SSID is visible before association.
  *
  * @details Runs a short blocking scan on the background communication task to
- * avoid repeated association attempts against an AP that is not currently
- * visible. This keeps the module in a deterministic error state with a clear
- * message instead of relying on repeated driver warnings alone.
+ * check whether the configured SSID is currently visible before association.
+ * The result is advisory only for normal operation, because the client still
+ * enters the bounded initialize retry window even when the AP is temporarily
+ * absent.
  *
  * @return
  *      - ESP_OK: Configured SSID was found in the current scan results
@@ -696,11 +687,6 @@ static esp_err_t communication_validate_target_ap_visible_locked(void)
 
     free(ap_records);
 
-    snprintf(s_comm.snapshot.last_error,
-             sizeof(s_comm.snapshot.last_error),
-             "Configured SSID '%s' is not visible",
-             s_comm.snapshot.config.wifi_ssid);
-    communication_set_ap_offline_error_locked();
     return ESP_ERR_NOT_FOUND;
 }
 
@@ -748,6 +734,7 @@ static void communication_set_error_locked(const char *error_text)
 
     snprintf(error_copy, sizeof(error_copy), "%s", resolved_error);
     memcpy(s_comm.snapshot.last_error, error_copy, sizeof(s_comm.snapshot.last_error));
+    ESP_LOGW(TAG, "Entering error state: %s", s_comm.snapshot.last_error);
     communication_enter_state_locked(COMMUNICATION_STATE_ERROR);
 }
 
@@ -820,13 +807,16 @@ static esp_err_t communication_begin_initialize_locked(void)
     }
 
     ret = communication_validate_target_ap_visible_locked();
-    if (ret != ESP_OK) {
-        if (ret == ESP_ERR_NOT_FOUND) {
-            communication_set_ap_offline_error_locked();
-        } else if (ret != ESP_ERR_INVALID_STATE && ret != ESP_ERR_NO_MEM) {
+    if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND) {
+        if (ret != ESP_ERR_INVALID_STATE && ret != ESP_ERR_NO_MEM) {
             communication_set_generic_failure_locked("Initialize precheck", esp_err_to_name(ret));
         }
         return ret;
+    }
+    if (ret == ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG,
+                 "Configured Wi-Fi AP '%s' not visible yet; continuing initialize retry window",
+                 s_comm.snapshot.config.wifi_ssid);
     }
 
     wifi_config_t wifi_cfg = {0};
@@ -956,6 +946,7 @@ static void communication_service_keep_alive_locked(void)
     }
 
     s_comm.snapshot.host_live_integer++;
+    s_comm.snapshot.live_integer = s_comm.snapshot.host_live_integer;
     if (communication_send_frame_locked(COMMUNICATION_MESSAGE_KEEPALIVE, "keepalive") != ESP_OK) {
         communication_set_error_locked(s_comm.snapshot.last_error);
         communication_close_socket_locked();
@@ -1169,7 +1160,11 @@ static void communication_task_step(void)
                 communication_enter_state_locked(COMMUNICATION_STATE_ERROR);
             }
         } else if ((uint32_t)elapsed_ms >= s_comm.snapshot.config.wifi_connect_timeout_ms) {
-            communication_set_generic_failure_locked("Wi-Fi connect", "Timeout");
+            snprintf(s_comm.snapshot.last_error,
+                     sizeof(s_comm.snapshot.last_error),
+                     "Wi-Fi AP '%s' not available after %" PRIu32 " ms",
+                     s_comm.snapshot.config.wifi_ssid,
+                     s_comm.snapshot.config.wifi_connect_timeout_ms);
             communication_enter_state_locked(COMMUNICATION_STATE_ERROR);
         }
         break;
