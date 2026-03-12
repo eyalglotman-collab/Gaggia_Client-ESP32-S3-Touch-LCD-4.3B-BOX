@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.14\par
+0.2.15\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -40,6 +40,12 @@
 - Client low-level transport now reaches stable keepalive with the ESP32-C3 bridge, uses a larger guarded RX buffer, and supports reset-driven reconnect against bridge-side stale-session replacement.\par
 - Sound helper scripts now launch tracked background playback/loop workers, store descriptive PID metadata under `.cache\sound_processes`, and the same helper set is duplicated into the `08_lvgl_Porting` demo project with its own local version file.\par
 - Startup mode prompt now auto-selects Online after a 5-second visible countdown while carrying an explicit Offline placeholder flag through the staged initialization flow.\par
+- RS485 controller probing now includes gated TX/RX diagnostics, and the wait-sound helpers now record append-only sound event logs while the build/flash prompt starts and stops wait playback around explicit user input waits.\par
+\par
+\b 2026-03-12 14:34:13\b0\par
+- Version: 0.2.15\par
+- Summary: Added reversible RS485 line diagnostics and hardened the wait-sound prompt workflow with persistent event logging.\par
+- Notes: `main/peripherals_manager.c` now includes the temporary `ESPRESSO_RS485_DIAGNOSTICS` probe path with TX hex dumps, UART state snapshots, RX raw-buffer logging, and explicit request-write outcome logs so the controller path can be validated and later reverted cleanly. `scripts/build_flash_prompt.ps1` now starts the wait sound before `Read-Host` and always stops it afterward, while the root and duplicated `08_lvgl_Porting` sound helpers append lifecycle and playback events to `.cache/sound_events.log` for debugging missed notifications. Verified with successful host build, successful flash to `COM9`, and a bounded serial capture showing valid `INIT?\r\n` transmission plus a clean RS485 timeout with no reply bytes, which confirms the remaining controller issue is lack of remote response rather than local UART corruption.\par
 \par
 \b 2026-03-12 12:45:00\b0\par
 - Version: 0.2.14\par

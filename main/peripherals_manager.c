@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <string.h>
+#include <inttypes.h>
 #include <sys/stat.h>
 
 #include "freertos/FreeRTOS.h"
@@ -35,6 +36,15 @@
 #include "system_constants.h"
 
 static const char *TAG = "peripherals";
+
+/*
+ * Temporary probe switch for validating the physical RS485 path without
+ * changing the normal request/parse flow. Set to 0 to revert to standard
+ * logging only.
+ */
+#ifndef ESPRESSO_RS485_DIAGNOSTICS
+#define ESPRESSO_RS485_DIAGNOSTICS 1
+#endif
 
 /* CH422G pseudo-addressed registers from Waveshare demo sources. */
 #define CH422G_ADDR_MODE            (0x24)
@@ -685,6 +695,61 @@ static void rs485_send_heartbeat(void)
 }
 
 /**
+ * @brief Log RS485 diagnostic bytes when the temporary probe is enabled.
+ *
+ * @details Emits a hex dump for the supplied payload only when the compile-time
+ * diagnostics switch is active so normal builds keep their previous log volume.
+ *
+ * @param[in] label Short text describing the payload direction/purpose.
+ * @param[in] data Byte buffer to print.
+ * @param[in] len Number of valid bytes in `data`.
+ */
+static void rs485_log_hex_dump(const char *label, const uint8_t *data, size_t len)
+{
+#if ESPRESSO_RS485_DIAGNOSTICS
+    if (label == NULL || data == NULL || len == 0U) {
+        ESP_LOGI(TAG, "RS485 diag: %s hex dump skipped", label != NULL ? label : "unnamed");
+        return;
+    }
+
+    ESP_LOGI(TAG, "RS485 diag: %s len=%u", label, (unsigned int)len);
+    ESP_LOG_BUFFER_HEX(TAG, data, len);
+#else
+    (void)label;
+    (void)data;
+    (void)len;
+#endif
+}
+
+/**
+ * @brief Log current UART diagnostic status for the RS485 port.
+ *
+ * @details Captures buffered byte counts and low-level UART status bits around
+ * controller requests so transport-layer failures can be classified without
+ * changing the live request flow.
+ *
+ * @param[in] label Short text describing the capture point.
+ */
+static void rs485_log_uart_state(const char *label)
+{
+#if ESPRESSO_RS485_DIAGNOSTICS
+    size_t buffered_len = 0U;
+    esp_err_t buffered_ret = uart_get_buffered_data_len(RS485_UART_PORT, &buffered_len);
+    uint32_t baud_rate = 0U;
+    esp_err_t baud_ret = uart_get_baudrate(RS485_UART_PORT, &baud_rate);
+    ESP_LOGI(TAG,
+             "RS485 diag: %s buffered=%s(%u) baud=%s(%" PRIu32 ")",
+             label != NULL ? label : "state",
+             esp_err_to_name(buffered_ret),
+             (unsigned int)buffered_len,
+             esp_err_to_name(baud_ret),
+             baud_rate);
+#else
+    (void)label;
+#endif
+}
+
+/**
  * @brief Normalize an RS485 reply into a compact printable string.
  *
  * @details Removes non-printable bytes, collapses whitespace runs, and keeps
@@ -772,6 +837,12 @@ static esp_err_t rs485_read_normalized_reply(char *out_reply, size_t out_len)
                                      sizeof(raw_reply) - 1U - total_len,
                                      pdMS_TO_TICKS(60));
         if (rx_len > 0) {
+#if ESPRESSO_RS485_DIAGNOSTICS
+            ESP_LOGI(TAG,
+                     "RS485 diag: uart_read_bytes chunk=%d elapsed_ms=%lld",
+                     rx_len,
+                     (esp_timer_get_time() - start_us) / 1000LL);
+#endif
             total_len += (size_t)rx_len;
             saw_data = true;
             last_data_us = esp_timer_get_time();
@@ -785,10 +856,15 @@ static esp_err_t rs485_read_normalized_reply(char *out_reply, size_t out_len)
 
     if (!saw_data) {
         out_reply[0] = '\0';
+        rs485_log_uart_state("read timeout");
         return ESP_ERR_TIMEOUT;
     }
 
+    rs485_log_hex_dump("RX raw", raw_reply, total_len);
     rs485_normalize_reply_text(raw_reply, total_len, out_reply, out_len);
+#if ESPRESSO_RS485_DIAGNOSTICS
+    ESP_LOGI(TAG, "RS485 diag: normalized reply='%s'", out_reply);
+#endif
     return ESP_OK;
 }
 
@@ -937,11 +1013,15 @@ esp_err_t peripherals_manager_request_controller_init(bool offline,
     *out_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
     s_last_controller_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
 
+    rs485_log_uart_state("before controller init flush");
     ESP_LOGI(TAG, "Controller init step: uart_flush_input");
     uart_flush_input(RS485_UART_PORT);
     ESP_LOGI(TAG, "Controller init step result: uart_flush_input -> done");
     ESP_LOGI(TAG, "Controller init step: sending INIT? request");
-    ESP_RETURN_ON_FALSE(uart_write_bytes(RS485_UART_PORT, request, strlen(request)) >= 0,
+    rs485_log_hex_dump("TX INIT?", (const uint8_t *)request, strlen(request));
+    int written = uart_write_bytes(RS485_UART_PORT, request, strlen(request));
+    ESP_LOGI(TAG, "Controller init step result: uart_write_bytes -> %d", written);
+    ESP_RETURN_ON_FALSE(written >= 0,
                         ESP_FAIL,
                         TAG,
                         "Controller init request send failed");
@@ -949,6 +1029,7 @@ esp_err_t peripherals_manager_request_controller_init(bool offline,
     ESP_LOGI(TAG, "Controller init step: waiting for TX completion");
     esp_err_t tx_ret = uart_wait_tx_done(RS485_UART_PORT, pdMS_TO_TICKS(100));
     ESP_LOGI(TAG, "Controller init step result: uart_wait_tx_done -> %s", esp_err_to_name(tx_ret));
+    rs485_log_uart_state("after controller init tx");
 
     ESP_LOGI(TAG, "Controller init step: reading INIT? response");
     esp_err_t read_ret = rs485_read_normalized_reply(normalized_reply, sizeof(normalized_reply));
@@ -1024,11 +1105,15 @@ esp_err_t peripherals_manager_request_controller_version(bool offline,
     char normalized_reply[96] = {0};
     out_version[0] = '\0';
 
+    rs485_log_uart_state("before controller version flush");
     ESP_LOGI(TAG, "Controller version step: uart_flush_input");
     uart_flush_input(RS485_UART_PORT);
     ESP_LOGI(TAG, "Controller version step result: uart_flush_input -> done");
     ESP_LOGI(TAG, "Controller version step: sending VER? request");
-    ESP_RETURN_ON_FALSE(uart_write_bytes(RS485_UART_PORT, request, strlen(request)) >= 0,
+    rs485_log_hex_dump("TX VER?", (const uint8_t *)request, strlen(request));
+    int written = uart_write_bytes(RS485_UART_PORT, request, strlen(request));
+    ESP_LOGI(TAG, "Controller version step result: uart_write_bytes -> %d", written);
+    ESP_RETURN_ON_FALSE(written >= 0,
                         ESP_FAIL,
                         TAG,
                         "Controller version request send failed");
@@ -1036,6 +1121,7 @@ esp_err_t peripherals_manager_request_controller_version(bool offline,
     ESP_LOGI(TAG, "Controller version step: waiting for TX completion");
     esp_err_t tx_ret = uart_wait_tx_done(RS485_UART_PORT, pdMS_TO_TICKS(100));
     ESP_LOGI(TAG, "Controller version step result: uart_wait_tx_done -> %s", esp_err_to_name(tx_ret));
+    rs485_log_uart_state("after controller version tx");
 
     ESP_LOGI(TAG, "Controller version step: reading VER? response");
     esp_err_t read_ret = rs485_read_normalized_reply(normalized_reply, sizeof(normalized_reply));

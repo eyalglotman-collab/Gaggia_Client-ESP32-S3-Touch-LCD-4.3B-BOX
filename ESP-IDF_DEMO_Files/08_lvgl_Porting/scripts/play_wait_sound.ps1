@@ -48,6 +48,12 @@ function Start-BackgroundPlayback {
         -ScriptPath $PSCommandPath `
         -SoundFile $SoundFile `
         -Mode "one-shot"
+    Write-SoundEvent -ProjectRoot $ProjectRoot `
+        -EventType "background_start" `
+        -Role $Role `
+        -Description $Description `
+        -ProcessId $child.Id `
+        -Detail ("sound_file={0}" -f $SoundFile)
 
     Write-Output ("Started sound process PID {0} [{1}] - {2}" -f $child.Id, $Role, $Description)
 }
@@ -63,12 +69,19 @@ if (-not (Test-Path $SoundFile)) {
 $resolvedSoundFile = (Resolve-Path $SoundFile).Path
 
 if ($Background) {
+    Write-SoundEvent -ProjectRoot $ProjectRoot `
+        -EventType "background_request" `
+        -Role $Role `
+        -Description $Description `
+        -ProcessId $PID `
+        -Detail ("sound_file={0}" -f $resolvedSoundFile)
     Start-BackgroundPlayback -SoundFile $resolvedSoundFile -Role $Role -Description $Description
     exit 0
 }
 
 $playSucceeded = $false
 $lastError = $null
+$backendUsed = ""
 
 try {
     try {
@@ -77,6 +90,7 @@ try {
         $player.Load()
         $player.PlaySync()
         $playSucceeded = $true
+        $backendUsed = "System.Media.SoundPlayer"
     } catch {
         $lastError = $_
     }
@@ -93,6 +107,7 @@ try {
                 $state = $mediaPlayer.playState
             } while ((Get-Date) -lt $deadline -and $state -ne 1)
             $playSucceeded = $true
+            $backendUsed = "WMPlayer.OCX"
         }
     } catch {
         $lastError = $_
@@ -109,6 +124,7 @@ try {
             Start-Sleep -Milliseconds 60
             [console]::Beep(1318, 240)
             $playSucceeded = $true
+            $backendUsed = "Console.Beep"
         }
     } catch {
         $lastError = $_
@@ -117,6 +133,20 @@ try {
     if (-not $playSucceeded) {
         throw "All sound playback backends failed. Last error: $lastError"
     }
+    Write-SoundEvent -ProjectRoot $ProjectRoot `
+        -EventType "play_success" `
+        -Role $Role `
+        -Description $Description `
+        -ProcessId $PID `
+        -Detail ("backend={0}; sound_file={1}" -f $backendUsed, $resolvedSoundFile)
+} catch {
+    Write-SoundEvent -ProjectRoot $ProjectRoot `
+        -EventType "play_error" `
+        -Role $Role `
+        -Description $Description `
+        -ProcessId $PID `
+        -Detail ("sound_file={0}; error={1}" -f $resolvedSoundFile, $_.Exception.Message)
+    throw
 } finally {
     Unregister-SoundProcess -ProjectRoot $ProjectRoot -ProcessId $PID
 }

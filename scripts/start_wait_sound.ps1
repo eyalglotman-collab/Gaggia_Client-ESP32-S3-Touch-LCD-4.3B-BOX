@@ -33,6 +33,13 @@ function Play-WaitSound {
         [string]$Description
     )
 
+    Write-SoundEvent -ProjectRoot $ProjectRoot `
+        -EventType "wait_play_request" `
+        -Role "wait-playback" `
+        -Description $Description `
+        -ProcessId $PID `
+        -Detail ("sound_file={0}" -f $SoundFile)
+
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PlaybackScript `
         -SoundFile $SoundFile `
         -Background `
@@ -74,11 +81,21 @@ function Start-WaitLoop {
 # opaque PID file.
 function Start-WaitWorker {
     if (-not (Test-VsCodeRunning)) {
+        Write-SoundEvent -ProjectRoot $ProjectRoot `
+            -EventType "wait_worker_skipped" `
+            -Role "wait-loop" `
+            -Description "VS Code not running; worker start skipped" `
+            -ProcessId $PID
         throw "VS Code is not running, so the wait sound worker will not be started."
     }
 
     $existingWorker = Get-RegisteredSoundProcesses -ProjectRoot $ProjectRoot -Roles @("wait-loop") | Select-Object -First 1
     if ($existingWorker) {
+        Write-SoundEvent -ProjectRoot $ProjectRoot `
+            -EventType "wait_worker_exists" `
+            -Role "wait-loop" `
+            -Description $existingWorker.description `
+            -ProcessId ([int]$existingWorker.pid)
         Write-Output ("Wait sound worker already running with PID {0} - {1}" -f $existingWorker.pid, $existingWorker.description)
         return
     }
@@ -99,6 +116,12 @@ function Start-WaitWorker {
         -ScriptPath $PSCommandPath `
         -SoundFile $SoundFile `
         -Mode "loop"
+    Write-SoundEvent -ProjectRoot $ProjectRoot `
+        -EventType "wait_worker_started" `
+        -Role "wait-loop" `
+        -Description "Repeating wait reminder loop" `
+        -ProcessId $proc.Id `
+        -Detail ("interval_seconds={0}" -f $IntervalSeconds)
 
     Write-Output ("Started wait sound worker PID {0} [wait-loop] - Repeating wait reminder loop" -f $proc.Id)
 }
@@ -112,9 +135,20 @@ if (-not (Test-Path $PlaybackScript)) {
 
 if ($Worker) {
     try {
+        Write-SoundEvent -ProjectRoot $ProjectRoot `
+            -EventType "wait_worker_enter" `
+            -Role "wait-loop" `
+            -Description "Repeating wait reminder loop" `
+            -ProcessId $PID `
+            -Detail ("interval_seconds={0}" -f $IntervalSeconds)
         Start-WaitLoop -IntervalSeconds $IntervalSeconds
         exit 0
     } finally {
+        Write-SoundEvent -ProjectRoot $ProjectRoot `
+            -EventType "wait_worker_exit" `
+            -Role "wait-loop" `
+            -Description "Repeating wait reminder loop" `
+            -ProcessId $PID
         Unregister-SoundProcess -ProjectRoot $ProjectRoot -ProcessId $PID
     }
 }

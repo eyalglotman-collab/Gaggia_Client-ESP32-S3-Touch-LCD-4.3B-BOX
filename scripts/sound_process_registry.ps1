@@ -37,6 +37,20 @@ function Get-SoundProcessMetadataPath {
     return (Join-Path $registryDir ("{0}.json" -f $ProcessId))
 }
 
+# @brief Return the append-only sound event log path.
+# @details Stores high-level sound lifecycle events separately from live PID
+# metadata so playback attempts remain debuggable after processes exit.
+# @param[in] ProjectRoot Repository root path.
+# @return Absolute event log file path.
+function Get-SoundEventLogPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectRoot
+    )
+
+    return (Join-Path $ProjectRoot ".cache\sound_events.log")
+}
+
 # @brief Check whether a tracked process is still alive.
 # @details A missing process means its metadata file is stale and should be
 # removed from the registry on the next cleanup pass.
@@ -92,6 +106,46 @@ function Register-SoundProcess {
 
     $metadataPath = Get-SoundProcessMetadataPath -ProjectRoot $ProjectRoot -ProcessId $ProcessId
     Set-Content -Path $metadataPath -Value ($metadata | ConvertTo-Json -Depth 4) -Encoding UTF8
+}
+
+# @brief Append one structured event line to the sound log.
+# @details Uses a compact single-line text format so playback attempts, worker
+# starts, and failures remain easy to inspect without parsing JSON.
+# @param[in] ProjectRoot Repository root path.
+# @param[in] EventType Stable event name.
+# @param[in] Role Stable role name associated with the event.
+# @param[in] Description Human-readable event description.
+# @param[in] ProcessId Optional PID associated with the event.
+# @param[in] Detail Optional free-form extra detail.
+function Write-SoundEvent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$EventType,
+        [Parameter(Mandatory = $true)]
+        [string]$Role,
+        [Parameter(Mandatory = $true)]
+        [string]$Description,
+        [int]$ProcessId = 0,
+        [string]$Detail = ""
+    )
+
+    $registryDir = Get-SoundProcessRegistryDirectory -ProjectRoot $ProjectRoot
+    New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+    $logPath = Get-SoundEventLogPath -ProjectRoot $ProjectRoot
+    $safeDescription = $Description -replace "[\r\n]+", " "
+    $safeDetail = $Detail -replace "[\r\n]+", " "
+    $line = "{0} event={1} role={2} pid={3} description=""{4}"" detail=""{5}""" -f `
+        [DateTime]::UtcNow.ToString("o"), `
+        $EventType, `
+        $Role, `
+        $ProcessId, `
+        $safeDescription, `
+        $safeDetail
+
+    Add-Content -Path $logPath -Value $line -Encoding UTF8
 }
 
 # @brief Remove one tracked sound-process metadata file.

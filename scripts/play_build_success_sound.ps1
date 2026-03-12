@@ -16,6 +16,17 @@ if (-not (Test-Path $SoundFile)) {
     throw "Build-success sound file not found: $SoundFile"
 }
 
+$RegistryScript = Join-Path $ProjectRoot "scripts\sound_process_registry.ps1"
+if (Test-Path $RegistryScript) {
+    . $RegistryScript
+    Write-SoundEvent -ProjectRoot $ProjectRoot `
+        -EventType "build_success_request" `
+        -Role "build-success-playback" `
+        -Description "Build success notification playback requested" `
+        -ProcessId $PID `
+        -Detail ("sound_file={0}" -f $SoundFile)
+}
+
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PlaybackScript `
     -SoundFile $SoundFile `
     -Background `
