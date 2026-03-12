@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.15\par
+0.2.16\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -41,6 +41,12 @@
 - Sound helper scripts now launch tracked background playback/loop workers, store descriptive PID metadata under `.cache\sound_processes`, and the same helper set is duplicated into the `08_lvgl_Porting` demo project with its own local version file.\par
 - Startup mode prompt now auto-selects Online after a 5-second visible countdown while carrying an explicit Offline placeholder flag through the staged initialization flow.\par
 - RS485 controller probing now includes gated TX/RX diagnostics, and the wait-sound helpers now record append-only sound event logs while the build/flash prompt starts and stops wait playback around explicit user input waits.\par
+- RS485/UART2 is now initialized only as future-ready hardware bring-up; startup no longer sends `INIT?` or `VER?`, and the peripheral background loop no longer emits RS485 heartbeat traffic.\par
+\par
+\b 2026-03-12 15:19:56\b0\par
+- Version: 0.2.16\par
+- Summary: Disabled active RS485 startup/runtime traffic while keeping UART2 initialized for future Gaggia integration.\par
+- Notes: `main/Eyal_espresso_ESP32_main.c` now skips the Gaggia controller status and version checks during startup and logs that RS485 is intentionally idle for now. `main/peripherals_manager.c` still initializes UART2/RS485 during peripheral bring-up, but the background peripheral task no longer sends RS485 heartbeat traffic. Verified with successful build, successful flash to `COM9`, and a 25-second monitor capture showing offline startup completing, the RS485 checks skipped by design, and the client returning to the main UI path while communication reconnects in the background.\par
 \par
 \b 2026-03-12 14:34:13\b0\par
 - Version: 0.2.15\par

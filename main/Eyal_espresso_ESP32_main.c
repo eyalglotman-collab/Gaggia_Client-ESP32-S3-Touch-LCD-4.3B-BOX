@@ -168,32 +168,6 @@ static bool espresso_handle_init_step_result(bool offline,
 }
 
 /**
- * @brief Check whether a version string matches a compatibility pattern.
- *
- * @details Supports exact matches and simple trailing `x` wildcards such as
- * `0.2.x` for coarse compatibility checks during startup.
- *
- * @param[in] version Concrete version string.
- * @param[in] pattern Compatibility pattern string.
- *
- * @return `true` when the version satisfies the pattern.
- */
-static bool espresso_version_matches_pattern(const char *version, const char *pattern)
-{
-    if (version == NULL || pattern == NULL) {
-        return false;
-    }
-
-    const char *wildcard = strchr(pattern, 'x');
-    if (wildcard == NULL) {
-        return strcmp(version, pattern) == 0;
-    }
-
-    size_t prefix_len = (size_t)(wildcard - pattern);
-    return strncmp(version, pattern, prefix_len) == 0;
-}
-
-/**
  * @brief Run a lightweight internal ESP32 health check.
  *
  * @details Verifies that core runtime services such as flash size discovery,
@@ -316,47 +290,13 @@ static bool espresso_run_client_initialization_sequence(const espresso_startup_o
         return false;
     }
 
-    peripherals_controller_status_t controller_status = PERIPHERALS_CONTROLLER_STATUS_UNKNOWN;
-    ui_set_init_status_and_yield("Requesting Gaggia Controller status...");
-    esp_err_t controller_ret = peripherals_manager_request_controller_init(
-        startup_options->offline_mode_requested,
-        &controller_status);
-    if (controller_ret != ESP_OK ||
-        controller_status == PERIPHERALS_CONTROLLER_STATUS_OFFLINE ||
-        controller_status == PERIPHERALS_CONTROLLER_STATUS_UNKNOWN ||
-        controller_status == PERIPHERALS_CONTROLLER_STATUS_ERROR) {
-        const char *failure_text = (controller_ret == ESP_OK)
-                                       ? peripherals_manager_controller_status_to_string(controller_status)
-                                       : esp_err_to_name(controller_ret);
-        return espresso_handle_init_step_issue(startup_options->offline_mode_requested,
-                                               "Gaggia BIT and status check",
-                                               failure_text);
-    }
+    ui_set_init_status_and_yield("Skipping Gaggia RS485 controller checks...");
     ESP_LOGI(TAG,
-             "Controller initialization status: %s",
-             peripherals_manager_controller_status_to_string(controller_status));
+             "RS485 controller status and version checks are intentionally disabled during startup. "
+             "UART2/RS485 remains initialized only for future use.");
+    /* TODO(offline-transport): Re-enable Gaggia RS485 startup queries when the
+     * controller-side transport is formally in scope again. */
 
-    ui_set_init_status_and_yield("Checking version compatibility...");
-    const system_constants_data_t *constants = system_constants_get();
-    char controller_version[64];
-    esp_err_t version_ret = peripherals_manager_request_controller_version(
-        startup_options->offline_mode_requested,
-        controller_version,
-        sizeof(controller_version));
-    if (!espresso_handle_init_step_result(startup_options->offline_mode_requested,
-                                          "Version compatibility query",
-                                          version_ret)) {
-        return false;
-    }
-    if (!espresso_version_matches_pattern(controller_version, constants->compatible_client_version)) {
-        return espresso_handle_init_step_issue(startup_options->offline_mode_requested,
-                                               "Version compatibility check",
-                                               "Controller version is not compatible with the client.");
-    }
-    ESP_LOGI(TAG,
-             "Controller version %s is compatible with %s",
-             controller_version,
-             constants->compatible_client_version);
     if (!startup_options->server_communication_enabled) {
         return espresso_handle_init_step_issue(startup_options->offline_mode_requested,
                                                "Startup configuration",

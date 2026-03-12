@@ -683,18 +683,6 @@ static void rs485_init(void)
 }
 
 /**
- * @brief Send periodic RS485 heartbeat payload.
- */
-static void rs485_send_heartbeat(void)
-{
-    static const char *payload = "Eyal espresso RS485 heartbeat\r\n";
-    if (!s_rs485_ready) {
-        return;
-    }
-    uart_write_bytes(RS485_UART_PORT, payload, strlen(payload));
-}
-
-/**
  * @brief Log RS485 diagnostic bytes when the temporary probe is enabled.
  *
  * @details Emits a hex dump for the supplied payload only when the compile-time
@@ -1388,24 +1376,20 @@ bool peripherals_manager_is_tf_card_ready(void)
 /**
  * @brief Background service loop for periodic peripheral activity.
  *
- * @details Sends RS485/TWAI heartbeats and logs RTC time at fixed intervals so
- * all integrated peripherals actively operate after startup.
+ * @details Sends TWAI heartbeats and logs RTC time at fixed intervals so the
+ * active integrated peripheral paths continue to operate after startup. RS485
+ * is intentionally left idle after initialization until a later Gaggia-facing
+ * integration phase enables that transport.
  */
 static void peripherals_task(void *arg)
 {
     (void)arg;
 
-    int64_t last_rs485_ms = 0;
     int64_t last_twai_ms = 0;
     int64_t last_rtc_ms = 0;
 
     while (1) {
         int64_t now_ms = esp_timer_get_time() / 1000;
-
-        if ((now_ms - last_rs485_ms) >= 2000) {
-            rs485_send_heartbeat();
-            last_rs485_ms = now_ms;
-        }
 
         if ((now_ms - last_twai_ms) >= TWAI_TX_PERIOD_MS) {
             twai_send_heartbeat();
@@ -1427,9 +1411,11 @@ static void peripherals_task(void *arg)
  * @brief Initialize and start all non-display board peripherals.
  *
  * @details Runs one-time setup derived from Waveshare demos and launches a
- * periodic service task that exercises integrated peripheral paths. The
- * `offline` flag keeps the same initialization sequence but documents that
- * higher-level startup code may downgrade failures to warnings.
+ * periodic service task for the active integrated peripheral paths. RS485 is
+ * initialized here only as future-ready hardware bring-up and is intentionally
+ * not polled or used for controller traffic at runtime yet. The `offline` flag
+ * keeps the same initialization sequence but documents that higher-level
+ * startup code may downgrade failures to warnings.
  *
  * @param[in] offline Startup offline-mode flag.
  *
