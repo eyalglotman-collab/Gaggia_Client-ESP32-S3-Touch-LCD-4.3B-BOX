@@ -57,6 +57,8 @@ Use the standard ESP-IDF setup flow for ESP32-S3 targets:
 - Always build first so flash uses the completed binary from the latest successful build.
 - After every `flash` or `monitor` call on a COM port, close all processes attached to that COM port before continuing.
 - Do not leave `idf.py`, `idf_monitor.py`, PowerShell wrappers, Python wrappers, or any other PID attached to the target COM port after the command completes.
+- Codex has explicit permission to run commands that release a COM port and terminate the exact processes holding that COM port when cleanup is required.
+- Codex has explicit permission to run commands that release a COM port and terminate the exact processes holding that COM port when cleanup is required.
 
 ## Build And Flash Rule
 
@@ -67,6 +69,8 @@ Use the standard ESP-IDF setup flow for ESP32-S3 targets:
 - Always build first so flash uses the completed binary from the latest successful build.
 - After every `flash` or `monitor` call on a COM port, close all processes attached to that COM port before continuing.
 - Do not leave `idf.py`, `idf_monitor.py`, PowerShell wrappers, Python wrappers, or any other PID attached to the target COM port after the command completes.
+- Codex has explicit permission to run commands that release a COM port and terminate the exact processes holding that COM port when cleanup is required.
+- Codex has explicit permission to run commands that release a COM port and terminate the exact processes holding that COM port when cleanup is required.
 
 ## Project Layout
 
