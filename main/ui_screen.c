@@ -41,6 +41,7 @@ typedef struct {
     lv_obj_t *error_screen;
     lv_obj_t *tabview;
     lv_obj_t *tab_pages[UI_PAGE_COUNT];
+    lv_obj_t *connection_fault_label;
     lv_obj_t *page_status;
     lv_obj_t *page_runtime;
     lv_obj_t *clock_label;
@@ -92,6 +93,7 @@ static ui_state_t s_ui = {
     .error_screen = NULL,
     .tabview = NULL,
     .tab_pages = {NULL},
+    .connection_fault_label = NULL,
     .page_status = NULL,
     .page_runtime = NULL,
     .clock_label = NULL,
@@ -642,7 +644,7 @@ static void ui_update_connection_info_overlay_contents(void)
     if (comm_ret != ESP_OK) {
         ESP_LOGW(TAG, "Communication snapshot read failed: %s", esp_err_to_name(comm_ret));
         snprintf(comm_snapshot.last_error, sizeof(comm_snapshot.last_error), "Snapshot unavailable");
-        comm_snapshot.state = COMMUNICATION_STATE_ERROR;
+        comm_snapshot.state = COMMUNICATION_STATE_RESET;
         comm_snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
         snprintf(comm_snapshot.scan_results, sizeof(comm_snapshot.scan_results), "Scan snapshot unavailable");
     }
@@ -682,10 +684,11 @@ static void ui_update_connection_info_overlay_contents(void)
                           "Initialize Passed: %s\n"
                           "Connect Passed: %s\n"
                           "Send Data Enabled: %s\n"
+                          "Connection Fault: %s\n"
+                          "Keepalive Failures: %" PRIu32 "\n"
                           "RSSI: %ld dBm\n"
-                          "LiveInteger: %" PRIu32 "\n"
-                          "HostLiveInteger: %" PRIu32 "\n"
-                          "DeviceLiveInteger: %" PRIu32 "\n"
+                          "ServerLiveInteger: %" PRIu32 "\n"
+                          "ClientLiveInteger: %" PRIu32 "\n"
                           "Sequence: %u\n"
                           "Last Received Text: %s\n"
                           "Scan State: %s\n"
@@ -706,14 +709,43 @@ static void ui_update_connection_info_overlay_contents(void)
                           comm_snapshot.initialize_passed ? "Yes" : "No",
                           comm_snapshot.connect_passed ? "Yes" : "No",
                           comm_snapshot.send_data_enabled ? "Yes" : "No",
+                          comm_snapshot.connection_fault ? "Yes" : "No",
+                          comm_snapshot.consecutive_keepalive_failures,
                           (long)comm_snapshot.wifi_rssi,
-                          comm_snapshot.live_integer,
-                          comm_snapshot.host_live_integer,
-                          comm_snapshot.device_live_integer,
+                          comm_snapshot.server_live_integer,
+                          comm_snapshot.client_live_integer,
                           (unsigned)comm_snapshot.sequence,
                           comm_snapshot.last_received_text,
                           communication_functions_scan_state_to_string(comm_snapshot.scan_state),
                           comm_snapshot.last_error);
+}
+
+/**
+ * @brief Refresh the latched connection-fault banner in the active page header.
+ *
+ * @details Reads the communication snapshot and shows a retry banner to the
+ * right of the current page title whenever the low-level transport has latched
+ * a connection fault after repeated keepalive failures.
+ */
+static void ui_update_connection_fault_indicator(void)
+{
+    if (!s_ui.connection_fault_label) {
+        return;
+    }
+
+    communication_snapshot_t comm_snapshot = {0};
+    if (communication_functions_get_snapshot(&comm_snapshot) != ESP_OK) {
+        lv_obj_add_flag(s_ui.connection_fault_label, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    if (comm_snapshot.connection_fault &&
+        comm_snapshot.state == COMMUNICATION_STATE_WAIT_FOR_COM_RESET) {
+        lv_label_set_text(s_ui.connection_fault_label, "Connection Fault, Please Reset");
+        lv_obj_clear_flag(s_ui.connection_fault_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_ui.connection_fault_label, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 /**
@@ -1196,6 +1228,13 @@ static lv_obj_t *ui_build_page_title(lv_obj_t *parent, const char *title)
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(UI_COLOR_TEXT), 0);
     lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 8, 4);
+
+    s_ui.connection_fault_label = lv_label_create(parent);
+    lv_obj_set_style_text_font(s_ui.connection_fault_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_ui.connection_fault_label, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_align(s_ui.connection_fault_label, LV_ALIGN_TOP_RIGHT, -8, 10);
+    lv_obj_add_flag(s_ui.connection_fault_label, LV_OBJ_FLAG_HIDDEN);
+    ui_update_connection_fault_indicator();
     return lbl;
 }
 
@@ -1731,6 +1770,7 @@ static void ui_render_active_page(void)
     ui_update_tab_style();
     ui_update_header_status();
     ui_update_header_runtime();
+    ui_update_connection_fault_indicator();
 }
 
 /**
@@ -1763,6 +1803,7 @@ static void ui_heartbeat_timer_cb(lv_timer_t *timer)
     ui_update_header_status();
     ui_update_header_runtime();
     ui_update_clock_bar();
+    ui_update_connection_fault_indicator();
     ui_update_connection_info_overlay_contents();
 }
 
@@ -1871,6 +1912,7 @@ void ui_screen_create(void)
     s_ui.init_confirm_btn = NULL;
     s_ui.error_screen = NULL;
     s_ui.tabview = NULL;
+    s_ui.connection_fault_label = NULL;
     s_ui.clock_set_overlay = NULL;
     s_ui.connection_info_overlay = NULL;
     s_ui.system_constants_overlay = NULL;

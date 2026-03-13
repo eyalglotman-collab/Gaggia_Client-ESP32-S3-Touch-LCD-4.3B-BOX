@@ -36,6 +36,8 @@
 #define COMMUNICATION_DEFAULT_WIFI_TIMEOUT   (5000)
 #define COMMUNICATION_DEFAULT_TCP_TIMEOUT    (3000)
 #define COMMUNICATION_DEFAULT_KEEPALIVE_MS   (100)
+#define COMMUNICATION_WIFI_RETRY_PERIOD_MS   (2500)
+#define COMMUNICATION_KEEPALIVE_FAILURE_LIMIT (5)
 #define COMMUNICATION_SCAN_WINDOW_MS         (10000)
 #define COMMUNICATION_SCAN_MAX_APS           (10)
 #define COMMUNICATION_CONNECT_PRECHECK_APS   (16)
@@ -72,6 +74,7 @@ typedef struct {
     bool keepalive_ack_pending;
     int64_t connect_requested_us;
     int64_t last_valid_rx_us;
+    int64_t last_wifi_connect_attempt_us;
     int64_t scan_started_us;
     int socket_fd;
     int64_t state_started_us;
@@ -92,6 +95,7 @@ static communication_context_t s_comm = {
     .keepalive_ack_pending = false,
     .connect_requested_us = 0,
     .last_valid_rx_us = 0,
+    .last_wifi_connect_attempt_us = 0,
     .scan_started_us = 0,
     .socket_fd = -1,
     .state_started_us = 0,
@@ -102,7 +106,7 @@ static communication_context_t s_comm = {
 
 static void communication_close_socket_locked(void);
 static void communication_enter_state_locked(communication_state_t next_state);
-static void communication_set_error_locked(const char *error_text);
+static void communication_schedule_reconnect_locked(const char *reason_text, bool keepalive_failure);
 static size_t communication_append_text(char *buffer, size_t buffer_len, size_t offset, const char *text);
 static size_t communication_append_u32(char *buffer, size_t buffer_len, size_t offset, uint32_t value);
 
@@ -175,16 +179,17 @@ static uint16_t communication_crc16_ccitt(const uint8_t *data, size_t length)
  * @brief Reset framed-link bookkeeping while keeping configured defaults.
  *
  * @details Clears counters, RX buffering, and staged progression flags so the
- * next reset sequence begins from a clean low-level transport baseline.
+ * next initialize sequence begins from a clean low-level transport baseline.
+ * This guarantees that the first live counter value after initialization comes
+ * from the server-side `ServerLiveInteger`.
  */
 static void communication_clear_transport_flow_locked(void)
 {
     s_comm.snapshot.initialize_passed = false;
     s_comm.snapshot.connect_passed = false;
     s_comm.snapshot.send_data_enabled = false;
-    s_comm.snapshot.live_integer = 0;
-    s_comm.snapshot.host_live_integer = 0;
-    s_comm.snapshot.device_live_integer = 0;
+    s_comm.snapshot.server_live_integer = 0;
+    s_comm.snapshot.client_live_integer = 0;
     s_comm.snapshot.sequence = 0;
     s_comm.keepalive_ack_pending = false;
     s_comm.connect_requested_us = 0;
@@ -194,6 +199,22 @@ static void communication_clear_transport_flow_locked(void)
     snprintf(s_comm.snapshot.last_received_text,
              sizeof(s_comm.snapshot.last_received_text),
              "No peer text received yet");
+}
+
+/**
+ * @brief Clear the latched connection fault after a verified keepalive success.
+ *
+ * @details The connection-fault indicator remains active across reconnect
+ * attempts until the client receives a valid keepalive from the server again.
+ */
+static void communication_clear_connection_fault_locked(void)
+{
+    if (s_comm.snapshot.connection_fault) {
+        ESP_LOGI(TAG, "Connection fault cleared after successful keepalive");
+    }
+
+    s_comm.snapshot.connection_fault = false;
+    s_comm.snapshot.consecutive_keepalive_failures = 0;
 }
 
 /**
@@ -322,14 +343,14 @@ static esp_err_t communication_send_frame_locked(communication_message_type_t me
     frame[2] = (uint8_t)message_type;
     frame[3] = (uint8_t)(payload_len & 0xFFU);
     frame[4] = (uint8_t)((payload_len >> 8) & 0xFFU);
-    frame[5] = (uint8_t)(s_comm.snapshot.host_live_integer & 0xFFU);
-    frame[6] = (uint8_t)((s_comm.snapshot.host_live_integer >> 8) & 0xFFU);
-    frame[7] = (uint8_t)((s_comm.snapshot.host_live_integer >> 16) & 0xFFU);
-    frame[8] = (uint8_t)((s_comm.snapshot.host_live_integer >> 24) & 0xFFU);
-    frame[9] = (uint8_t)(s_comm.snapshot.device_live_integer & 0xFFU);
-    frame[10] = (uint8_t)((s_comm.snapshot.device_live_integer >> 8) & 0xFFU);
-    frame[11] = (uint8_t)((s_comm.snapshot.device_live_integer >> 16) & 0xFFU);
-    frame[12] = (uint8_t)((s_comm.snapshot.device_live_integer >> 24) & 0xFFU);
+    frame[5] = (uint8_t)(s_comm.snapshot.server_live_integer & 0xFFU);
+    frame[6] = (uint8_t)((s_comm.snapshot.server_live_integer >> 8) & 0xFFU);
+    frame[7] = (uint8_t)((s_comm.snapshot.server_live_integer >> 16) & 0xFFU);
+    frame[8] = (uint8_t)((s_comm.snapshot.server_live_integer >> 24) & 0xFFU);
+    frame[9] = (uint8_t)(s_comm.snapshot.client_live_integer & 0xFFU);
+    frame[10] = (uint8_t)((s_comm.snapshot.client_live_integer >> 8) & 0xFFU);
+    frame[11] = (uint8_t)((s_comm.snapshot.client_live_integer >> 16) & 0xFFU);
+    frame[12] = (uint8_t)((s_comm.snapshot.client_live_integer >> 24) & 0xFFU);
     s_comm.snapshot.sequence = (uint16_t)((s_comm.snapshot.sequence + 1U) & 0xFFFFU);
     frame[13] = (uint8_t)(s_comm.snapshot.sequence & 0xFFU);
     frame[14] = (uint8_t)((s_comm.snapshot.sequence >> 8) & 0xFFU);
@@ -381,8 +402,7 @@ static void communication_poll_received_frames_locked(void)
             s_comm.rx_buffer_len += copy_len;
         } else {
             if (bytes_read == 0) {
-                communication_set_error_locked("TCP peer closed socket");
-                communication_close_socket_locked();
+                communication_schedule_reconnect_locked("TCP peer closed socket", false);
             }
             break;
         }
@@ -410,8 +430,7 @@ static void communication_poll_received_frames_locked(void)
         size_t payload_len = (size_t)s_comm.rx_buffer[3] | ((size_t)s_comm.rx_buffer[4] << 8);
         size_t frame_len = COMMUNICATION_FRAME_HEADER_BYTES + payload_len + COMMUNICATION_FRAME_CRC_BYTES;
         if (payload_len > COMMUNICATION_FRAME_MAX_PAYLOAD) {
-            communication_set_error_locked("RX payload too large");
-            communication_close_socket_locked();
+            communication_schedule_reconnect_locked("RX payload too large", false);
             return;
         }
         if (s_comm.rx_buffer_len < frame_len) {
@@ -422,13 +441,17 @@ static void communication_poll_received_frames_locked(void)
                                 ((uint16_t)s_comm.rx_buffer[frame_len - 1U] << 8);
         uint16_t actual_crc = communication_crc16_ccitt(s_comm.rx_buffer, frame_len - COMMUNICATION_FRAME_CRC_BYTES);
         if (expected_crc != actual_crc) {
-            communication_set_error_locked("CRC mismatch");
-            communication_close_socket_locked();
+            communication_schedule_reconnect_locked("CRC mismatch", false);
             return;
         }
 
         communication_message_type_t message_type = (communication_message_type_t)s_comm.rx_buffer[2];
-        s_comm.snapshot.device_live_integer =
+        uint32_t received_server_live_integer =
+            (uint32_t)s_comm.rx_buffer[5] |
+            ((uint32_t)s_comm.rx_buffer[6] << 8) |
+            ((uint32_t)s_comm.rx_buffer[7] << 16) |
+            ((uint32_t)s_comm.rx_buffer[8] << 24);
+        uint32_t received_client_live_integer =
             (uint32_t)s_comm.rx_buffer[9] |
             ((uint32_t)s_comm.rx_buffer[10] << 8) |
             ((uint32_t)s_comm.rx_buffer[11] << 16) |
@@ -442,8 +465,9 @@ static void communication_poll_received_frames_locked(void)
         }
 
         if (message_type == COMMUNICATION_MESSAGE_ERROR) {
-            communication_set_error_locked((payload_text[0] != '\0') ? payload_text : "Peer reported error");
-            communication_close_socket_locked();
+            communication_schedule_reconnect_locked(
+                (payload_text[0] != '\0') ? payload_text : "Peer reported error",
+                false);
             return;
         }
 
@@ -453,21 +477,37 @@ static void communication_poll_received_frames_locked(void)
                      "%s",
                      (payload_text[0] != '\0') ? payload_text : "Empty peer payload");
             s_comm.snapshot.send_data_enabled = true;
-            communication_enter_state_locked(COMMUNICATION_STATE_SEND_DATA);
         }
 
         if (s_comm.snapshot.state == COMMUNICATION_STATE_CONNECT &&
             (strcmp(payload_text, "client_connected") == 0 ||
              strcmp(payload_text, "connect_success") == 0 ||
-             strcmp(payload_text, "tcp_connected") == 0 ||
-             strcmp(payload_text, "connect_ack") == 0)) {
+             strcmp(payload_text, "tcp_connected") == 0)) {
             s_comm.snapshot.connect_passed = true;
             s_comm.snapshot.send_data_enabled = true;
             s_comm.keepalive_ack_pending = false;
             communication_enter_state_locked(COMMUNICATION_STATE_KEEPALIVE);
         }
 
-        if (message_type == COMMUNICATION_MESSAGE_KEEPALIVE || message_type == COMMUNICATION_MESSAGE_ACK) {
+        if (message_type == COMMUNICATION_MESSAGE_KEEPALIVE) {
+            uint32_t expected_server_ack_client_live_integer = s_comm.snapshot.client_live_integer;
+            uint32_t expected_client_live_integer = received_server_live_integer + 1U;
+
+            if (received_client_live_integer != expected_server_ack_client_live_integer) {
+                communication_schedule_reconnect_locked("keepalive_counter_mismatch", true);
+                return;
+            }
+
+            s_comm.snapshot.server_live_integer = received_server_live_integer;
+            s_comm.snapshot.client_live_integer = expected_client_live_integer;
+            communication_clear_connection_fault_locked();
+            if (communication_send_frame_locked(COMMUNICATION_MESSAGE_KEEPALIVE, "keepalive") != ESP_OK) {
+                communication_schedule_reconnect_locked(s_comm.snapshot.last_error, true);
+                return;
+            }
+            s_comm.keepalive_ack_pending = false;
+            communication_enter_state_locked(COMMUNICATION_STATE_KEEPALIVE);
+        } else if (message_type == COMMUNICATION_MESSAGE_ACK) {
             s_comm.keepalive_ack_pending = false;
         }
 
@@ -695,6 +735,74 @@ static esp_err_t communication_validate_target_ap_visible_locked(void)
 }
 
 /**
+ * @brief Re-issue Wi-Fi association while the initialize timeout window is open.
+ *
+ * @details Some simulator reset cycles bring the SoftAP up slightly after the
+ * client has already issued its first `esp_wifi_connect()` call. This helper
+ * performs a bounded retry by rechecking SSID visibility, disconnecting any
+ * stale station attempt, and reissuing `esp_wifi_connect()` no more than once
+ * per retry interval while the caller remains in `INITIALIZE`.
+ *
+ * @return
+ *      - ESP_OK: Retry was accepted or the AP is still not visible yet
+ *      - ESP_ERR_*: A concrete Wi-Fi operation failed and should abort init
+ */
+static esp_err_t communication_retry_wifi_connect_locked(void)
+{
+    int64_t now_us = esp_timer_get_time();
+    if (s_comm.last_wifi_connect_attempt_us != 0 &&
+        ((uint32_t)((now_us - s_comm.last_wifi_connect_attempt_us) / 1000LL) < COMMUNICATION_WIFI_RETRY_PERIOD_MS)) {
+        return ESP_OK;
+    }
+
+    s_comm.last_wifi_connect_attempt_us = now_us;
+
+    ESP_LOGI(TAG, "Communication initialize retry step: validate target AP visibility");
+    esp_err_t ret = communication_validate_target_ap_visible_locked();
+    ESP_LOGI(TAG, "Communication initialize retry result: validate target AP visibility -> %s",
+             esp_err_to_name(ret));
+    if (ret == ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG,
+                 "Configured Wi-Fi AP '%s' still not visible; retrying until timeout window expires",
+                 s_comm.snapshot.config.wifi_ssid);
+        return ESP_OK;
+    }
+    if (ret == ESP_ERR_WIFI_STATE) {
+        ESP_LOGI(TAG, "Communication initialize retry skipped because station association is already in progress");
+        return ESP_OK;
+    }
+    if (ret != ESP_OK) {
+        communication_set_generic_failure_locked("Wi-Fi visibility retry", esp_err_to_name(ret));
+        return ret;
+    }
+
+    communication_refresh_local_ip_locked();
+    if (s_comm.snapshot.wifi_has_ip) {
+        ESP_LOGI(TAG, "Communication initialize retry skipped because the station already has an IP address");
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "Communication initialize retry step: esp_wifi_disconnect");
+    ret = esp_wifi_disconnect();
+    ESP_LOGI(TAG, "Communication initialize retry result: esp_wifi_disconnect -> %s", esp_err_to_name(ret));
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_CONNECT && ret != ESP_ERR_WIFI_CONN) {
+        communication_set_generic_failure_locked("Wi-Fi disconnect retry", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "Communication initialize retry step: esp_wifi_connect");
+    ret = esp_wifi_connect();
+    ESP_LOGI(TAG, "Communication initialize retry result: esp_wifi_connect -> %s", esp_err_to_name(ret));
+    if (ret != ESP_OK) {
+        communication_set_generic_failure_locked("Wi-Fi connect retry", esp_err_to_name(ret));
+        return ret;
+    }
+
+    s_comm.wifi_connect_started = true;
+    return ESP_OK;
+}
+
+/**
  * @brief Transition the task to a new low-level state.
  *
  * @details Updates the state tracking timestamps and logs the state movement for
@@ -720,26 +828,54 @@ static void communication_enter_state_locked(communication_state_t next_state)
 }
 
 /**
- * @brief Store a human-readable low-level transport error.
+ * @brief Schedule a reconnect attempt and optionally latch a connection fault.
  *
- * @details Copies the latest failure text into the snapshot so UI code can show
- * the reason the state machine moved into `ERROR`.
+ * @details Stores the latest retry reason, increments the sequential
+ * keepalive-failure counter when applicable, latches the connection fault after
+ * repeated keepalive failures, and either routes the workflow back toward
+ * `connect` or stops in `wait_for_com_reset` until the operator explicitly
+ * presses Reset Connection.
  *
- * @param[in] error_text NUL-terminated error description.
+ * @param[in] reason_text NUL-terminated retry description.
+ * @param[in] keepalive_failure Whether this retry counts toward the sequential
+ *            keepalive-failure latch.
  */
-static void communication_set_error_locked(const char *error_text)
+static void communication_schedule_reconnect_locked(const char *reason_text, bool keepalive_failure)
 {
-    const char *resolved_error = error_text;
+    const char *resolved_error = reason_text;
     char error_copy[sizeof(s_comm.snapshot.last_error)] = {0};
 
     if (resolved_error == NULL) {
-        resolved_error = "Unknown communication error";
+        resolved_error = "Unknown communication retry reason";
     }
 
     snprintf(error_copy, sizeof(error_copy), "%s", resolved_error);
     memcpy(s_comm.snapshot.last_error, error_copy, sizeof(s_comm.snapshot.last_error));
-    ESP_LOGW(TAG, "Entering error state: %s", s_comm.snapshot.last_error);
-    communication_enter_state_locked(COMMUNICATION_STATE_ERROR);
+    ESP_LOGW(TAG, "Communication retry scheduled: %s", s_comm.snapshot.last_error);
+
+    if (keepalive_failure) {
+        s_comm.snapshot.consecutive_keepalive_failures++;
+        ESP_LOGW(TAG,
+                 "Keepalive failure count: %" PRIu32 "/%u",
+                 s_comm.snapshot.consecutive_keepalive_failures,
+                 COMMUNICATION_KEEPALIVE_FAILURE_LIMIT);
+        if (s_comm.snapshot.consecutive_keepalive_failures >= COMMUNICATION_KEEPALIVE_FAILURE_LIMIT) {
+            s_comm.snapshot.connection_fault = true;
+            ESP_LOGW(TAG, "ConnectionFault latched: repeated keepalive failures, waiting for Reset Connection");
+        }
+    }
+
+    communication_close_socket_locked();
+    s_comm.snapshot.connect_passed = false;
+    s_comm.snapshot.send_data_enabled = false;
+    s_comm.keepalive_ack_pending = false;
+    s_comm.connect_requested_us = 0;
+    s_comm.last_valid_rx_us = 0;
+    if (s_comm.snapshot.connection_fault) {
+        communication_enter_state_locked(COMMUNICATION_STATE_WAIT_FOR_COM_RESET);
+    } else {
+        communication_enter_state_locked(COMMUNICATION_STATE_CONNECT);
+    }
 }
 
 /**
@@ -789,6 +925,9 @@ static void communication_start_reset_locked(void)
     snprintf(s_comm.snapshot.last_error, sizeof(s_comm.snapshot.last_error), "No error");
     s_comm.wifi_connect_started = false;
     s_comm.tcp_connect_started = false;
+    s_comm.last_wifi_connect_attempt_us = 0;
+    s_comm.snapshot.connection_fault = false;
+    s_comm.snapshot.consecutive_keepalive_failures = 0;
     communication_refresh_local_ip_locked();
     communication_refresh_rssi_locked();
     communication_reset_scan_locked();
@@ -864,6 +1003,7 @@ static esp_err_t communication_begin_initialize_locked(void)
     }
 
     s_comm.wifi_connect_started = true;
+    s_comm.last_wifi_connect_attempt_us = esp_timer_get_time();
     communication_enter_state_locked(COMMUNICATION_STATE_INITIALIZE);
     ESP_LOGI(TAG, "Communication initialize end -> %s", esp_err_to_name(ESP_OK));
     return ESP_OK;
@@ -934,6 +1074,7 @@ static esp_err_t communication_open_tcp_socket_locked(void)
     s_comm.tcp_connect_started = true;
     communication_clear_transport_flow_locked();
     s_comm.snapshot.tcp_connected = true;
+    ESP_LOGI(TAG, "Communication TCP step result: initialize counter baseline -> server=0 client=0");
 
     char initialize_payload[COMMUNICATION_FRAME_MAX_PAYLOAD + 1U] = {0};
     communication_build_initialize_payload_locked(initialize_payload, sizeof(initialize_payload));
@@ -959,33 +1100,18 @@ static esp_err_t communication_open_tcp_socket_locked(void)
 }
 
 /**
- * @brief Advance the periodic keep-alive while the TCP socket is active.
+ * @brief Supervise server-driven keep-alive while the TCP socket is active.
  *
- * @details Sends a compact line-oriented keep-alive message at the configured
- * interval so the low-level link visibly progresses once connected.
+ * @details The ESP32-C3 server owns keepalive initiation. The client therefore
+ * does not emit periodic heartbeat traffic on its own; it only responds to the
+ * latest `ServerLiveInteger` sent by the server and validates that keepalive
+ * traffic continues to arrive within the configured watchdog window.
  */
 static void communication_service_keep_alive_locked(void)
 {
     if (s_comm.socket_fd < 0 || !s_comm.snapshot.tcp_connected) {
         return;
     }
-
-    int64_t now_us = esp_timer_get_time();
-    int64_t period_us = (int64_t)s_comm.snapshot.config.keep_alive_period_ms * 1000LL;
-    if (s_comm.last_keep_alive_us != 0 && (now_us - s_comm.last_keep_alive_us) < period_us) {
-        return;
-    }
-
-    s_comm.snapshot.host_live_integer++;
-    s_comm.snapshot.live_integer = s_comm.snapshot.host_live_integer;
-    if (communication_send_frame_locked(COMMUNICATION_MESSAGE_KEEPALIVE, "keepalive") != ESP_OK) {
-        communication_set_error_locked(s_comm.snapshot.last_error);
-        communication_close_socket_locked();
-        return;
-    }
-
-    s_comm.keepalive_ack_pending = true;
-    s_comm.last_keep_alive_us = now_us;
 }
 
 /**
@@ -1142,7 +1268,9 @@ static void communication_service_scan_locked(void)
  *
  * @details Polls Wi-Fi/IP readiness, reacts to operator reset requests, opens
  * the TCP transport when Wi-Fi is ready, services framed low-level RX/TX, and
- * latches failures into the `ERROR` state for explicit operator recovery.
+ * retries failed keepalive sessions through `connect` while a separate fault
+ * latch tracks repeated keepalive loss and eventually stops in
+ * `wait_for_com_reset` until the operator requests a reset.
  */
 static void communication_task_step(void)
 {
@@ -1174,7 +1302,7 @@ static void communication_task_step(void)
                 strcmp(s_comm.snapshot.last_error, "No error") == 0) {
                 communication_set_generic_failure_locked("Initialize start", esp_err_to_name(ret));
             }
-            communication_enter_state_locked(COMMUNICATION_STATE_ERROR);
+            communication_enter_state_locked(COMMUNICATION_STATE_INITIALIZE);
         }
         break;
     }
@@ -1182,65 +1310,68 @@ static void communication_task_step(void)
     case COMMUNICATION_STATE_INITIALIZE: {
         int64_t elapsed_ms = (esp_timer_get_time() - s_comm.state_started_us) / 1000LL;
         if (s_comm.snapshot.wifi_has_ip) {
-            esp_err_t ret = communication_open_tcp_socket_locked();
-            if (ret != ESP_OK) {
-                if (s_comm.snapshot.last_error[0] == '\0' ||
-                    strcmp(s_comm.snapshot.last_error, "No error") == 0) {
-                    communication_set_generic_failure_locked("TCP connect", strerror(errno));
-                }
-                communication_enter_state_locked(COMMUNICATION_STATE_ERROR);
-            }
+            communication_enter_state_locked(COMMUNICATION_STATE_CONNECT);
         } else if ((uint32_t)elapsed_ms >= s_comm.snapshot.config.wifi_connect_timeout_ms) {
             snprintf(s_comm.snapshot.last_error,
                      sizeof(s_comm.snapshot.last_error),
                      "Wi-Fi AP '%s' not available after %" PRIu32 " ms",
                      s_comm.snapshot.config.wifi_ssid,
                      s_comm.snapshot.config.wifi_connect_timeout_ms);
-            communication_enter_state_locked(COMMUNICATION_STATE_ERROR);
+            communication_enter_state_locked(COMMUNICATION_STATE_RESET);
+        } else if (s_comm.wifi_connect_started) {
+            esp_err_t ret = communication_retry_wifi_connect_locked();
+            if (ret != ESP_OK) {
+                communication_enter_state_locked(COMMUNICATION_STATE_RESET);
+            }
         }
         break;
     }
 
     case COMMUNICATION_STATE_CONNECT:
         if (!s_comm.snapshot.wifi_has_ip) {
-            communication_set_error_locked("Wi-Fi link lost");
             communication_close_socket_locked();
+            s_comm.snapshot.connect_passed = false;
+            s_comm.snapshot.send_data_enabled = false;
+            s_comm.connect_requested_us = 0;
+            communication_enter_state_locked(COMMUNICATION_STATE_INITIALIZE);
             break;
         }
         if (!s_comm.snapshot.tcp_connected || s_comm.socket_fd < 0) {
-            communication_set_error_locked("TCP socket lost");
+            esp_err_t ret = communication_open_tcp_socket_locked();
+            if (ret != ESP_OK &&
+                (s_comm.snapshot.last_error[0] == '\0' ||
+                 strcmp(s_comm.snapshot.last_error, "No error") == 0)) {
+                communication_set_generic_failure_locked("TCP connect", strerror(errno));
+            }
             break;
         }
         if (s_comm.connect_requested_us != 0 &&
             ((uint32_t)((esp_timer_get_time() - s_comm.connect_requested_us) / 1000LL) >=
              s_comm.snapshot.config.tcp_connect_timeout_ms)) {
-            communication_set_error_locked("Connect response timeout");
-            communication_close_socket_locked();
+            communication_schedule_reconnect_locked("Connect response timeout", false);
             break;
         }
         break;
 
     case COMMUNICATION_STATE_KEEPALIVE:
-    case COMMUNICATION_STATE_SEND_DATA:
         if (!s_comm.snapshot.wifi_has_ip) {
-            communication_set_error_locked("Wi-Fi link lost");
-            communication_close_socket_locked();
+            communication_schedule_reconnect_locked("Wi-Fi link lost", true);
             break;
         }
         if (!s_comm.snapshot.tcp_connected || s_comm.socket_fd < 0) {
-            communication_set_error_locked("TCP socket lost");
+            communication_schedule_reconnect_locked("TCP socket lost", true);
             break;
         }
         communication_service_keep_alive_locked();
-        if (s_comm.keepalive_ack_pending &&
-            s_comm.last_keep_alive_us != 0 &&
-            ((uint32_t)((esp_timer_get_time() - s_comm.last_keep_alive_us) / 1000LL) >= COMMUNICATION_WATCHDOG_GRACE_MS)) {
-            communication_set_error_locked("Keepalive response timeout");
-            communication_close_socket_locked();
+        if (s_comm.last_valid_rx_us != 0 &&
+            ((uint32_t)((esp_timer_get_time() - s_comm.last_valid_rx_us) / 1000LL) >= COMMUNICATION_WATCHDOG_GRACE_MS)) {
+            communication_schedule_reconnect_locked("Server keepalive timeout", true);
         }
         break;
 
-    case COMMUNICATION_STATE_ERROR:
+    case COMMUNICATION_STATE_WAIT_FOR_COM_RESET:
+        break;
+
     default:
         break;
     }
@@ -1432,10 +1563,8 @@ const char *communication_functions_state_to_string(communication_state_t state)
         return "Connect";
     case COMMUNICATION_STATE_KEEPALIVE:
         return "Keepalive";
-    case COMMUNICATION_STATE_SEND_DATA:
-        return "Send Data";
-    case COMMUNICATION_STATE_ERROR:
-        return "Error";
+    case COMMUNICATION_STATE_WAIT_FOR_COM_RESET:
+        return "Wait For Com Reset";
     default:
         return "Unknown";
     }

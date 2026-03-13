@@ -15,21 +15,21 @@ This file is the canonical machine-readable design baseline for low-level transp
 
 | Item | Owner | Notes |
 | --- | --- | --- |
-| `HostLiveInteger` | PC host / upper-level simulator side | Must advance every keep-alive period to prove host forward progress. |
-| `DeviceLiveInteger` | Low-level device/bridge side | Returned to let the host detect bridge-side stalls independently. |
+| `ServerLiveInteger` | ESP32-C3 server side | The server owns keepalive initiation and sends the next server-side value first. |
+| `ClientLiveInteger` | ESP32-S3 client side | The client validates `ServerLiveInteger`, increments `ClientLiveInteger`, and returns it to the server. |
 | CRC validation | Low-level transport layer | Upper-level controller logic should not re-implement integrity checks. |
-| Watchdog enforcement | Low-level transport layer on both sides | Missing forward progress forces transition to `error`. |
-| Recovery decision | Supervisory host logic | Only explicit `reset` or `initialize` recovers from `error`. |
+| Watchdog enforcement | Low-level transport layer on both sides | Missing forward progress forces a reconnect attempt through `connect`. |
+| `ConnectionFault` latch | ESP32-S3 client side | Latched after 5 sequential keepalive failures and cleared only after a successful keepalive exchange or explicit reset. |
 
 ## State Definitions
 
 | State | Purpose | Entry Actions | Exit Conditions |
 | --- | --- | --- | --- |
 | `reset` | Clear session state and run self-test. | Clear counters, buffers, stale link ownership, load parameters. | Self-test complete and parameters available. |
-| `initialize` | Prepare transport resources without claiming a healthy link. | Validate configuration, prepare parser, prepare Wi-Fi/TCP roles and timers. | Configuration valid and resources ready, or initialization fault occurs. |
-| `connect` | Establish and supervise the active low-level link. | Open/accept session, start keep-alive cadence, enforce CRC and sequencing. | Controlled disconnect or fault. |
-| `disconnect` | Perform controlled teardown. | Stop forwarding, close transport cleanly, preserve reason. | Teardown complete or teardown fault occurs. |
-| `error` | Latch low-level fault and block normal traffic. | Preserve error reason and last counters, stop forwarding payloads. | Explicit `reset` or `initialize` command only. |
+| `initialize` | Prepare Wi-Fi resources without claiming a healthy link yet. | Validate configuration, prepare parser, prepare Wi-Fi/TCP roles and timers, and zero both counters so the next live value must originate from the server. | Wi-Fi has a valid IP address, or bounded association retries expire. |
+| `connect` | Establish or re-establish the active low-level TCP link. | Open/accept session, send `INITIALIZE` and `CONNECT` frames, wait for connect proof. | Connect proof arrives and keepalive may begin, or reconnect must be retried. |
+| `keepalive` | Supervise synchronized server/client forward progress. | Validate counters, respond to server keepalive, allow application payloads. | Keepalive failure schedules reconnect through `connect`. |
+| `wait_for_com_reset` | Stop automatic reconnect churn after repeated keepalive failures. | Preserve `ConnectionFault`, keep latest failure reason visible, and wait for explicit operator reset. | `Reset Connection` action requests transport reset. |
 
 ## Client Communication Scan State Definitions
 
@@ -55,58 +55,55 @@ This file is the canonical machine-readable design baseline for low-level transp
 
 | Step | Purpose | Action | Success Outcome | Failure Outcome |
 | --- | --- | --- | --- | --- |
-| `communication_ensure_wifi_stack_ready_locked()` | Guarantee Wi-Fi driver ownership exists before connect/scan logic runs. | Lazily call `peripherals_manager_init_wifi()` from the communication task. | Communication module may proceed into association preparation. | `last_error` records Wi-Fi hardware bring-up failure and the main state machine moves to `error`. |
+| `communication_ensure_wifi_stack_ready_locked()` | Guarantee Wi-Fi driver ownership exists before connect/scan logic runs. | Lazily call `peripherals_manager_init_wifi()` from the communication task. | Communication module may proceed into association preparation. | `last_error` records Wi-Fi hardware bring-up failure and the main state machine retries through `initialize`. |
 | `communication_validate_target_ap_visible_locked()` | Give the initialize path an advisory view of AP visibility before association. | Run a blocking AP visibility scan and compare the configured `wifi_ssid` against visible AP records. | The configured SSID is visible, so `esp_wifi_set_config()` and `esp_wifi_connect()` may run with positive precheck evidence. | Empty SSID or scan-path failures still stop initialize immediately; an SSID-not-visible result is advisory only and the client still enters a bounded Wi-Fi retry window. |
 
 ## Transition Table
 
 | Current State | Trigger | Guard / Condition | Action | Next State | Timeout / Failure Behavior |
 | --- | --- | --- | --- | --- | --- |
-| `reset` | Self-test complete | Parameters valid | Prepare initialization inputs | `initialize` | Self-test failure moves to `error`. |
-| `initialize` | Initialize command completed | Configuration valid | Arm transport resources and start Wi-Fi association | `connect` | Validation failure, Wi-Fi hardware bring-up failure, or association timeout moves to `error`. A non-visible SSID is tolerated during a bounded retry window. |
-| `connect` | Disconnect command | Intentional shutdown requested | Controlled teardown | `disconnect` | Teardown failure moves to `error`. |
-| `connect` | Fault detected | CRC fault, watchdog timeout, malformed frame, transport loss | Latch fault and stop forwarding | `error` | Fault is terminal until explicit recovery. |
-| `disconnect` | Teardown complete | Resources released | Return to clean baseline | `reset` | Incomplete teardown moves to `error`. |
-| `error` | Recovery command | Explicit hard recovery | Clear fault and restart stack | `reset` | No implicit recovery allowed. |
-| `error` | Recovery command | Explicit soft recovery | Re-prepare resources without full reset | `initialize` | No implicit recovery allowed. |
+| `reset` | Self-test complete | Parameters valid | Prepare initialization inputs | `initialize` | Self-test failure retries through `initialize`. |
+| `initialize` | Wi-Fi association completes | Valid local IP acquired | Hand control to TCP connect logic | `connect` | Wi-Fi association retries continue during the bounded timeout window; timeout returns to `reset`. |
+| `connect` | TCP socket open and connect proof received | TCP connected and peer accepted session | Enable low-level link for keepalive supervision | `keepalive` | Missing connect proof closes the socket and retries through `connect`. |
+| `keepalive` | Valid server keepalive received | Counter exchange succeeds | Clear `ConnectionFault`, zero failure counter, keep application payloads enabled | `keepalive` | Keepalive loss closes the socket and returns to `connect`. After 5 sequential keepalive failures, `ConnectionFault` is latched and the client enters `wait_for_com_reset`. |
+| `wait_for_com_reset` | Operator presses `Reset Connection` | Explicit recovery requested | Clear fault and restart low-level transport | `reset` | No implicit recovery allowed from this state. |
 
 ## Packet Definitions
 
 | Packet | Purpose | Sender | Receiver | Required Fields | Normal Response | Timeout Rule | Error Handling |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `RESET` | Force hard reset and self-test. | Supervisory host | Low-level peer | `protocol_version`, `message_type`, reset profile/parameters, CRC | `RESET_ACK` | Supervisor expects bounded response time from reset path. | Failure enters `error`. |
-| `INITIALIZE` | Prepare low-level resources. | Supervisory host | Low-level peer | endpoint/role parameters, watchdog settings, CRC | `INITIALIZE_ACK` | Initialization must complete before connect window expires. | Validation failure enters `error`. |
-| `CONNECT` | Enter active session. | Supervisory host | Low-level peer | connection role or endpoint reference, CRC | `CONNECT_ACK` | Session establishment timeout enters `error`. | Socket/join failure enters `error`. |
-| `DISCONNECT` | Controlled teardown. | Supervisory host | Low-level peer | disconnect reason, CRC | `DISCONNECT_ACK` | Teardown must complete in bounded time. | Teardown failure enters `error`. |
-| `KEEPALIVE` | Prove host forward progress. | Host side | Low-level peer | incremented `HostLiveInteger`, sequence, CRC | `KEEPALIVE_ACK` with `DeviceLiveInteger` and status | Every 100 mSec. | Missing progress enters `error`. |
+| `INITIALIZE` | Prepare low-level resources. | Supervisory host | Low-level peer | endpoint/role parameters, watchdog settings, CRC | `INITIALIZE_ACK` | Initialization must complete before connect window expires. | The client zeros both counters before sending `INITIALIZE`, so the first live value after initialization must come from the server. |
+| `CONNECT` | Enter active session. | Supervisory host | Low-level peer | connection role or endpoint reference, CRC | `CONNECT_ACK` followed by keepalive traffic | Session establishment timeout closes the socket and retries through `connect`. | Socket/join failure retries through `connect` or `initialize`. |
+| `KEEPALIVE` | Prove synchronized server/client forward progress. | ESP32-C3 server side | ESP32-S3 client side | current `ServerLiveInteger`, latest `ClientLiveInteger`, sequence, CRC | client returns `KEEPALIVE` with incremented `ClientLiveInteger`; server validates it and advances the next `ServerLiveInteger` | Every 100 mSec. | Missing counter progression closes the socket, retries through `connect`, and latches `ConnectionFault` into `wait_for_com_reset` after 5 repeated failures. |
 | `DATA` | Carry application payload after validation. | Either side | Peer | payload, sequence, CRC | `ACK` or application response | Normal transport timeout policy applies. | Invalid frame is rejected before upper layer sees payload. |
-| `ERROR` | Report latched low-level fault. | Faulting side | Supervisory peer | error code, state, last counters, summary, CRC | Recovery command | Immediate supervisory review required. | Link remains in `error`. |
 | `SCAN` | Discover available Wi-Fi devices for operator selection. | Client communication task | ESP32-S3 Wi-Fi driver | scan request flag, 10-second window, current STA configuration | formatted AP list in `scan_results` | Operator-visible scan lasts 10 seconds. | Scan API or result-read failure enters `COMMUNICATION_SCAN_STATE_ERROR`. |
 
 ## Timing Rules
 
 - Wi-Fi association timeout in the client initialize state is `5000 mSec`.
 - Keep-alive cadence is `100 mSec`.
-- The host must advance `HostLiveInteger` every keep-alive period.
-- The device/bridge should return `DeviceLiveInteger` so liveness is observable in both directions.
-- If expected liveness progress is not observed in time, the receiver must transition to `error`.
+- The ESP32-C3 server side owns keepalive initiation and resets both counters to `0` every time it enters `connect`.
+- The ESP32-S3 client side zeros both counters during `initialize`.
+- The ESP32-S3 client side increments `ClientLiveInteger` only after validating the current `ServerLiveInteger`.
+- After validating the returned `ClientLiveInteger`, the server advances `ServerLiveInteger` and sends the next keepalive.
+- Both counters wrap to `0` on overflow.
 
 ## Failure Modes
 
 | Failure Mode | Detection Point | Required Action | Allowed Recovery |
 | --- | --- | --- | --- |
-| CRC failure | Low-level frame parser | Drop frame and latch fault | `reset` or `initialize` |
-| Host watchdog failure | Device/bridge side | Assume host stalled and latch fault | `reset` or `initialize` after host recovers |
-| Device watchdog failure | Host side | Stop trusting link and latch fault | `reset` |
-| USB COM loss | Host or bridge | Stop transport and latch fault | `reset` after COM recovery |
-| Wi-Fi association failure | Bridge-side initialize/connect | Latch fault with Wi-Fi status | `initialize` or `reset` |
+| CRC failure | Low-level frame parser | Drop frame, close socket, retry through `connect` | automatic reconnect |
+| Host watchdog failure | Device/bridge side | Assume host stalled and retry transport | `connect` or `reset` after host recovers |
+| Device watchdog failure | Host side | Stop trusting link, count keepalive failure, retry through `connect` | automatic reconnect until the 5-failure threshold, then explicit reset |
+| USB COM loss | Host or bridge | Stop transport and retry after COM recovery | `reset` after COM recovery |
+| Wi-Fi association failure | Client initialize state | Retry association during bounded initialize window | automatic retry, then `reset` |
 | Configured SSID not visible | Client communication initialize precheck | Continue Wi-Fi association attempts during the bounded initialize retry window | `reset` after timeout or environment changes |
 | TCP server not found / not listening | Client communication TCP socket open | Latch fault with configured server IP/port and socket errno when `connect()` fails with reachability or refusal errors | `reset` or corrected server availability |
 | COM port not found on simulator host | PC simulator or ESP32-C3 bridge side only | Must be reported by the bridge/simulator protocol if it needs to appear as a distinct client-visible error | Not directly diagnosable by the client without explicit remote status reporting |
-| Generic unknown transport failure | Any transport stage not mapped to a more precise category | Latch stage-specific failure text and stop progressing the state machine | `reset`, `initialize`, or implementation-specific review |
-| TCP session loss | Bridge-side connect state | Latch fault and stop forwarding | `initialize` then `connect`, or `reset` |
+| Generic unknown transport failure | Any transport stage not mapped to a more precise category | Preserve stage-specific failure text and retry through `connect` or `initialize` | automatic retry |
+| TCP session loss | Bridge-side connect or keepalive state | Close socket and retry through `connect` | automatic retry |
 | Malformed packet / unsupported version | Parser | Reject packet and latch fault | `reset` after protocol correction |
-| Intentional disconnect | Supervisor | Controlled shutdown | `reset` then normal reconnect sequence |
 | Wi-Fi scan start failure | Client communication scan workflow | Preserve scan error text and stop current scan | New operator scan request |
 | Wi-Fi scan result-read failure | Client communication scan workflow | Preserve scan error text and stop current scan | New operator scan request |
 

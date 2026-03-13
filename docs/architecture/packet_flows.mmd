@@ -16,19 +16,14 @@ flowchart TD
     subgraph CONNECT["CONNECT"]
         C1["Host sends CONNECT"] --> C2["Bridge opens/accepts low-level session"]
         C2 --> C3["Bridge returns CONNECT_ACK"]
-        C3 --> C4["Both sides enter 100 mSec keep-alive supervision"]
-    end
-
-    subgraph DISCONNECT["DISCONNECT"]
-        D1["Host sends DISCONNECT(reason)"] --> D2["Bridge tears down session cleanly"]
-        D2 --> D3["Bridge returns DISCONNECT_ACK"]
-        D3 --> D4["Supervisor returns to reset"]
+        C3 --> C4["Client waits for first valid keepalive to prove synchronized session"]
     end
 
     subgraph KEEPALIVE["KEEPALIVE"]
-        K1["Host sends KEEPALIVE with incremented HostLiveInteger"] --> K2["Bridge validates host forward progress"]
-        K2 --> K3["Bridge replies with KEEPALIVE_ACK and DeviceLiveInteger"]
-        K3 --> K4["Host validates timing and bridge progress"]
+        K1["ESP32-C3 server sends KEEPALIVE with current ServerLiveInteger"] --> K2["ESP32-S3 client validates ServerLiveInteger and increments ClientLiveInteger"]
+        K2 --> K3["ESP32-S3 client returns KEEPALIVE with the new ClientLiveInteger"]
+        K3 --> K4["ESP32-C3 server validates ClientLiveInteger, increments ServerLiveInteger, and sends the next KEEPALIVE"]
+        K4 --> K5["Client clears ConnectionFault after successful keepalive exchange"]
     end
 
     subgraph DATA["DATA"]
@@ -37,9 +32,10 @@ flowchart TD
         P3 --> P4["Peer returns DATA response or ACK"]
     end
 
-    subgraph ERROR["ERROR"]
-        E1["Faulting side latches low-level fault"] --> E2["ERROR packet reports code, state, counters, summary"]
-        E2 --> E3["Supervisor decides reset or initialize"]
+    subgraph RETRY["RETRY / CONNECTION FAULT"]
+        E1["Keepalive failure closes the socket and returns the client to CONNECT"] --> E2["Sequential keepalive-failure counter increments"]
+        E2 --> E3["After 5 sequential failures the client latches ConnectionFault and enters WaitForComReset"]
+        E3 --> E4["UI banner shows reset-required fault state until Reset Connection is pressed"]
     end
 
     subgraph SCAN["SCAN"]

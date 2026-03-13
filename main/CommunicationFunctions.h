@@ -20,16 +20,17 @@ extern "C" {
  *
  * @details Tracks the transport-side workflow used to prepare the ESP32-S3 for
  * framed TCP communication with the remote Wi-Fi server. The low-level link
- * uses the same state topology as the server simulator: `reset -> initialize
- * -> connect -> keepalive -> send_data -> error`.
+ * uses the client-side topology `reset -> initialize -> connect ->
+ * keepalive -> wait_for_com_reset`. Connection faults are tracked through a
+ * separate latched flag, and repeated keepalive failures can force the task to
+ * wait for an explicit operator reset.
  */
 typedef enum {
     COMMUNICATION_STATE_RESET = 0,
     COMMUNICATION_STATE_INITIALIZE,
     COMMUNICATION_STATE_CONNECT,
     COMMUNICATION_STATE_KEEPALIVE,
-    COMMUNICATION_STATE_SEND_DATA,
-    COMMUNICATION_STATE_ERROR,
+    COMMUNICATION_STATE_WAIT_FOR_COM_RESET,
 } communication_state_t;
 
 /**
@@ -69,7 +70,7 @@ typedef struct {
  *
  * @details Provides a UI-friendly summary of the current low-level state,
  * active defaults, TCP/Wi-Fi link readiness, frame counters, and the latest
- * keep-alive/error bookkeeping maintained by the communication task.
+ * keepalive/fault bookkeeping maintained by the communication task.
  */
 typedef struct {
     communication_state_t state;
@@ -80,11 +81,12 @@ typedef struct {
     bool initialize_passed;
     bool connect_passed;
     bool send_data_enabled;
+    bool connection_fault;
     bool reset_requested;
     bool scan_requested;
-    uint32_t live_integer;
-    uint32_t host_live_integer;
-    uint32_t device_live_integer;
+    uint32_t server_live_integer;
+    uint32_t client_live_integer;
+    uint32_t consecutive_keepalive_failures;
     uint16_t sequence;
     uint32_t scan_duration_ms;
     uint16_t scan_device_count;

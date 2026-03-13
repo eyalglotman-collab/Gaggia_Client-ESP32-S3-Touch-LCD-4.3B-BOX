@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.16\par
+0.2.18\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -42,6 +42,20 @@
 - Startup mode prompt now auto-selects Online after a 5-second visible countdown while carrying an explicit Offline placeholder flag through the staged initialization flow.\par
 - RS485 controller probing now includes gated TX/RX diagnostics, and the wait-sound helpers now record append-only sound event logs while the build/flash prompt starts and stops wait playback around explicit user input waits.\par
 - RS485/UART2 is now initialized only as future-ready hardware bring-up; startup no longer sends `INIT?` or `VER?`, and the peripheral background loop no longer emits RS485 heartbeat traffic.\par
+- Client Wi-Fi reconnect during transport initialization now retries within the existing timeout window and no longer tears down a valid station/IP while association and DHCP are still settling after simulator reset.\par
+- Client transport now uses `wait_for_com_reset` plus a latched `ConnectionFault` banner instead of a transport `error` state, and the low-level state flow/docs were updated around `reset -> initialize -> connect -> keepalive -> wait_for_com_reset`.\par
+- Simulator-side transport alignment work is integrated into the client release baseline, including the offline-aware startup contract, RS485 startup disablement, and the current two-counter keepalive contract with `ServerLiveInteger` and `ClientLiveInteger`.\par
+- Keepalive handling now preserves the client-side counter baseline across non-keepalive acknowledgements, so generic `ACK` frames no longer overwrite the live-integer snapshot between bridge keepalive exchanges.\par
+\par
+\b 2026-03-13 19:50:00\b0\par
+- Version: 0.2.18\par
+- Summary: Consolidated the new client communication-state model and synchronized the current bridge/client keepalive contract changes into the release baseline.\par
+- Notes: `main/CommunicationFunctions.c`, `main/CommunicationFunctions.h`, and `main/ui_screen.c` now reflect the transport model that replaces the old `error` state with a latched `ConnectionFault` plus `wait_for_com_reset`, keeps send-data gated behind `keepalive`, and shows the reset-required connection-fault banner in the UI. The same release also preserves the client live-integer baseline across non-keepalive acknowledgements, keeps RS485 startup traffic disabled while UART2 remains future-ready, and carries the current transport-contract/documentation updates in `docs/architecture/*`. Verified through successful builds and successful flashes to `COM9` during the live bridge/client debugging cycle, with the remaining open issue still limited to bridge/server keepalive stability rather than client startup or Wi-Fi discovery.\par
+\par
+\b 2026-03-12 19:27:30\b0\par
+- Version: 0.2.17\par
+- Summary: Hardened client Wi-Fi reconnect handling so simulator reset cycles reach TCP connect and respond again.\par
+- Notes: `main/CommunicationFunctions.c` now retries station association during `INITIALIZE` on a bounded timer instead of relying on a single `esp_wifi_connect()` attempt, treats `ESP_ERR_WIFI_STATE` as an in-progress association state rather than a fatal error, and skips forced disconnect/reconnect once the station already has a valid local IP. Verified with successful build, successful flash to `COM9`, and monitor capture showing the client discover `EyalSimulatorAP`, associate, obtain `192.168.4.2`, open TCP to `192.168.4.1:3333`, send `INITIALIZE` and `CONNECT`, and transition `Initialize -> Connect -> Keepalive`. The remaining live fault after this release is bridge/server-side keepalive servicing, which still times out after the client enters `KEEPALIVE`.\par
 \par
 \b 2026-03-12 15:19:56\b0\par
 - Version: 0.2.16\par
