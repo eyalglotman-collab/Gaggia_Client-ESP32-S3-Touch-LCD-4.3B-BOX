@@ -41,7 +41,22 @@ ESP-IDF application for the Waveshare ESP32-S3-Touch-LCD-4.3B platform. This REA
   - after every flash, capture the first 20 seconds of logs and remember there is still an existing startup warning about flash-size mismatch
   - for waits that need user input on this Windows host, use `powershell -ExecutionPolicy Bypass -File .\scripts\start_wait_sound.ps1` before asking and `powershell -ExecutionPolicy Bypass -File .\scripts\stop_wait_sound.ps1` after the next user reply
 
+## Continue File
+
+- Continue from [TODO_CONTINUE.md](TODO_CONTINUE.md) when resuming transport-debug work in this repo.
+- Treat that file as the persistent handoff/TODO note for the next session before making new transport changes.
+
+## Continue File
+
+- Continue from [TODO_CONTINUE.md](TODO_CONTINUE.md) when resuming transport-debug work in this repo.
+- Treat that file as the persistent handoff/TODO note for the next session before making new transport changes.
+
 ## Getting Started
+
+## Continue File
+
+- Continue from [TODO_CONTINUE.md](TODO_CONTINUE.md) when resuming transport-debug work in this repo.
+- Treat that file as the persistent handoff/TODO note for the next session before making new transport changes.
 
 Use the standard ESP-IDF setup flow for ESP32-S3 targets:
 
