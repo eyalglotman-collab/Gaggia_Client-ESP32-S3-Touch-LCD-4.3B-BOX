@@ -1,304 +1,109 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C5 | ESP32-C6 | ESP32-C61 | ESP32-H2 | ESP32-H21 | ESP32-H4 | ESP32-P4 | ESP32-S2 | ESP32-S3 | Linux |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | --------- | -------- | --------- | -------- | -------- | -------- | -------- | ----- |
+# Eyal Espresso Client
 
-# Eyal Espresso ESP32-S3 Project
+ESP-IDF firmware for the Waveshare ESP32-S3-Touch-LCD-4.3B display board. This project is the embedded client side of the Eyal Espresso system.
 
-ESP-IDF application for the Waveshare ESP32-S3-Touch-LCD-4.3B platform. This README is the active session handoff and workflow file for the repository.
+## Purpose
 
-## Session Release Notes
+The client runs on the ESP32-S3 and owns:
 
-- Last released version in git: `0.2.1`
-- Release commit: `c44f0b4` (`Release v0.2.1 - move UI into tabs`)
-- Version numbering reminder for release notes:
-  - `X`: major architecture or feature-set changes
-  - `Y`: minor functionality additions and bug-fix milestones
-  - `Z`: patch/sub-version increments after accepted build+flash cycles
-- Latest resolved defect:
-  - `DEF-20260306-181051` from `0.1.5`
-  - Title: `Screen UI moves right every touch on screen`
-  - Current state: resolved by the stable RGB display recipe used for the first UI-stable release.
-- What was tried in this session:
-  - compared the project against the Waveshare `08_lvgl_Porting` example and aligned the RGB path with the demo where possible
-  - enabled `CONFIG_LCD_RGB_RESTART_IN_VSYNC=y` in `sdkconfig.defaults`
-  - added `psram_trans_align = 64` to the RGB panel config in `main/hardware_init.c`
-  - enabled a 10-line RGB bounce buffer in `main/hardware_init.c`; this removed the steady idle flicker and made the screen look stable outside touch/scroll animation
-  - tested LVGL direct-mode and full-refresh buffer modes in `main/lvgl_port.h`
-  - corrected LVGL flush handoff in `main/lvgl_port.c` to use the active LVGL framebuffer in full-frame modes
-  - tried on-demand RGB refresh earlier; it caused a black screen and was reverted
-  - tried disabling UI scrolling earlier; it did not fix the defect and was reverted
-  - changed the dark-theme UI navigation to use `lv_tabview` swipe behavior again by re-enabling horizontal content scrolling in `main/ui_screen.c`
-  - added local wait-sound session helpers in `scripts/start_wait_sound.ps1` and `scripts/stop_wait_sound.ps1`
-  - updated the wait-sound worker to stop itself automatically if `Code.exe` is no longer running
-- Current technical reading:
-  - initial X-offset and redraw corruption were caused by RGB framebuffer handoff / timing, not normal touch callback logic
-  - stable baseline found: `psram_trans_align = 64`, 10-line RGB bounce buffer, and `on_bounce_frame_finish` callback registration together produce a visually stable non-animation UI
-- What to know when starting fresh next time:
-  - start from this README note and inspect `DEF-20260306-181051` in `DefectRegister.rtf`
-  - verify the active render mode in `main/lvgl_port.h` before changing flush logic again
-  - re-check `main/lvgl_port.c` flush behavior against LVGL v9 buffer ownership rules and the Waveshare example
-  - do not disable the 1-second heartbeat timer in `main/ui_screen.c` again as an isolation step; that test resulted in a totally white screen
-  - compare panel timing values in `main/hardware_init.c` against the exact board example and test porch/burst changes one at a time
-  - after every flash, capture the first 20 seconds of logs and remember there is still an existing startup warning about flash-size mismatch
-  - for waits that need user input on this Windows host, use `powershell -ExecutionPolicy Bypass -File .\scripts\start_wait_sound.ps1` before asking and `powershell -ExecutionPolicy Bypass -File .\scripts\stop_wait_sound.ps1` after the next user reply
+- Board bring-up for the LCD, touch controller, I2C devices, RTC, SD card, RS485, TWAI, and Wi-Fi support.
+- The on-device LVGL user interface shown on the 800x480 touchscreen.
+- The low-level Wi-Fi/TCP transport that connects to the espresso server simulator.
+- Runtime status reporting and operator-facing recovery flows when initialization or transport fails.
 
-## Continue File
+## Verified Architecture
 
-- Continue from [TODO_CONTINUE.md](TODO_CONTINUE.md) when resuming transport-debug work in this repo.
-- Treat that file as the persistent handoff/TODO note for the next session before making new transport changes.
+The current architecture in code is:
 
-## Continue File
+1. `main/Eyal_espresso_ESP32_main.c`
+   The application entry point. It drives staged startup, runs internal checks, initializes hardware and services, and decides whether startup failures are warnings or blocking errors.
+2. `main/hardware_init.c`
+   Board-specific bring-up for the Waveshare ESP32-S3-Touch-LCD-4.3B hardware, including RGB LCD timing, GT911 touch reset/init, I2C helpers, and backlight control.
+3. `main/lvgl_port.c`
+   LVGL integration layer that connects the application UI to the RGB display/touch stack.
+4. `main/ui_screen.c`
+   The full touchscreen UI. It starts with an initialization prompt/splash, then moves into a tabbed application UI with runtime overlays and settings controls.
+5. `main/peripherals_manager.c`
+   Peripheral services and diagnostics for RS485, TWAI, RTC, SD card, Wi-Fi prechecks, and related runtime helpers.
+6. `main/CommunicationFunctions.c`
+   The client transport engine. It owns the Wi-Fi/TCP connection state machine, framed message exchange, keepalive/watchdog behavior, scan workflow, reconnect policy, and transport snapshot data for the UI.
+7. `main/system_constants.c`
+   Shared machine constants and profile defaults used by the UI and runtime logic.
 
-- Continue from [TODO_CONTINUE.md](TODO_CONTINUE.md) when resuming transport-debug work in this repo.
-- Treat that file as the persistent handoff/TODO note for the next session before making new transport changes.
+## Transport Model
 
-## Getting Started
+The client transport is not a generic REST or MQTT client. It is a custom framed protocol over TCP with a mirrored simulator-side implementation.
 
-## Continue File
+- Default Wi-Fi SSID: `EyalSimulatorAP`
+- Default TCP endpoint: `192.168.4.1:3333`
+- Frame start bytes: `0xA5 0x5A`
+- Message types include `RESET`, `INITIALIZE`, `CONNECT`, `DISCONNECT`, `KEEPALIVE`, `ERROR`, `ACK`, and `DATA`
+- Integrity check: CRC16-CCITT
+- Main link states: `reset -> initialize -> connect -> keepalive -> wait_for_com_reset`
+- The UI reads a transport snapshot rather than touching sockets directly
 
-- Continue from [TODO_CONTINUE.md](TODO_CONTINUE.md) when resuming transport-debug work in this repo.
-- Treat that file as the persistent handoff/TODO note for the next session before making new transport changes.
+`main/CommunicationFunctions.h` is the clearest public contract for the client link state machine and snapshot model.
 
-Use the standard ESP-IDF setup flow for ESP32-S3 targets:
+## Startup Flow
 
-- [ESP32 Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/stable/get-started/index.html)
-- [ESP32-S3 Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/index.html)
+The boot flow currently works like this:
 
-## Build And Flash Rule
+1. Show the initialization prompt on the LCD.
+2. Let the operator choose `Online` or `Offline`.
+3. Run internal checks.
+4. Initialize board hardware and peripheral managers.
+5. Initialize the communication task.
+6. Move to the main UI if startup succeeds.
+7. If startup fails:
+   Online mode treats the failure as blocking and moves to the error flow.
+   Offline mode logs the issue as a warning and continues where possible.
 
-- Build and flash must be run sequentially, never in parallel.
-- The required order is:
-  - `.\scripts\idfw.cmd build`
-  - `.\scripts\idfw.cmd -p <PORT> flash`
-- Always build first so flash uses the completed binary from the latest successful build.
-- After every `flash` or `monitor` call on a COM port, close all processes attached to that COM port before continuing.
-- Do not leave `idf.py`, `idf_monitor.py`, PowerShell wrappers, Python wrappers, or any other PID attached to the target COM port after the command completes.
-- Codex has explicit permission to run commands that release a COM port and terminate the exact processes holding that COM port when cleanup is required.
-- Codex has explicit permission to run commands that release a COM port and terminate the exact processes holding that COM port when cleanup is required.
+One important current behavior from the code: both `Online` and `Offline` modes still keep server communication enabled. The difference today is mainly how startup failures are handled.
 
-## Build And Flash Rule
+## UI Structure
 
-- Build and flash must be run sequentially, never in parallel.
-- The required order is:
-  - `.\scripts\idfw.cmd build`
-  - `.\scripts\idfw.cmd -p <PORT> flash`
-- Always build first so flash uses the completed binary from the latest successful build.
-- After every `flash` or `monitor` call on a COM port, close all processes attached to that COM port before continuing.
-- Do not leave `idf.py`, `idf_monitor.py`, PowerShell wrappers, Python wrappers, or any other PID attached to the target COM port after the command completes.
-- Codex has explicit permission to run commands that release a COM port and terminate the exact processes holding that COM port when cleanup is required.
-- Codex has explicit permission to run commands that release a COM port and terminate the exact processes holding that COM port when cleanup is required.
+The UI is implemented in `main/ui_screen.c` and is built around a tab view. The current pages are:
 
-## Project Layout
+- Home
+- Brew
+- Profiles
+- Settings
 
-The repository contains one main ESP-IDF application at the root and a set of reference/demo projects under `ESP-IDF_DEMO_Files/`.
+The UI also includes:
 
-ESP-IDF projects are built using CMake. The project build configuration is contained in `CMakeLists.txt` files that provide set of directives and instructions describing the project's source files and targets (executable, library, or both).
+- An initialization splash and failure-confirm flow
+- A persistent error screen
+- A connection info overlay
+- A clock set overlay
+- A system constants overlay
+- A heartbeat-driven runtime refresh path
 
-Below is a short explanation of the primary top-level areas used in this repository.
+## Repository Layout
 
-```text
-├── CMakeLists.txt                 Root ESP-IDF project definition
-├── main/                          Application source code
-├── components/                    Local ESP-IDF components
-├── docs/                          Requirements, design, revision, and hardware notes
-├── scripts/                       Local workflow/build/monitor helpers
-├── ESP-IDF_DEMO_Files/            Standalone reference/demo ESP-IDF projects
-├── VERSION                        Repository version in X.Y.Z format
-└── README.md                      Session handoff and workflow notes
+- `main/`: firmware source code
+- `components/`: ESP-IDF components
+- `docs/`: requirements, revision history, and transport architecture material
+- `scripts/`: local helper scripts for setup, version bumps, docs, sound cues, and build helpers
+- `sounds/`: local workflow sound assets
+- `VERSION`: project version
+
+## Build
+
+Use the local wrapper or normal ESP-IDF workflow.
+
+```bash
+./scripts/idfw.cmd build
+./scripts/idfw.cmd -p <PORT> flash
 ```
 
-For more information on ESP-IDF project structure, refer to the [Build System](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/build-system.html) section of the ESP-IDF Programming Guide.
+Build and flash should be run sequentially, with `build` first and `flash` second.
 
-## Troubleshooting
+## Current Client/Server Boundary
 
-* Program upload failure
+The client owns the operator UI and the Wi-Fi/TCP client transport. The server side owns the mirrored transport behavior, simulator controls, and host-side serial ownership. The two projects share the same low-level message vocabulary and watchdog assumptions, but they are maintained as separate repositories.
 
-    * Hardware connection is not correct: run `idf.py -p PORT monitor`, and reboot your board to see if there are any output logs.
-    * The baud rate for downloading is too high: lower your baud rate in the `menuconfig` menu, and try again.
+## Architecture Notes
 
-## Technical support and feedback
-
-Please use the following feedback channels:
-
-* For technical queries, go to the [esp32.com](https://esp32.com/) forum
-* For a feature request or bug report, create a [GitHub issue](https://github.com/espressif/esp-idf/issues)
-
-We will get back to you as soon as possible.
-
-## Project Workflow Rules
-
-- Product requirements and application design shall be maintained in `docs/EyalEspressoRequirements and Design.docx`.
-- `README.md` is the workflow/session handoff file; the requirements/design document is the primary place for application requirements, UX intent, architecture decisions, and planned features.
-- Every time Codex opens and reviews `docs/EyalEspressoRequirements and Design.docx`, Codex must update the document field `Reviewed on` with the current time.
-- After any documentation change in this repository, Codex must ask Eyal whether to open the `docs` folder.
-- Design documentation must be maintained in dual format:
-  - human review artifacts in `.docx`
-  - machine-readable architecture sources under `docs/architecture/`
-- The required machine-readable architecture sources are:
-  - `docs/architecture/transport_state_machine.mmd`
-  - `docs/architecture/packet_flows.mmd`
-  - `docs/architecture/failure_modes.mmd`
-  - `docs/architecture/transport_contract.md`
-- The text-based architecture sources are the canonical editable design source for workflow/state/packet behavior; rendered diagrams and `.docx` content must match them.
-- When workflow, state machines, packet definitions, failure handling, ownership, timing, watchdog rules, or transport architecture change, update both:
-  - the relevant `.docx` design documents
-  - the matching files under `docs/architecture/`
-- Do not maintain image-only diagrams as the sole source of truth. Every important workflow/state/failure diagram must also exist as text-based Mermaid and as structured tables in markdown.
-- Use exact code-facing names in documentation for states, packet types, counters, modules, and events. Do not rename concepts in prose if the code uses a different identifier.
-- Every state machine must be documented with:
-  - purpose and scope
-  - state list
-  - transition diagram
-  - transition table with current state, trigger, guard/condition, action, next state, and timeout/failure behavior
-- Every packet flow must be documented with:
-  - packet purpose
-  - sender and receiver
-  - required fields
-  - normal response
-  - timeout rule
-  - error handling
-- Every transport contract must explicitly document ownership of:
-  - liveness counters such as `HostLiveInteger` and `DeviceLiveInteger`
-  - CRC/checksum validation
-  - reconnect behavior
-  - watchdog enforcement
-  - entry to `error`, `reset`, and `initialize`
-- If Eyal edits `.docx` files manually, Codex must review those edits and update the text-based files under `docs/architecture/` so future LLM work remains aligned.
-- If Codex updates the text-based architecture files first, Codex must also update the corresponding `.docx` documents before considering the documentation change complete.
-- Once Eyal establishes manual formatting in a `.docx` document, future `.docx` edits must preserve the existing headings, styles, bullets, numbering, fonts, tables, figure placement, and general layout unless Eyal explicitly asks to change them.
-- After manual formatting exists, do not replace the entire `.docx` as a regeneration strategy for normal documentation updates. Prefer targeted in-place OpenXML edits that preserve the existing presentation layer.
-- Limit PowerShell command payloads to at most `7000` characters. If a change would require a longer command, split it into smaller commands or use repo-local scripts/files so the command fits reliably within host/tooling limits.
-- Approval workflow note for this and future project repos:
-  - prefer persistent approvals for narrowly scoped, reusable command prefixes instead of one-off approvals for whole commands
-  - good approval scope includes common local workflows such as repo-local Python launches, repo-local PowerShell helper scripts, health checks, tests, build commands, flash commands, and browser opens
-  - do not rely on blanket approval for all Python or all PowerShell commands; approvals should stay specific enough to remain safe and auditable
-- Approval workflow note for this and future project repos:
-  - prefer persistent approvals for narrowly scoped, reusable command prefixes instead of one-off approvals for whole commands
-  - good approval scope includes common local workflows such as repo-local Python launches, repo-local PowerShell helper scripts, health checks, tests, build commands, flash commands, and browser opens
-  - do not rely on blanket approval for all Python or all PowerShell commands; approvals should stay specific enough to remain safe and auditable
-- Repository version is tracked in root `VERSION` with format `X.Y.Z`.
-- `X`: major functionality/refactoring changes.
-- `Y`: minor bug-fix and incremental functionality changes.
-- `Z`: sub-version increment for successful build+flash cycles.
-- After a successful build+flash, confirm whether to commit and bump `Z`.
-- Every version bump must add a new entry to `docs/REVISION_HISTORY.doc` that includes the new version number, a timestamp, and a brief description of what changed relative to the previous version.
-- After every flash, Codex must monitor the target and read at least the first 20 seconds of serial log output.
-- The post-flash monitor attach command shall use ESP-IDF monitor without resetting the board again: `.\scripts\idfw.cmd monitor --port COM9 --no-reset`.
-- If ESP-IDF monitor fails on this Windows host with `PermissionError: [WinError 5] Access is denied`, use the local fallback capture helper instead: `powershell -ExecutionPolicy Bypass -File .\scripts\monitor_capture.ps1 -Port COM9 -DurationSec 20`.
-- The fallback capture helper is a good monitoring method on this host because it attaches to the serial port without resetting the board and has already captured a valid startup log through full UI bring-up.
-- After any `flash`, `monitor`, or fallback serial-capture command on `COM9` or any other COM port, Codex must close all attached monitor/capture/helper processes and verify that no stale PID remains attached to that COM port.
-- Codex must verify that the first 20 seconds of post-flash logs contain no warnings or errors before reporting success.
-- Maintain `DefectRegister.rtf` in the repository root as the running defect log.
-- For every defect found by Eyal or Codex, add a new entry to `DefectRegister.rtf`.
-- Each defect entry must include:
-  - a UID in the format `DEF-YYYYMMDD-HHMMSS`
-  - the project version from `VERSION` when the defect was found
-  - a title
-  - a description
-  - a status
-- New defects must be recorded with status `Open` unless explicitly changed later.
-- For every released version, the release notes must include a list of defects resolved in that version.
-- Before informing Eyal to run a build, review the VS Code `PROBLEMS` panel and resolve all reported issues.
-- After every code change, Codex must perform local update/verification itself before reporting ready:
-  - refresh project metadata (`reconfigure` / `compile_commands.json`)
-  - run a local build
-  - fix all detected issues before asking Eyal to build
-- When Eyal asks to create another revision/version, Codex must always commit it to git and verify the commit was created successfully.
-- At the start of every coding session, Codex must first load the latest project version from git, then write/update release notes in this README so Eyal can see exactly where work stopped.
-- Every time README is changed, Codex must commit README to git immediately, even if there is no project version change.
-- Repositories must not share tracked files. If another repository needs the same asset, script, or document, duplicate it into that repository and maintain the copies separately.
-- When a build succeeds, play the project celebration sound from `sounds/build-success-monkey-1p5x.wav`.
-- The selected celebration sound source is `sounds/cartoon_candidates/mixkit-cartoon-monkey-preview.mp3` from Mixkit's monkey/cartoon effects page: `https://mixkit.co/free-sound-effects/monkey/`.
-- The stored project playback file is a 1.5x faster version of the selected monkey clip so the pitch is higher and the cue is shorter.
-- When waiting for Eyal to do anything required to continue, including replying to a prompt, answering a question, approving a request, or simply not sending a new instruction while Codex is otherwise idle, play the project wait sound from `sounds/WaitSound.wav`.
-- For any such waiting state, play `sounds/WaitSound.wav` once immediately when the wait begins, then if 3 minutes pass without a response from Eyal, play it again and keep repeating it every additional 3 minutes until a response arrives or the task resumes.
-- Wait-sound playback is a best-effort local notification only. Codex can verify that the helper scripts start and stop successfully, but cannot verify that Eyal actually heard audio on the active output device.
-- Session hook for the wait sound:
-  - at session start, run `powershell -ExecutionPolicy Bypass -File .\scripts\stop_wait_sound.ps1` once to clear any stale wait-sound worker from a previous session
-  - immediately before sending an explicit chat prompt or question that requires Eyal to respond in the conversation, run `powershell -ExecutionPolicy Bypass -File .\scripts\start_wait_sound.ps1`
-  - immediately after Eyal responds, run `powershell -ExecutionPolicy Bypass -File .\scripts\stop_wait_sound.ps1`
-  - do not rely on the wait sound for hidden tool-approval popups, internal sandbox approval flows, or other non-chat waits because Eyal may not hear or notice those cases
-  - if VS Code closes, the wait-sound worker must terminate itself automatically so no orphan background sound process remains
-  - the current working implementation uses `sounds/WaitSound.wav` for runtime playback and a dedicated playback helper in `.\scripts\play_wait_sound.ps1`
-  - the repeat path was verified locally with a 20-second test interval before returning to the normal 3-minute rule
-- Important inconsistencies, mismatches, or stale notes discovered during work must be explicitly pointed out in project notes before they are forgotten.
-- UI spacing rule: keep at least `10` pixels of spacing between menus, buttons, and adjacent interactive controls unless a different spacing is explicitly required for a specific screen.
-
-### Codex and VS Code `PROBLEMS` (Session Rule)
-
-- Codex currently cannot directly read the live VS Code `PROBLEMS` UI panel state by itself in-session.
-- Therefore, Codex must use task/build output plus problem matchers as the machine-readable source of diagnostics.
-- Required workflow for every coding session:
-  - Run `ESP-IDF: Reconfigure (S3)` task.
-  - Run `ESP-IDF: Build` task.
-  - Verify zero active problems from task output and fix all issues before saying build-ready.
-  - If UI-only diagnostics still appear, Eyal should paste the `PROBLEMS` entries and Codex must resolve them before proceeding.
-- VS Code tasks in `.vscode/tasks.json` are configured with `presentation.revealProblems: "onProblem"` and GCC problem matcher for build.
-
-References:
-- OpenAI Codex issue tracker (feature request for Problems visibility): https://github.com/openai/codex/issues/7078
-- VS Code tasks documentation (problem matchers and Problems integration): https://code.visualstudio.com/docs/editor/tasks
-- VS Code tasks schema (`problemMatcher`, `presentation.revealProblems`): https://code.visualstudio.com/docs/reference/tasks-appendix
-
-### Helper Scripts
-
-- `./scripts/build_flash_prompt.sh`: runs `idf.py build flash`, then prompts to commit + bump sub-version.
-- `./scripts/bump_subversion.sh`: bumps only `Z` in `VERSION`.
-- `./scripts/setup_idf_env.sh`: prints/exports recommended local cache + build dir environment.
-- `.\scripts\idfw.cmd <idf.py args...>`: Windows wrapper that activates ESP-IDF with execution-policy bypass and forwards arguments to `idf.py`.
-- `.\scripts\setup_idf_env.ps1`: Windows PowerShell environment activation helper.
-- `.\scripts\build_flash_prompt.ps1`: Windows build+flash wrapper with commit/sub-version prompt.
-- `.\scripts\bump_subversion.ps1`: Windows patch-version bump helper.
-- `.\scripts\start_wait_sound.ps1`: plays `sounds/WaitSound.wav` once immediately, then starts the hidden repeating wait-sound worker and writes its PID handle to `.cache\wait_sound.pid`.
-- `.\scripts\start_wait_sound.ps1`: also exits automatically if no `Code.exe` process remains, which covers VS Code shutdown.
-- `.\scripts\play_wait_sound.ps1`: one-shot WAV playback helper used by the repeating wait worker for reliable replay.
-- `.\scripts\stop_wait_sound.ps1`: stops the hidden wait-sound worker referenced by `.cache\wait_sound.pid`.
-- On this Windows host, invoke PowerShell helper scripts with execution-policy bypass, for example: `powershell -ExecutionPolicy Bypass -File .\scripts\start_wait_sound.ps1`.
-- `.\scripts\monitor_capture.ps1`: fallback 20-second raw serial log capture that attaches to the port without resetting the board and is the approved monitoring method on this host when `idf.py monitor` fails.
-- `./scripts/import_waveshare_examples.sh <path>`: imports external Waveshare ESP-IDF demo examples.
-- `docs/ESP32_S3_TOUCH_LCD_4_3B_SETUP.md`: hardware and bring-up notes for the Waveshare ESP32-S3 Touch LCD 4.3B kit.
-- `docs/EyalEspressoDetailedDesign.docx`: detailed design document covering software architecture, interface design, configuration, and environment/compilation method.
-- `docs/EyalEspressoRequirements and Design.docx`: primary requirements and design document for the application.
-- `docs/REVISION_HISTORY.doc`: Word-compatible revision and latest-features tracker.
-- `docs/VERSIONING.md`: repository versioning scheme reference for `X.Y.Z`.
-- When creating or updating `.docx` files programmatically, use an extract/edit/repack flow for the OpenXML container (`.docx` is a ZIP package) instead of relying on in-place entry replacement on this host.
-- Programmatic `.docx` generation must write valid OpenXML package entry names with forward slashes such as `_rels/.rels` and `word/document.xml`, and must emit valid XML text without doubled quote escaping inside the stored XML files.
-
-## ESP32-S3-4.3B Setup Notes
-
-- Hardware/software setup guide: `docs/ESP32_S3_TOUCH_LCD_4_3B_SETUP.md`
-- This project is configured for Waveshare ESP32-S3-Touch-LCD-4.3B (`800x480` RGB + GT911 touch).
-- Known-good RGB display recipe for the first stable UI version:
-  - `psram_trans_align = 64`
-  - `bounce_buffer_size_px = LCD_H_RES * 10`
-  - register RGB completion on `on_bounce_frame_finish` when bounce buffering is enabled
-- Working CH422G backlight control implementation:
-  - the Settings tab exposes a `Display Backlight` switch in `main/ui_screen.c`
-  - backlight control is routed through `hardware_set_backlight_enabled()` in `main/hardware_init.c`
-  - the implementation uses fixed known-good CH422G masks for this board:
-    - `0x1E` = backlight on
-    - `0x1A` = backlight off while keeping the other required board-control lines high
-  - any valid touch sample wakes the backlight again in `main/lvgl_port.c`
-  - this working version does not use an inactivity timer; the earlier idle-timer attempt caused a black-screen regression and was reverted
-- Build-success sound selection:
-  - source file: `sounds/cartoon_candidates/mixkit-cartoon-monkey-preview.mp3`
-  - project playback file: `sounds/build-success-monkey-1p5x.wav`
-  - processing: played faster at `1.5x`, which also raises the pitch
-- Wait sound selection:
-  - source file: `sounds/waiting_candidates/orange-game-start-countdown.mp3`
-  - project playback files: `sounds/WaitSound.mp3` (source copy) and `sounds/WaitSound.wav` (runtime playback file)
-  - usage: play once immediately when waiting begins, then repeat every 3 minutes while still waiting
-  - verified working runtime path:
-    - one-shot playback through `.\scripts\play_wait_sound.ps1 -SoundFile sounds\WaitSound.wav`
-    - repeating worker startup through `.\scripts\start_wait_sound.ps1`
-    - worker PID handle written to `.cache\wait_sound.pid`
-  - current known limitation:
-    - the sound path and background worker are working, but the wait sound still depends on Codex explicitly starting/stopping the helper at the correct wait-state boundaries
-- Use local cache/build-dir for consistent local builds:
-  - `XDG_CACHE_HOME=.cache idf.py -B .idfbuild -DIDF_TARGET=esp32s3 reconfigure`
-  - `XDG_CACHE_HOME=.cache idf.py -B .idfbuild build`
-- Windows quick commands:
-  - `.\scripts\idfw.cmd -DIDF_TARGET=esp32s3 reconfigure`
-- `.\scripts\idfw.cmd build`
-- `.\scripts\idfw.cmd -p COM9 flash monitor`
-- `.\scripts\idfw.cmd monitor --port COM9 --no-reset`
-- `powershell -ExecutionPolicy Bypass -File .\scripts\monitor_capture.ps1 -Port COM9 -DurationSec 20`
+- The codebase already contains transport diagrams and contracts under `docs/architecture/`.
+- The framed transport is the critical integration seam between this firmware and the server simulator project.
+- The current client design is transport-first. Brew-machine business logic is still lighter than the board/UI/transport foundation.
