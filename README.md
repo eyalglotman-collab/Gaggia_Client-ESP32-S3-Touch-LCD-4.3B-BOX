@@ -107,3 +107,4 @@ The client owns the operator UI and the Wi-Fi/TCP client transport. The server s
 - The codebase already contains transport diagrams and contracts under `docs/architecture/`.
 - The framed transport is the critical integration seam between this firmware and the server simulator project.
 - The current client design is transport-first. Brew-machine business logic is still lighter than the board/UI/transport foundation.
+- All git commits for this repository should be performed directly with real git access, not through the sandboxed environment.
