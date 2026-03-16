@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.18\par
+0.2.19\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -46,6 +46,12 @@
 - Client transport now uses `wait_for_com_reset` plus a latched `ConnectionFault` banner instead of a transport `error` state, and the low-level state flow/docs were updated around `reset -> initialize -> connect -> keepalive -> wait_for_com_reset`.\par
 - Simulator-side transport alignment work is integrated into the client release baseline, including the offline-aware startup contract, RS485 startup disablement, and the current two-counter keepalive contract with `ServerLiveInteger` and `ClientLiveInteger`.\par
 - Keepalive handling now preserves the client-side counter baseline across non-keepalive acknowledgements, so generic `ACK` frames no longer overwrite the live-integer snapshot between bridge keepalive exchanges.\par
+- Communication keepalive supervision now uses session/request correlation with immediate frame parsing, duplicate-request handling without state bouncing, and a 300ms keepalive period that keeps the link in `KEEPALIVE` without rapid reconnect loops.\par
+\par
+\b 2026-03-16 14:52:00\b0\par
+- Version: 0.2.19\par
+- Summary: Stabilized client-side communication handshake and keepalive supervision for the bridge-owned session protocol.\par
+- Notes: `main/CommunicationFunctions.c` now parses incoming frames immediately (no RX parse blocking window), tracks `sid` and `req` metadata in keepalive exchanges, ignores stale requests, handles duplicate keepalive requests without cycling back through interim-debug, and supervises the link with a single rolling 0.3-second deadline model. The default keepalive period was raised to 300ms for timing margin. Verified with successful build, successful flash to `COM9`, and monitor capture showing `Connect -> InterimDebug -> Keepalive` with sustained session operation.\par
 \par
 \b 2026-03-13 19:50:00\b0\par
 - Version: 0.2.18\par
