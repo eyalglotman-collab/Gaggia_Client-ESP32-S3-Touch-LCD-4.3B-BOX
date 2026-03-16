@@ -33,8 +33,8 @@
 #define COMMUNICATION_DEFAULT_WIFI_PASSWORD  "espresso1234"
 #define COMMUNICATION_DEFAULT_SERVER_IP      "192.168.4.1"
 #define COMMUNICATION_DEFAULT_SERVER_PORT    (3333)
-#define COMMUNICATION_DEFAULT_WIFI_TIMEOUT   (5000)
-#define COMMUNICATION_DEFAULT_TCP_TIMEOUT    (3000)
+#define COMMUNICATION_DEFAULT_WIFI_TIMEOUT   (1000)
+#define COMMUNICATION_DEFAULT_TCP_TIMEOUT    (1000)
 #define COMMUNICATION_DEFAULT_KEEPALIVE_MS   (300)
 #define COMMUNICATION_WIFI_RETRY_PERIOD_MS   (2500)
 #define COMMUNICATION_BOTTOM_LAYER_RETRY_LIMIT (3)
@@ -806,7 +806,6 @@ static void communication_poll_received_frames_locked(void)
                 s_comm.snapshot.server_live_integer = received_server_live_integer;
                 s_comm.snapshot.client_live_integer = received_server_live_integer + 1U;
                 s_comm.snapshot.connect_passed = true;
-                communication_clear_connection_fault_locked();
 
                 if (has_request_id) {
                     s_comm.last_keepalive_request_id = payload_request_id;
@@ -1190,6 +1189,7 @@ static void communication_enter_state_locked(communication_state_t next_state)
     }
 
     if (next_state == COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE) {
+        communication_clear_connection_fault_locked();
         s_comm.keepalive_empty_window_count = 0;
         communication_start_keepalive_window_locked(false);
     }
@@ -1311,8 +1311,9 @@ static void communication_record_top_layer_failure_locked(const char *reason_tex
  * @brief Schedule a BottomLayer retry or escalate to TopLayer error.
  *
  * @details BottomLayer failures (loss-of-link and checksum failures) retry up
- * to three times with automatic reconnect behavior. On the third failed retry
- * the TopLayer enters `error` and requires explicit reset.
+ * to three times. Once the retry limit is reached, behavior depends on the UI
+ * Auto Reconnect toggle: enabled resets counters and retries `connect`
+ * automatically, disabled keeps the existing TopLayer-failure escalation path.
  *
  * @param[in] reason_text Retry reason text.
  * @param[in] checksum_failure Whether this failure originated from checksum validation.
@@ -1356,6 +1357,23 @@ static void communication_schedule_bottom_layer_retry_locked(const char *reason_
     s_comm.snapshot.top_layer_connect_streak = 0;
 
     if (s_comm.bottom_layer_retry_count >= COMMUNICATION_BOTTOM_LAYER_RETRY_LIMIT) {
+        if (s_comm.snapshot.auto_reconnect_enabled) {
+            s_comm.snapshot.connection_fault = true;
+            s_comm.snapshot.consecutive_keepalive_failures++;
+            ESP_LOGW(TAG,
+                     "BottomLayer retries exhausted with Auto Reconnect enabled; resetting counters and retrying connect");
+            s_comm.bottom_layer_retry_count = 0;
+            s_comm.top_layer_failure_count = 0;
+            s_comm.top_layer_connect_streak = 0;
+            s_comm.snapshot.bottom_layer_retry_count = 0;
+            s_comm.snapshot.top_layer_failure_count = 0;
+            s_comm.snapshot.top_layer_connect_streak = 0;
+            s_comm.snapshot.timeout_event_count = 0;
+            s_comm.snapshot.bottom_layer_checksum_error_count = 0;
+            s_comm.snapshot.bottom_layer_sequence_error_count = 0;
+            communication_enter_state_locked(COMMUNICATION_STATE_TOP_LAYER_CONNECT);
+            return;
+        }
         communication_record_top_layer_failure_locked("BottomLayer retries exhausted");
         return;
     }
@@ -1392,6 +1410,7 @@ static void communication_load_defaults_locked(void)
     s_comm.snapshot.config.keep_alive_period_ms = COMMUNICATION_DEFAULT_KEEPALIVE_MS;
     s_comm.snapshot.config.bottom_layer_retry_limit = COMMUNICATION_BOTTOM_LAYER_RETRY_LIMIT;
     s_comm.snapshot.config.top_layer_failure_limit = COMMUNICATION_TOP_LAYER_FAILURE_LIMIT;
+    s_comm.snapshot.auto_reconnect_enabled = true;
     snprintf(s_comm.snapshot.last_received_text,
              sizeof(s_comm.snapshot.last_received_text),
              "No peer text received yet");
@@ -1423,8 +1442,6 @@ static void communication_start_reset_locked(void)
     s_comm.wifi_connect_started = low_layer_ok;
     s_comm.tcp_connect_started = false;
     s_comm.last_wifi_connect_attempt_us = 0;
-    s_comm.snapshot.connection_fault = false;
-    s_comm.snapshot.consecutive_keepalive_failures = 0;
     s_comm.bottom_layer_retry_count = 0;
     s_comm.top_layer_failure_count = 0;
     s_comm.top_layer_connect_streak = 0;
@@ -1641,6 +1658,8 @@ static void communication_service_keep_alive_locked(void)
              COMMUNICATION_KEEPALIVE_WAIT_WINDOW_MS);
 
     if (s_comm.keepalive_empty_window_count >= COMMUNICATION_KEEPALIVE_EMPTY_WINDOW_LIMIT) {
+        s_comm.snapshot.connection_fault = true;
+        s_comm.snapshot.consecutive_keepalive_failures++;
         communication_schedule_bottom_layer_retry_locked("TopLayer keepalive response timeout", false);
         return;
     }
@@ -2077,6 +2096,27 @@ void communication_functions_request_scan(void)
         s_comm.snapshot.scan_duration_ms = 0;
         s_comm.snapshot.scan_device_count = 0;
         s_comm.snapshot.scan_results[0] = '\0';
+        xSemaphoreGive(s_comm.mutex);
+    }
+}
+
+/**
+ * @brief Update the runtime Auto Reconnect policy from the UI toggle.
+ *
+ * @details Stores the requested policy so retry-limit handling can either
+ * escalate to TopLayer fault mode (disabled) or clear counters and retry
+ * automatically (enabled).
+ *
+ * @param[in] enabled `true` to enable auto reconnect behavior.
+ */
+void communication_functions_set_auto_reconnect_enabled(bool enabled)
+{
+    if (!s_comm.initialized || s_comm.mutex == NULL) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) == pdTRUE) {
+        s_comm.snapshot.auto_reconnect_enabled = enabled;
         xSemaphoreGive(s_comm.mutex);
     }
 }

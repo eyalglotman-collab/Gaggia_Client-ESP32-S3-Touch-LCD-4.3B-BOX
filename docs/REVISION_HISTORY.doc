@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.19\par
+0.2.20\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -47,6 +47,13 @@
 - Simulator-side transport alignment work is integrated into the client release baseline, including the offline-aware startup contract, RS485 startup disablement, and the current two-counter keepalive contract with `ServerLiveInteger` and `ClientLiveInteger`.\par
 - Keepalive handling now preserves the client-side counter baseline across non-keepalive acknowledgements, so generic `ACK` frames no longer overwrite the live-integer snapshot between bridge keepalive exchanges.\par
 - Communication keepalive supervision now uses session/request correlation with immediate frame parsing, duplicate-request handling without state bouncing, and a 300ms keepalive period that keeps the link in `KEEPALIVE` without rapid reconnect loops.\par
+- Connection Info now includes an `Auto Reconnect` toggle that defaults ON and controls whether retry-limit exhaustion auto-restarts the connect path.\par
+- Connection fault latching now occurs at the third keepalive timeout window and clears only after re-entering `KEEPALIVE`, with Wi-Fi and TCP default timeout windows reduced to 1000 ms.\par
+\par
+\b 2026-03-16 16:53:49\b0\par
+- Version: 0.2.20\par
+- Summary: Added Auto Reconnect control, aligned fault-banner timing to the third keepalive timeout, and reduced retry timeout windows to 1 second.\par
+- Notes: `main/ui_screen.c` now provides a Connection Info `Auto Reconnect` toggle and live ON/OFF telemetry. `main/CommunicationFunctions.*` now exposes runtime auto-reconnect policy control, auto-retries connect after bottom-layer retry exhaustion when enabled, and latches `ConnectionFault` at the third keepalive timeout window while clearing it only on successful `KEEPALIVE` re-entry. Default Wi-Fi and TCP timeout windows are now both 1000 ms to shorten retry latency. Verified with successful build and multiple successful flashes to `COM9`.\par
 \par
 \b 2026-03-16 14:52:00\b0\par
 - Version: 0.2.19\par

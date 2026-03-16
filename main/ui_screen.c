@@ -54,6 +54,7 @@ typedef struct {
     lv_obj_t *clock_set_hour_roller;
     lv_obj_t *clock_set_minute_roller;
     lv_obj_t *connection_info_details_label;
+    lv_obj_t *connection_info_auto_reconnect_btn;
     bool connection_info_show_scan_results;
     lv_obj_t *content;
     lv_obj_t *brew_toggle_btn;
@@ -106,6 +107,7 @@ static ui_state_t s_ui = {
     .clock_set_hour_roller = NULL,
     .clock_set_minute_roller = NULL,
     .connection_info_details_label = NULL,
+    .connection_info_auto_reconnect_btn = NULL,
     .connection_info_show_scan_results = false,
     .content = NULL,
     .brew_toggle_btn = NULL,
@@ -155,6 +157,12 @@ static void ui_apply_profile_defaults(int profile_index);
 static const char *ui_get_system_constants_pretty_text(void);
 static void ui_update_connection_info_overlay_contents(void);
 static void ui_update_init_mode_prompt_text(void);
+static lv_obj_t *ui_create_toggle_button(lv_obj_t *parent,
+                                         const char *text,
+                                         bool checked,
+                                         lv_coord_t x,
+                                         lv_coord_t y,
+                                         lv_event_cb_t cb);
 
 static char s_system_constants_pretty_text[UI_SYSTEM_CONSTANTS_TEXT_MAX];
 static const uint32_t UI_INIT_MODE_DEFAULT_COUNTDOWN_SEC = 5U;
@@ -611,6 +619,7 @@ static void ui_close_connection_info_overlay(void)
 
     s_ui.connection_info_overlay = NULL;
     s_ui.connection_info_details_label = NULL;
+    s_ui.connection_info_auto_reconnect_btn = NULL;
     s_ui.connection_info_show_scan_results = false;
 }
 
@@ -644,7 +653,7 @@ static void ui_update_connection_info_overlay_contents(void)
     if (comm_ret != ESP_OK) {
         ESP_LOGW(TAG, "Communication snapshot read failed: %s", esp_err_to_name(comm_ret));
         snprintf(comm_snapshot.last_error, sizeof(comm_snapshot.last_error), "Snapshot unavailable");
-        comm_snapshot.state = COMMUNICATION_STATE_RESET;
+        comm_snapshot.state = COMMUNICATION_STATE_TOP_LAYER_RESET;
         comm_snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
         snprintf(comm_snapshot.scan_results, sizeof(comm_snapshot.scan_results), "Scan snapshot unavailable");
     }
@@ -684,6 +693,7 @@ static void ui_update_connection_info_overlay_contents(void)
                           "Initialize Passed: %s\n"
                           "Connect Passed: %s\n"
                           "Send Data Enabled: %s\n"
+                          "Auto Reconnect: %s\n"
                           "Connection Fault: %s\n"
                           "Keepalive Failures: %" PRIu32 "\n"
                           "RSSI: %ld dBm\n"
@@ -709,6 +719,7 @@ static void ui_update_connection_info_overlay_contents(void)
                           comm_snapshot.initialize_passed ? "Yes" : "No",
                           comm_snapshot.connect_passed ? "Yes" : "No",
                           comm_snapshot.send_data_enabled ? "Yes" : "No",
+                          comm_snapshot.auto_reconnect_enabled ? "On" : "Off",
                           comm_snapshot.connection_fault ? "Yes" : "No",
                           comm_snapshot.consecutive_keepalive_failures,
                           (long)comm_snapshot.wifi_rssi,
@@ -740,7 +751,7 @@ static void ui_update_connection_fault_indicator(void)
     }
 
     if (comm_snapshot.connection_fault &&
-        comm_snapshot.state == COMMUNICATION_STATE_WAIT_FOR_COM_RESET) {
+        comm_snapshot.state != COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE) {
         lv_label_set_text(s_ui.connection_fault_label, "Connection Fault, Please Reset");
         lv_obj_clear_flag(s_ui.connection_fault_label, LV_OBJ_FLAG_HIDDEN);
     } else {
@@ -1032,6 +1043,22 @@ static void ui_connection_info_scan_event_cb(lv_event_t *e)
 }
 
 /**
+ * @brief Update Auto Reconnect policy from the Connection Info toggle.
+ *
+ * @details Mirrors the checkable LVGL button state into the communication task
+ * so retry-limit exhaustion either auto-retries or follows the legacy path.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_connection_info_auto_reconnect_event_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    bool auto_reconnect_enabled = lv_obj_has_state(obj, LV_STATE_CHECKED);
+    communication_functions_set_auto_reconnect_enabled(auto_reconnect_enabled);
+    ui_update_connection_info_overlay_contents();
+}
+
+/**
  * @brief Close the system-constants screen and return to Settings.
  *
  * @details Dismisses the modal XML viewer overlay created from the Settings
@@ -1057,8 +1084,13 @@ static void ui_system_constants_done_event_cb(lv_event_t *e)
 static void ui_settings_connection_info_event_cb(lv_event_t *e)
 {
     (void)e;
+    communication_snapshot_t comm_snapshot = {0};
+    bool auto_reconnect_enabled = false;
 
     ui_close_connection_info_overlay();
+    if (communication_functions_get_snapshot(&comm_snapshot) == ESP_OK) {
+        auto_reconnect_enabled = comm_snapshot.auto_reconnect_enabled;
+    }
 
     lv_obj_t *scr = lv_screen_active();
     s_ui.connection_info_overlay = lv_obj_create(scr);
@@ -1100,9 +1132,17 @@ static void ui_settings_connection_info_event_cb(lv_event_t *e)
     ui_style_button_label(scan_lbl);
     lv_obj_center(scan_lbl);
 
+    s_ui.connection_info_auto_reconnect_btn = ui_create_toggle_button(panel,
+                                                                      "Auto Reconnect",
+                                                                      auto_reconnect_enabled,
+                                                                      20,
+                                                                      126,
+                                                                      ui_connection_info_auto_reconnect_event_cb);
+    lv_obj_set_width(s_ui.connection_info_auto_reconnect_btn, 320);
+
     lv_obj_t *info_body = lv_obj_create(panel);
-    lv_obj_set_size(info_body, 720, 220);
-    lv_obj_align(info_body, LV_ALIGN_TOP_MID, 0, 126);
+    lv_obj_set_size(info_body, 720, 162);
+    lv_obj_align(info_body, LV_ALIGN_TOP_MID, 0, 184);
     ui_style_card(info_body, UI_COLOR_CARD);
     lv_obj_set_scrollbar_mode(info_body, LV_SCROLLBAR_MODE_ACTIVE);
     lv_obj_set_style_pad_all(info_body, 18, 0);
@@ -1917,6 +1957,7 @@ void ui_screen_create(void)
     s_ui.connection_info_overlay = NULL;
     s_ui.system_constants_overlay = NULL;
     s_ui.connection_info_details_label = NULL;
+    s_ui.connection_info_auto_reconnect_btn = NULL;
     s_ui.connection_info_show_scan_results = false;
     s_ui.clock_set_day_roller = NULL;
     s_ui.clock_set_month_roller = NULL;

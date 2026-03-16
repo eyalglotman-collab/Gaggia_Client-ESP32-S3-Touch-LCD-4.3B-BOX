@@ -16,21 +16,19 @@ extern "C" {
 #endif
 
 /**
- * @brief Low-level Wi-Fi transport state.
+ * @brief TopLayer communication state.
  *
- * @details Tracks the transport-side workflow used to prepare the ESP32-S3 for
- * framed TCP communication with the remote Wi-Fi server. The low-level link
- * uses the client-side topology `reset -> initialize -> connect ->
- * keepalive -> wait_for_com_reset`. Connection faults are tracked through a
- * separate latched flag, and repeated keepalive failures can force the task to
- * wait for an explicit operator reset.
+ * @details Tracks the high-level communication workflow that wraps the
+ * BottomLayer Wi-Fi/TCP reliability engine. The TopLayer state machine uses
+ * `reset -> initialize -> connect -> interim_debug -> keepalive -> error`.
  */
 typedef enum {
-    COMMUNICATION_STATE_RESET = 0,
-    COMMUNICATION_STATE_INITIALIZE,
-    COMMUNICATION_STATE_CONNECT,
-    COMMUNICATION_STATE_KEEPALIVE,
-    COMMUNICATION_STATE_WAIT_FOR_COM_RESET,
+    COMMUNICATION_STATE_TOP_LAYER_RESET = 0,
+    COMMUNICATION_STATE_TOP_LAYER_INITIALIZE,
+    COMMUNICATION_STATE_TOP_LAYER_CONNECT,
+    COMMUNICATION_STATE_TOP_LAYER_INTERIM_DEBUG,
+    COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE,
+    COMMUNICATION_STATE_TOP_LAYER_ERROR,
 } communication_state_t;
 
 /**
@@ -63,6 +61,8 @@ typedef struct {
     uint32_t wifi_connect_timeout_ms;
     uint32_t tcp_connect_timeout_ms;
     uint32_t keep_alive_period_ms;
+    uint32_t bottom_layer_retry_limit;
+    uint32_t top_layer_failure_limit;
 } communication_config_t;
 
 /**
@@ -81,12 +81,20 @@ typedef struct {
     bool initialize_passed;
     bool connect_passed;
     bool send_data_enabled;
+    bool auto_reconnect_enabled;
     bool connection_fault;
     bool reset_requested;
     bool scan_requested;
     uint32_t server_live_integer;
     uint32_t client_live_integer;
     uint32_t consecutive_keepalive_failures;
+    uint32_t bottom_layer_retry_count;
+    uint32_t top_layer_failure_count;
+    uint32_t top_layer_connect_streak;
+    uint32_t timeout_event_count;
+    uint32_t reset_to_debug_elapsed_ms;
+    uint32_t bottom_layer_checksum_error_count;
+    uint32_t bottom_layer_sequence_error_count;
     uint16_t sequence;
     uint32_t scan_duration_ms;
     uint16_t scan_device_count;
@@ -137,6 +145,17 @@ void communication_functions_request_disconnect(void);
  * device list without blocking the UI thread.
  */
 void communication_functions_request_scan(void);
+
+/**
+ * @brief Enable or disable automatic reconnect after retry-limit exhaustion.
+ *
+ * @details When enabled, the communication task resets retry counters and
+ * re-enters `connect` automatically after three BottomLayer retries. When
+ * disabled, the existing escalation path remains unchanged.
+ *
+ * @param[in] enabled `true` to enable Auto Reconnect, `false` to disable it.
+ */
+void communication_functions_set_auto_reconnect_enabled(bool enabled);
 
 /**
  * @brief Read the latest communication snapshot.
