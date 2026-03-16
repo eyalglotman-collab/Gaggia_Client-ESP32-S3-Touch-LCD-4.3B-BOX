@@ -39,7 +39,7 @@ The client transport is not a generic REST or MQTT client. It is a custom framed
 - Frame start bytes: `0xA5 0x5A`
 - Message types include `RESET`, `INITIALIZE`, `CONNECT`, `DISCONNECT`, `KEEPALIVE`, `ERROR`, `ACK`, and `DATA`
 - Integrity check: CRC16-CCITT
-- Main link states: `reset -> initialize -> connect -> keepalive -> wait_for_com_reset`
+- Main TopLayer states: `reset -> initialize -> connect -> keepalive -> error`
 - The UI reads a transport snapshot rather than touching sockets directly
 
 `main/CommunicationFunctions.h` is the clearest public contract for the client link state machine and snapshot model.
@@ -87,16 +87,26 @@ The UI also includes:
 - `sounds/`: local workflow sound assets
 - `VERSION`: project version
 
-## Build
+## Build and Flash
 
-Use the local wrapper or normal ESP-IDF workflow.
+You must use the local wrapper through `cmd.exe` with an absolute forward-slash path for both build and flash.
 
 ```bash
-./scripts/idfw.cmd build
-./scripts/idfw.cmd -p <PORT> flash
+cmd.exe /c C:/Espressif/Eyal_Projects_ESP32_S3/Eyal_espresso_client/scripts/idfw.cmd build
+cmd.exe /c C:/Espressif/Eyal_Projects_ESP32_S3/Eyal_espresso_client/scripts/idfw.cmd -p <PORT> flash
 ```
 
-Build and flash should be run sequentially, with `build` first and `flash` second.
+You must run build and flash sequentially, with `build` first and `flash` second.
+For Codex/WSL sessions, this absolute-path `cmd.exe` method is the required build and flash path.
+
+## Session Startup Reminder
+
+For a stable client+server workflow every session:
+
+1. Start the server with `launch_simulator_ui.ps1` from the server repository.
+2. If server startup fails, use the terminal diagnostic block printed by the launcher as the source of truth (not only the popup).
+3. Keep the server interpreter pinned to `C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_server_simulator\.venv\Scripts\python.exe` in VS Code.
+4. Only after the server is healthy, run client build/flash from this repository using `scripts/idfw.cmd`.
 
 ## Current Client/Server Boundary
 
@@ -107,13 +117,33 @@ The client owns the operator UI and the Wi-Fi/TCP client transport. The server s
 - The codebase already contains transport diagrams and contracts under `docs/architecture/`.
 - The framed transport is the critical integration seam between this firmware and the server simulator project.
 - The current client design is transport-first. Brew-machine business logic is still lighter than the board/UI/transport foundation.
-- All git commits for this repository should be performed directly with real git access, not through the sandboxed environment.
+- You must use the sound cue scripts in `scripts/` as your workflow notifications for build/flash outcomes.
+- You must perform all git commits for this repository directly with real git access, not through the sandboxed environment.
 
-Reference direct-commit method used here:
+You must use this direct-commit method as the reference:
 
 ```bash
 git add README.md
 git -c user.name="Codex" -c user.email="codex@local" commit -m "docs: <message>"
 ```
 
-Codex has permission to run any `.exe` file it chooses, as long as that executable only creates or modifies files within `C:\Espressif`.
+## Workspace Review Rules
+
+- You must read all files in the two workspace projects: `Eyal_espresso_client` and `Eyal_espresso_server_simulator`.
+- You must review both project architectures and be prepared to make code changes.
+- You must read both `README.md` files and follow the rules listed in them.
+- You must verify that git is active before making or finalizing changes.
+
+## Session Start Approval Bootstrap
+
+- At the beginning of every new Codex session, before substantial work, Codex must run a pre-approval bootstrap and request saved prefix approvals for common commands.
+- Codex must ask for these prefix types first so future commands do not repeatedly prompt:
+  - `code --reuse-window --goto <WindowsPath:line:col>`
+  - `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Espressif\...\scripts\start_wait_sound.ps1`
+  - `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Espressif\...\scripts\stop_wait_sound.ps1`
+  - `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Espressif\...\scripts\play_wait_sound.ps1`
+  - `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Espressif\...\scripts\play_build_success_sound.ps1`
+  - Common build/flash wrappers under `C:\Espressif\...\scripts\` that this workspace uses.
+- During this bootstrap, Codex must explicitly ask the user to save/remember the prefix rule when the runtime approval UI appears.
+
+You must allow Codex to run any `.exe` file it chooses, as long as that executable only creates or modifies files within `C:\Espressif`.
