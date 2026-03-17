@@ -17,5 +17,5 @@ if (-not ($IdfArgs -contains "-B")) {
 
 $effectiveArgs += $IdfArgs
 
-& idf.py @effectiveArgs
+idf.py @effectiveArgs
 exit $LASTEXITCODE

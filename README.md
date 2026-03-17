@@ -39,7 +39,9 @@ The client transport is not a generic REST or MQTT client. It is a custom framed
 - Frame start bytes: `0xA5 0x5A`
 - Message types include `RESET`, `INITIALIZE`, `CONNECT`, `DISCONNECT`, `KEEPALIVE`, `ERROR`, `ACK`, and `DATA`
 - Integrity check: CRC16-CCITT
-- Main TopLayer states: `reset -> initialize -> connect -> keepalive -> error`
+- Main TopLayer states: `reset -> initialize -> connect -> keepalive_server_receive <-> keepalive_client_send -> error`
+- Keepalive supervision uses a 450 ms response window with a 3-window timeout threshold before retry escalation.
+- BottomLayer retries are capped at 3, and the Connection Info `Auto Reconnect` toggle controls whether retry exhaustion auto-retries `connect`.
 - The UI reads a transport snapshot rather than touching sockets directly
 
 `main/CommunicationFunctions.h` is the clearest public contract for the client link state machine and snapshot model.

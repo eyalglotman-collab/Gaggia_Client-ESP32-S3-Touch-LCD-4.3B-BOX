@@ -751,7 +751,8 @@ static void ui_update_connection_fault_indicator(void)
     }
 
     if (comm_snapshot.connection_fault &&
-        comm_snapshot.state != COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE) {
+        comm_snapshot.state != COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE &&
+        comm_snapshot.state != COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_CLIENT_SEND) {
         lv_label_set_text(s_ui.connection_fault_label, "Connection Fault, Please Reset");
         lv_obj_clear_flag(s_ui.connection_fault_label, LV_OBJ_FLAG_HIDDEN);
     } else {

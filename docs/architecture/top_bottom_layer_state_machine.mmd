@@ -1,0 +1,22 @@
+stateDiagram-v2
+    [*] --> TopLayerReset
+    TopLayerReset --> TopLayerInitialize: reset requested
+    TopLayerInitialize --> TopLayerConnect: config loaded and BottomLayer prepared
+    TopLayerConnect --> TopLayerKeepAliveServerReceive: connect ACK and first keepalive proven
+    TopLayerKeepAliveServerReceive --> TopLayerKeepAliveClientSend: valid server keepalive request received
+    TopLayerKeepAliveClientSend --> TopLayerKeepAliveServerReceive: one client response sent
+
+    TopLayerConnect --> TopLayerError: TopLayer failures >= 3
+    TopLayerKeepAliveServerReceive --> TopLayerError: TopLayer failures >= 3
+    TopLayerKeepAliveClientSend --> TopLayerError: TopLayer failures >= 3
+    TopLayerError --> TopLayerReset: explicit operator reset
+
+    note right of TopLayerConnect
+      BottomLayer retries up to 3 times on:
+      - Wi-Fi/TCP link loss
+      - checksum (CRC) error
+      - connect/keepalive timeout
+      Retry exhaustion:
+      - Auto Reconnect ON: reset counters and retry connect
+      - Auto Reconnect OFF: escalate to TopLayer failure
+    end note

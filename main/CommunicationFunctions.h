@@ -20,14 +20,15 @@ extern "C" {
  *
  * @details Tracks the high-level communication workflow that wraps the
  * BottomLayer Wi-Fi/TCP reliability engine. The TopLayer state machine uses
- * `reset -> initialize -> connect -> interim_debug -> keepalive -> error`.
+ * `reset -> initialize -> connect -> keepalive_server_receive ->
+ * keepalive_client_send -> error`.
  */
 typedef enum {
     COMMUNICATION_STATE_TOP_LAYER_RESET = 0,
     COMMUNICATION_STATE_TOP_LAYER_INITIALIZE,
     COMMUNICATION_STATE_TOP_LAYER_CONNECT,
-    COMMUNICATION_STATE_TOP_LAYER_INTERIM_DEBUG,
-    COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE,
+    COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE,
+    COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_CLIENT_SEND,
     COMMUNICATION_STATE_TOP_LAYER_ERROR,
 } communication_state_t;
 

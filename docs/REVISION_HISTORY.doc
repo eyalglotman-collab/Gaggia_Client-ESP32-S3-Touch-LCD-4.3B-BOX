@@ -4,7 +4,7 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.20\par
+0.2.21\par
 \par
 \b Latest Version Feature List\b0\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
@@ -49,6 +49,13 @@
 - Communication keepalive supervision now uses session/request correlation with immediate frame parsing, duplicate-request handling without state bouncing, and a 300ms keepalive period that keeps the link in `KEEPALIVE` without rapid reconnect loops.\par
 - Connection Info now includes an `Auto Reconnect` toggle that defaults ON and controls whether retry-limit exhaustion auto-restarts the connect path.\par
 - Connection fault latching now occurs at the third keepalive timeout window and clears only after re-entering `KEEPALIVE`, with Wi-Fi and TCP default timeout windows reduced to 1000 ms.\par
+- TopLayer keepalive flow is now explicitly split into `KeepAliveServerReceive` and `KeepAliveClientSend`, with one response per accepted request and parity checks to keep server values even and client values odd.\par
+- Reset now fast-paths directly to `connect` when low-layer Wi-Fi is still healthy, reducing reconnect latency after reset retries.\par
+\par
+\b 2026-03-17 14:50:00\b0\par
+- Version: 0.2.21\par
+- Summary: Split client keepalive into explicit receive/send states, added reset fast-path behavior, and aligned top/bottom-layer docs to the implemented transport rules.\par
+- Notes: `main/CommunicationFunctions.*` now runs the client TopLayer as `reset -> initialize -> connect -> keepalive_server_receive <-> keepalive_client_send -> error`, enforces single-response handling per keepalive request, and keeps retry escalation at 3-window timeout/3 bottom-layer retry thresholds with Auto Reconnect control. `docs/architecture/top_bottom_layer_state_machine.mmd` and `README.md` were updated to match the implemented behavior. Verified via successful build/flash cycles during COM4/COM9 transport debugging.\par
 \par
 \b 2026-03-16 16:53:49\b0\par
 - Version: 0.2.20\par

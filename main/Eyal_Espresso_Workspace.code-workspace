@@ -7,5 +7,8 @@
 			"path": "../../Eyal_espresso_server_simulator"
 		}
 	],
-	"settings": {}
+	"settings": {
+		"chatgpt.followUpQueueMode": "steer",
+		"chatgpt.openOnStartup": true
+	}
 }

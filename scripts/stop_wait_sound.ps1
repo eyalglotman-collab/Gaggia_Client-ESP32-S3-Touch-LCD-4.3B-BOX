@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param()
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $LegacyPidFile = Join-Path $ProjectRoot ".cache\wait_sound.pid"
 $RegistryScript = Join-Path $ProjectRoot "scripts\sound_process_registry.ps1"

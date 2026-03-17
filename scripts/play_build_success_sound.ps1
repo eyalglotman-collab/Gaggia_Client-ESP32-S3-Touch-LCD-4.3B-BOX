@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param()
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $PlaybackScript = Join-Path $ProjectRoot "scripts\play_wait_sound.ps1"
 $SoundFile = Join-Path $ProjectRoot "sounds\build-success-monkey-1p5x.wav"
@@ -32,3 +35,9 @@ if (Test-Path $RegistryScript) {
     -Background `
     -Role "build-success-playback" `
     -Description "Build success notification playback"
+
+if (-not $?) {
+    $exitCodeVar = Get-Variable -Name LASTEXITCODE -ErrorAction SilentlyContinue
+    $exitCode = if ($null -ne $exitCodeVar) { [int]$exitCodeVar.Value } else { -1 }
+    throw "Build-success playback helper failed with exit code $exitCode."
+}

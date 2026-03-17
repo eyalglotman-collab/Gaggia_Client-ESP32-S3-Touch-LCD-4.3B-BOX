@@ -4,6 +4,9 @@ param(
     [int]$IntervalSeconds = 180
 )
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $LegacyPidFile = Join-Path $ProjectRoot ".cache\wait_sound.pid"
 $SoundFile = Join-Path $ProjectRoot "sounds\WaitSound.wav"
@@ -40,11 +43,17 @@ function Play-WaitSound {
         -ProcessId $PID `
         -Detail ("sound_file={0}" -f $SoundFile)
 
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PlaybackScript `
+    $null = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PlaybackScript `
         -SoundFile $SoundFile `
         -Background `
         -Role "wait-playback" `
-        -Description $Description | Out-Null
+        -Description $Description
+
+    if (-not $?) {
+        $exitCodeVar = Get-Variable -Name LASTEXITCODE -ErrorAction SilentlyContinue
+        $exitCode = if ($null -ne $exitCodeVar) { [int]$exitCodeVar.Value } else { -1 }
+        throw "Wait sound playback helper failed with exit code $exitCode."
+    }
 }
 
 # @brief Run the repeating wait-sound loop.

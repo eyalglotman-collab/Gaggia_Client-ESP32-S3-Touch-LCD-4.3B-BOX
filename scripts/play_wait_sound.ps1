@@ -7,6 +7,9 @@ param(
     [string]$Description = "Background sound playback"
 )
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $RegistryScript = Join-Path $ProjectRoot "scripts\sound_process_registry.ps1"
 
@@ -82,6 +85,9 @@ if ($Background) {
 $playSucceeded = $false
 $lastError = $null
 $backendUsed = ""
+$player = $null
+$mediaPlayer = $null
+$state = 0
 
 try {
     try {
@@ -112,7 +118,7 @@ try {
     } catch {
         $lastError = $_
     } finally {
-        if ($mediaPlayer) {
+        if ($null -ne $mediaPlayer) {
             try { $mediaPlayer.controls.stop() } catch {}
             try { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($mediaPlayer) } catch {}
         }

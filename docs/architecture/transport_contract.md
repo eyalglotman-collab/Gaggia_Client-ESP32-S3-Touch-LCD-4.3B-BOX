@@ -19,7 +19,7 @@ This file is the canonical machine-readable design baseline for low-level transp
 | `ClientLiveInteger` | ESP32-S3 client side | The client validates `ServerLiveInteger`, increments `ClientLiveInteger`, and returns it to the server. |
 | CRC validation | Low-level transport layer | Upper-level controller logic should not re-implement integrity checks. |
 | Watchdog enforcement | Low-level transport layer on both sides | Missing forward progress forces a reconnect attempt through `connect`. |
-| `ConnectionFault` latch | ESP32-S3 client side | Latched after 5 sequential keepalive failures and cleared only after a successful keepalive exchange or explicit reset. |
+| `ConnectionFault` latch | ESP32-S3 client side | Latched on TopLayer failure and during retry exhaustion handling; keepalive timeout windows are counted in groups of 3 before retry escalation. |
 
 ## State Definitions
 
@@ -28,8 +28,8 @@ This file is the canonical machine-readable design baseline for low-level transp
 | `reset` | Clear session state and run self-test. | Clear counters, buffers, stale link ownership, load parameters. | Self-test complete and parameters available. |
 | `initialize` | Prepare Wi-Fi resources without claiming a healthy link yet. | Validate configuration, prepare parser, prepare Wi-Fi/TCP roles and timers, and zero both counters so the next live value must originate from the server. | Wi-Fi has a valid IP address, or bounded association retries expire. |
 | `connect` | Establish or re-establish the active low-level TCP link. | Open/accept session, send `INITIALIZE` and `CONNECT` frames, wait for connect proof. | Connect proof arrives and keepalive may begin, or reconnect must be retried. |
-| `keepalive` | Supervise synchronized server/client forward progress. | Validate counters, respond to server keepalive, allow application payloads. | Keepalive failure schedules reconnect through `connect`. |
-| `wait_for_com_reset` | Stop automatic reconnect churn after repeated keepalive failures. | Preserve `ConnectionFault`, keep latest failure reason visible, and wait for explicit operator reset. | `Reset Connection` action requests transport reset. |
+| `keepalive_server_receive` | Wait for one valid server keepalive request. | Arm one 450 ms wait window and validate parity/session/request metadata. | Valid request advances to `keepalive_client_send`; repeated timeout windows trigger retry escalation. |
+| `keepalive_client_send` | Send exactly one client keepalive response. | Build one response with incremented odd client integer and latest request metadata. | Successful send returns to `keepalive_server_receive`; send failure triggers retry escalation. |
 
 ## Client Communication Scan State Definitions
 
@@ -64,9 +64,10 @@ This file is the canonical machine-readable design baseline for low-level transp
 | --- | --- | --- | --- | --- | --- |
 | `reset` | Self-test complete | Parameters valid | Prepare initialization inputs | `initialize` | Self-test failure retries through `initialize`. |
 | `initialize` | Wi-Fi association completes | Valid local IP acquired | Hand control to TCP connect logic | `connect` | Wi-Fi association retries continue during the bounded timeout window; timeout returns to `reset`. |
-| `connect` | TCP socket open and connect proof received | TCP connected and peer accepted session | Enable low-level link for keepalive supervision | `keepalive` | Missing connect proof closes the socket and retries through `connect`. |
-| `keepalive` | Valid server keepalive received | Counter exchange succeeds | Clear `ConnectionFault`, zero failure counter, keep application payloads enabled | `keepalive` | Keepalive loss closes the socket and returns to `connect`. After 5 sequential keepalive failures, `ConnectionFault` is latched and the client enters `wait_for_com_reset`. |
-| `wait_for_com_reset` | Operator presses `Reset Connection` | Explicit recovery requested | Clear fault and restart low-level transport | `reset` | No implicit recovery allowed from this state. |
+| `connect` | TCP socket open and connect proof received | TCP connected and peer accepted session | Enable low-level link and wait for server keepalive request | `keepalive_server_receive` | Missing connect proof closes the socket and retries through `connect`. |
+| `keepalive_server_receive` | Valid server keepalive received | Server integer parity/session/request validation passes | Store request metadata and transition to response-send phase | `keepalive_client_send` | Each 450 ms empty window increments timeout counters; after 3 windows retry escalation starts through `connect`. |
+| `keepalive_client_send` | Keepalive response transmission | Request metadata is valid and link is healthy | Send one response, clear retry counters, and return to receive phase | `keepalive_server_receive` | Send failure or link loss retries through `connect`; repeated failures escalate to TopLayer `error`. |
+| `error` | TopLayer failure limit reached | Recovery requires explicit operator reset | Keep fault latched and stop automatic progression | `error` | `Reset Connection` returns the state machine to `reset`. |
 
 ## Packet Definitions
 
@@ -75,14 +76,14 @@ This file is the canonical machine-readable design baseline for low-level transp
 | `RESET` | Force hard reset and self-test. | Supervisory host | Low-level peer | `protocol_version`, `message_type`, reset profile/parameters, CRC | `RESET_ACK` | Supervisor expects bounded response time from reset path. | Failure enters `error`. |
 | `INITIALIZE` | Prepare low-level resources. | Supervisory host | Low-level peer | endpoint/role parameters, watchdog settings, CRC | `INITIALIZE_ACK` | Initialization must complete before connect window expires. | The client zeros both counters before sending `INITIALIZE`, so the first live value after initialization must come from the server. |
 | `CONNECT` | Enter active session. | Supervisory host | Low-level peer | connection role or endpoint reference, CRC | `CONNECT_ACK` followed by keepalive traffic | Session establishment timeout closes the socket and retries through `connect`. | Socket/join failure retries through `connect` or `initialize`. |
-| `KEEPALIVE` | Prove synchronized server/client forward progress. | ESP32-C3 server side | ESP32-S3 client side | current `ServerLiveInteger`, latest `ClientLiveInteger`, sequence, CRC | client returns `KEEPALIVE` with incremented `ClientLiveInteger`; server validates it and advances the next `ServerLiveInteger` | Every 100 mSec. | Missing counter progression closes the socket, retries through `connect`, and latches `ConnectionFault` into `wait_for_com_reset` after 5 repeated failures. |
+| `KEEPALIVE` | Prove synchronized server/client forward progress. | ESP32-C3 server side | ESP32-S3 client side | current `ServerLiveInteger`, latest `ClientLiveInteger`, sequence, `sid`, `req`, CRC | client returns one `KEEPALIVE` response with incremented odd `ClientLiveInteger`; server validates it and advances the next even `ServerLiveInteger` | Keepalive period is `300 mSec`; receive timeout window is `450 mSec`. | Missing counter progression retries through `connect`; repeated failures escalate to TopLayer `error` after configured 3-failure limits. |
 | `DATA` | Carry application payload after validation. | Either side | Peer | payload, sequence, CRC | `ACK` or application response | Normal transport timeout policy applies. | Invalid frame is rejected before upper layer sees payload. |
 | `SCAN` | Discover available Wi-Fi devices for operator selection. | Client communication task | ESP32-S3 Wi-Fi driver | scan request flag, 10-second window, current STA configuration | formatted AP list in `scan_results` | Operator-visible scan lasts 10 seconds. | Scan API or result-read failure enters `COMMUNICATION_SCAN_STATE_ERROR`. |
 
 ## Timing Rules
 
-- Wi-Fi association timeout in the client initialize state is `5000 mSec`.
-- Keep-alive cadence is `100 mSec`.
+- Wi-Fi association timeout in the client initialize state is `1000 mSec`.
+- Keep-alive cadence is `300 mSec`.
 - The ESP32-C3 server side owns keepalive initiation and resets both counters to `0` every time it enters `connect`.
 - The ESP32-S3 client side zeros both counters during `initialize`.
 - The ESP32-S3 client side increments `ClientLiveInteger` only after validating the current `ServerLiveInteger`.
@@ -95,7 +96,7 @@ This file is the canonical machine-readable design baseline for low-level transp
 | --- | --- | --- | --- |
 | CRC failure | Low-level frame parser | Drop frame, close socket, retry through `connect` | automatic reconnect |
 | Host watchdog failure | Device/bridge side | Assume host stalled and retry transport | `connect` or `reset` after host recovers |
-| Device watchdog failure | Host side | Stop trusting link, count keepalive failure, retry through `connect` | automatic reconnect until the 5-failure threshold, then explicit reset |
+| Device watchdog failure | Host side | Stop trusting link, count keepalive timeout windows, retry through `connect` | automatic reconnect until 3-failure thresholds, then TopLayer `error` |
 | USB COM loss | Host or bridge | Stop transport and retry after COM recovery | `reset` after COM recovery |
 | Wi-Fi association failure | Client initialize state | Retry association during bounded initialize window | automatic retry, then `reset` |
 | Configured SSID not visible | Client communication initialize precheck | Continue Wi-Fi association attempts during the bounded initialize retry window | `reset` after timeout or environment changes |

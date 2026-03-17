@@ -39,12 +39,12 @@
 #define COMMUNICATION_WIFI_RETRY_PERIOD_MS   (2500)
 #define COMMUNICATION_BOTTOM_LAYER_RETRY_LIMIT (3)
 #define COMMUNICATION_TOP_LAYER_FAILURE_LIMIT  (3)
-#define COMMUNICATION_TOP_LAYER_CONNECT_STREAK_REQUIRED (1)
 #define COMMUNICATION_SCAN_WINDOW_MS         (10000)
 #define COMMUNICATION_SCAN_MAX_APS           (10)
 #define COMMUNICATION_CONNECT_PRECHECK_APS   (16)
-#define COMMUNICATION_KEEPALIVE_WAIT_WINDOW_MS (300)
+#define COMMUNICATION_KEEPALIVE_WAIT_WINDOW_MS (450)
 #define COMMUNICATION_KEEPALIVE_EMPTY_WINDOW_LIMIT (3)
+#define COMMUNICATION_KEEPALIVE_RESPONSE_ATTEMPT_LIMIT (1U)
 #define COMMUNICATION_FRAME_SOF0             (0xA5U)
 #define COMMUNICATION_FRAME_SOF1             (0x5AU)
 #define COMMUNICATION_FRAME_HEADER_BYTES     (15U)
@@ -67,8 +67,10 @@ static const char *TAG = "CommunicationFunctions";
 
 typedef struct {
     SemaphoreHandle_t mutex;
+    SemaphoreHandle_t snapshot_mutex;
     TaskHandle_t task_handle;
     communication_snapshot_t snapshot;
+    communication_snapshot_t published_snapshot;
     bool initialized;
     bool reset_requested;
     bool disconnect_requested;
@@ -76,12 +78,12 @@ typedef struct {
     bool tcp_connect_started;
     bool keepalive_ack_pending;
     bool running_integer_seeded;
-    bool interim_debug_logged;
     bool fast_reset_skip_wifi;
     bool keepalive_window_has_message;
     bool session_id_valid;
     bool last_keepalive_request_valid;
     bool last_responded_keepalive_request_valid;
+    bool duplicate_keepalive_replay_valid;
     int64_t connect_requested_us;
     int64_t last_valid_rx_us;
     int64_t last_wifi_connect_attempt_us;
@@ -91,10 +93,10 @@ typedef struct {
     uint32_t keepalive_empty_window_count;
     uint32_t bottom_layer_retry_count;
     uint32_t top_layer_failure_count;
-    uint32_t top_layer_connect_streak;
     uint32_t active_session_id;
     uint32_t last_keepalive_request_id;
     uint32_t last_responded_keepalive_request_id;
+    uint32_t duplicate_keepalive_replay_request_id;
     uint16_t last_rx_sequence;
     bool last_rx_sequence_valid;
     int socket_fd;
@@ -106,8 +108,10 @@ typedef struct {
 
 static communication_context_t s_comm = {
     .mutex = NULL,
+    .snapshot_mutex = NULL,
     .task_handle = NULL,
     .snapshot = {0},
+    .published_snapshot = {0},
     .initialized = false,
     .reset_requested = false,
     .disconnect_requested = false,
@@ -115,12 +119,12 @@ static communication_context_t s_comm = {
     .tcp_connect_started = false,
     .keepalive_ack_pending = false,
     .running_integer_seeded = false,
-    .interim_debug_logged = false,
     .fast_reset_skip_wifi = false,
     .keepalive_window_has_message = false,
     .session_id_valid = false,
     .last_keepalive_request_valid = false,
     .last_responded_keepalive_request_valid = false,
+    .duplicate_keepalive_replay_valid = false,
     .connect_requested_us = 0,
     .last_valid_rx_us = 0,
     .last_wifi_connect_attempt_us = 0,
@@ -130,10 +134,10 @@ static communication_context_t s_comm = {
     .keepalive_empty_window_count = 0,
     .bottom_layer_retry_count = 0,
     .top_layer_failure_count = 0,
-    .top_layer_connect_streak = 0,
     .active_session_id = 0,
     .last_keepalive_request_id = 0,
     .last_responded_keepalive_request_id = 0,
+    .duplicate_keepalive_replay_request_id = 0,
     .last_rx_sequence = 0,
     .last_rx_sequence_valid = false,
     .socket_fd = -1,
@@ -147,11 +151,12 @@ static void communication_close_socket_locked(void);
 static void communication_enter_state_locked(communication_state_t next_state);
 static void communication_schedule_bottom_layer_retry_locked(const char *reason_text, bool checksum_failure);
 static void communication_record_top_layer_failure_locked(const char *reason_text);
+static void communication_publish_snapshot_locked(void);
 static bool communication_is_low_layer_ok_locked(void);
 static void communication_start_keepalive_window_locked(bool clear_transport_buffer);
 static void communication_mark_keepalive_window_message_locked(void);
 static bool communication_reason_is_timeout(const char *reason_text);
-static void communication_log_interim_debug_state_locked(void);
+static esp_err_t communication_send_pending_keepalive_response_locked(void);
 static size_t communication_append_text(char *buffer, size_t buffer_len, size_t offset, const char *text);
 static size_t communication_append_u32(char *buffer, size_t buffer_len, size_t offset, uint32_t value);
 static bool communication_try_parse_u32_payload_value(const char *payload_text,
@@ -245,21 +250,21 @@ static void communication_clear_transport_flow_locked(void)
     s_comm.snapshot.top_layer_connect_streak = 0;
     s_comm.keepalive_ack_pending = false;
     s_comm.running_integer_seeded = false;
-    s_comm.interim_debug_logged = false;
     s_comm.keepalive_window_has_message = false;
     s_comm.keepalive_window_started_us = 0;
     s_comm.keepalive_empty_window_count = 0;
     s_comm.session_id_valid = false;
     s_comm.last_keepalive_request_valid = false;
     s_comm.last_responded_keepalive_request_valid = false;
+    s_comm.duplicate_keepalive_replay_valid = false;
     s_comm.active_session_id = 0;
     s_comm.last_keepalive_request_id = 0;
     s_comm.last_responded_keepalive_request_id = 0;
+    s_comm.duplicate_keepalive_replay_request_id = 0;
     s_comm.connect_requested_us = 0;
     s_comm.last_valid_rx_us = 0;
     s_comm.last_keep_alive_us = 0;
     s_comm.rx_buffer_len = 0;
-    s_comm.top_layer_connect_streak = 0;
     s_comm.last_rx_sequence = 0;
     s_comm.last_rx_sequence_valid = false;
     s_comm.snapshot.reset_to_debug_elapsed_ms = 0;
@@ -271,8 +276,9 @@ static void communication_clear_transport_flow_locked(void)
 /**
  * @brief Start or restart the keepalive supervision deadline window.
  *
- * @details The client uses this timestamp as the start of a single 0.3-second
- * keepalive deadline window. A valid keepalive response restarts the deadline.
+ * @details The client uses this timestamp as the start of one keepalive
+ * deadline window (`COMMUNICATION_KEEPALIVE_WAIT_WINDOW_MS` milliseconds).
+ * A valid keepalive request restarts the deadline.
  *
  * @param[in] clear_transport_buffer Legacy option to clear buffered RX bytes.
  */
@@ -288,8 +294,8 @@ static void communication_start_keepalive_window_locked(bool clear_transport_buf
 /**
  * @brief Record one valid keepalive reception.
  *
- * @details Resets timeout counters and restarts the 0.3-second supervision
- * deadline from the current moment.
+ * @details Resets timeout counters and restarts the configured keepalive
+ * supervision deadline from the current moment.
  */
 static void communication_mark_keepalive_window_message_locked(void)
 {
@@ -314,6 +320,26 @@ static void communication_clear_connection_fault_locked(void)
     s_comm.snapshot.consecutive_keepalive_failures = 0;
     s_comm.top_layer_failure_count = 0;
     s_comm.snapshot.top_layer_failure_count = 0;
+}
+
+/**
+ * @brief Publish the latest internal snapshot for lock-independent UI reads.
+ *
+ * @details Copies the communication state into a dedicated published snapshot
+ * buffer protected by `snapshot_mutex`, allowing UI polling to remain
+ * responsive even when the communication worker holds `mutex` during blocking
+ * transport operations.
+ */
+static void communication_publish_snapshot_locked(void)
+{
+    if (s_comm.snapshot_mutex == NULL) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_comm.snapshot_mutex, portMAX_DELAY) == pdTRUE) {
+        s_comm.published_snapshot = s_comm.snapshot;
+        xSemaphoreGive(s_comm.snapshot_mutex);
+    }
 }
 
 /**
@@ -437,7 +463,9 @@ static bool communication_try_parse_u32_payload_value(const char *payload_text,
  *
  * @details Connect acknowledgements may include additional metadata (for
  * example `sid=...`), so this matcher uses prefix checks instead of strict
- * full-string equality.
+ * full-string equality. Low-level transport readiness notices (for example
+ * `tcp_connected`) are intentionally excluded because they occur before the
+ * TopLayer handshake is complete.
  *
  * @param[in] payload_text NUL-terminated payload text.
  *
@@ -450,8 +478,7 @@ static bool communication_payload_is_connect_success(const char *payload_text)
     }
 
     return (strncmp(payload_text, "client_connected", strlen("client_connected")) == 0) ||
-           (strncmp(payload_text, "connect_success", strlen("connect_success")) == 0) ||
-           (strncmp(payload_text, "tcp_connected", strlen("tcp_connected")) == 0);
+           (strncmp(payload_text, "connect_success", strlen("connect_success")) == 0);
 }
 
 /**
@@ -670,7 +697,10 @@ static void communication_poll_received_frames_locked(void)
         s_comm.last_valid_rx_us = esp_timer_get_time();
 
         if (s_comm.last_rx_sequence_valid &&
-            s_comm.snapshot.state == COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE) {
+            (message_type == COMMUNICATION_MESSAGE_KEEPALIVE ||
+             message_type == COMMUNICATION_MESSAGE_DATA) &&
+            (s_comm.snapshot.state == COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE ||
+             s_comm.snapshot.state == COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_CLIENT_SEND)) {
             uint16_t expected_sequence = (uint16_t)(s_comm.last_rx_sequence + 1U);
             if (received_sequence != expected_sequence) {
                 s_comm.snapshot.bottom_layer_sequence_error_count++;
@@ -695,7 +725,8 @@ static void communication_poll_received_frames_locked(void)
         }
 
         if (message_type == COMMUNICATION_MESSAGE_DATA) {
-            if (s_comm.snapshot.state != COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE) {
+            if (s_comm.snapshot.state != COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE &&
+                s_comm.snapshot.state != COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_CLIENT_SEND) {
                 communication_record_top_layer_failure_locked("TopLayer DATA received before KeepAlive state");
                 return;
             }
@@ -712,14 +743,16 @@ static void communication_poll_received_frames_locked(void)
             s_comm.snapshot.connect_passed = true;
             s_comm.snapshot.send_data_enabled = false;
             s_comm.keepalive_ack_pending = false;
+            s_comm.running_integer_seeded = false;
             if (communication_try_parse_u32_payload_value(payload_text, "sid", &connect_session_id)) {
                 s_comm.active_session_id = connect_session_id;
                 s_comm.session_id_valid = true;
                 s_comm.last_keepalive_request_valid = false;
                 s_comm.last_responded_keepalive_request_valid = false;
+                s_comm.duplicate_keepalive_replay_valid = false;
                 ESP_LOGI(TAG, "TopLayer connect acknowledged for session=%" PRIu32, connect_session_id);
             }
-            communication_enter_state_locked(COMMUNICATION_STATE_TOP_LAYER_CONNECT);
+            communication_enter_state_locked(COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE);
         }
 
         if (message_type == COMMUNICATION_MESSAGE_KEEPALIVE) {
@@ -729,7 +762,9 @@ static void communication_poll_received_frames_locked(void)
             bool has_request_id = communication_try_parse_u32_payload_value(payload_text, "req", &payload_request_id);
             bool duplicate_request = false;
             bool stale_request = false;
-            bool new_request = true;
+            bool valid_keepalive_request = false;
+            uint32_t expected_server_live_integer = s_comm.snapshot.client_live_integer + 1U;
+            uint32_t expected_client_live_integer = s_comm.snapshot.client_live_integer;
 
             if (has_session_id &&
                 (!s_comm.session_id_valid || s_comm.active_session_id != payload_session_id)) {
@@ -737,7 +772,6 @@ static void communication_poll_received_frames_locked(void)
                     payload_session_id < s_comm.active_session_id &&
                     s_comm.snapshot.state != COMMUNICATION_STATE_TOP_LAYER_CONNECT) {
                     stale_request = true;
-                    new_request = false;
                     ESP_LOGW(TAG,
                              "TopLayer stale session keepalive ignored: sid=%" PRIu32
                              " < active=%" PRIu32,
@@ -751,19 +785,16 @@ static void communication_poll_received_frames_locked(void)
                     s_comm.session_id_valid = true;
                     s_comm.last_keepalive_request_valid = false;
                     s_comm.last_responded_keepalive_request_valid = false;
+                    s_comm.duplicate_keepalive_replay_valid = false;
                     s_comm.running_integer_seeded = false;
-                    s_comm.top_layer_connect_streak = 0;
-                    s_comm.snapshot.top_layer_connect_streak = 0;
                 }
             }
 
             if (has_request_id && s_comm.last_keepalive_request_valid) {
                 if (payload_request_id < s_comm.last_keepalive_request_id) {
                     stale_request = true;
-                    new_request = false;
                 } else if (payload_request_id == s_comm.last_keepalive_request_id) {
                     duplicate_request = true;
-                    new_request = false;
                 }
             }
 
@@ -773,75 +804,72 @@ static void communication_poll_received_frames_locked(void)
                          " < last=%" PRIu32,
                          payload_request_id,
                          s_comm.last_keepalive_request_id);
-            } else {
+            } else if (duplicate_request) {
                 communication_mark_keepalive_window_message_locked();
-
-                if (new_request && s_comm.running_integer_seeded) {
-                    uint32_t expected_server_live_integer = s_comm.snapshot.client_live_integer + 1U;
-                    if (received_server_live_integer != expected_server_live_integer ||
-                        received_client_live_integer != s_comm.snapshot.client_live_integer) {
-                        ESP_LOGW(TAG,
-                                 "TopLayer running integer mismatch: expected server=%" PRIu32
-                                 " client=%" PRIu32 ", got server=%" PRIu32 " client=%" PRIu32,
-                                 expected_server_live_integer,
-                                 s_comm.snapshot.client_live_integer,
-                                 received_server_live_integer,
-                                 received_client_live_integer);
-                        communication_schedule_bottom_layer_retry_locked("TopLayer running integer mismatch", false);
-                        return;
-                    }
-                } else if (!s_comm.running_integer_seeded) {
-                    s_comm.running_integer_seeded = true;
-                    ESP_LOGI(TAG,
-                             "TopLayer running integer seeded by server: server=%" PRIu32
+                ESP_LOGW(TAG,
+                         "TopLayer duplicate keepalive request detected: req=%" PRIu32
+                         " (single-shot response mode: no resend)",
+                         payload_request_id);
+            } else {
+                if ((received_server_live_integer & 1U) != 0U ||
+                    (received_client_live_integer & 1U) == 0U) {
+                    ESP_LOGW(TAG,
+                             "TopLayer keepalive ignored due to parity mismatch: server=%" PRIu32
                              " client=%" PRIu32,
                              received_server_live_integer,
                              received_client_live_integer);
-                } else if (duplicate_request) {
+                } else if (!s_comm.running_integer_seeded) {
+                    if (received_client_live_integer != (received_server_live_integer + 1U)) {
+                        ESP_LOGW(TAG,
+                                 "TopLayer keepalive ignored during seed: expected client=server+1, got "
+                                 "server=%" PRIu32 " client=%" PRIu32,
+                                 received_server_live_integer,
+                                 received_client_live_integer);
+                    } else {
+                        valid_keepalive_request = true;
+                        s_comm.running_integer_seeded = true;
+                        ESP_LOGI(TAG,
+                                 "TopLayer running integer seeded by server: server=%" PRIu32
+                                 " client=%" PRIu32,
+                                 received_server_live_integer,
+                                 received_client_live_integer);
+                    }
+                } else if (received_server_live_integer != expected_server_live_integer ||
+                           received_client_live_integer != expected_client_live_integer) {
                     ESP_LOGW(TAG,
-                             "TopLayer duplicate keepalive request detected: req=%" PRIu32,
-                             payload_request_id);
+                             "TopLayer running integer mismatch ignored while waiting for timeout: "
+                             "expected server=%" PRIu32 " client=%" PRIu32
+                             ", got server=%" PRIu32 " client=%" PRIu32 " (seq=%" PRIu16 ")",
+                             expected_server_live_integer,
+                             expected_client_live_integer,
+                             received_server_live_integer,
+                             received_client_live_integer,
+                             received_sequence);
+                } else {
+                    valid_keepalive_request = true;
                 }
 
-                s_comm.snapshot.server_live_integer = received_server_live_integer;
-                s_comm.snapshot.client_live_integer = received_server_live_integer + 1U;
-                s_comm.snapshot.connect_passed = true;
+                if (valid_keepalive_request) {
+                    communication_mark_keepalive_window_message_locked();
+                    s_comm.snapshot.server_live_integer = received_server_live_integer;
+                    s_comm.snapshot.client_live_integer = received_server_live_integer + 1U;
+                    if ((s_comm.snapshot.client_live_integer & 1U) == 0U) {
+                        s_comm.snapshot.client_live_integer++;
+                    }
+                    s_comm.snapshot.connect_passed = true;
 
-                if (has_request_id) {
-                    s_comm.last_keepalive_request_id = payload_request_id;
-                    s_comm.last_keepalive_request_valid = true;
-                }
-
-                char keepalive_payload[COMMUNICATION_FRAME_MAX_PAYLOAD + 1U] = {0};
-                communication_build_keepalive_response_payload_locked(
-                    keepalive_payload,
-                    sizeof(keepalive_payload),
-                    has_request_id,
-                    payload_request_id);
-                if (communication_send_frame_locked(COMMUNICATION_MESSAGE_KEEPALIVE, keepalive_payload) != ESP_OK) {
-                    communication_schedule_bottom_layer_retry_locked(s_comm.snapshot.last_error, false);
-                    return;
-                }
-
-                if (has_request_id) {
-                    s_comm.last_responded_keepalive_request_id = payload_request_id;
-                    s_comm.last_responded_keepalive_request_valid = true;
-                }
-
-                s_comm.keepalive_ack_pending = false;
-                s_comm.bottom_layer_retry_count = 0;
-                s_comm.snapshot.bottom_layer_retry_count = 0;
-
-                if (s_comm.snapshot.state == COMMUNICATION_STATE_TOP_LAYER_CONNECT) {
-                    if (!duplicate_request) {
-                        s_comm.top_layer_connect_streak++;
-                        s_comm.snapshot.top_layer_connect_streak = s_comm.top_layer_connect_streak;
+                    if (has_request_id) {
+                        s_comm.last_keepalive_request_id = payload_request_id;
+                        s_comm.last_keepalive_request_valid = true;
+                        s_comm.duplicate_keepalive_replay_valid = false;
                     }
 
-                    if (s_comm.top_layer_connect_streak >= COMMUNICATION_TOP_LAYER_CONNECT_STREAK_REQUIRED) {
-                        communication_enter_state_locked(COMMUNICATION_STATE_TOP_LAYER_INTERIM_DEBUG);
-                        communication_log_interim_debug_state_locked();
-                    }
+                    s_comm.keepalive_ack_pending = true;
+                    s_comm.bottom_layer_retry_count = 0;
+                    s_comm.snapshot.bottom_layer_retry_count = 0;
+                    s_comm.keepalive_empty_window_count = 0;
+
+                    communication_enter_state_locked(COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_CLIENT_SEND);
                 }
             }
         } else if (message_type == COMMUNICATION_MESSAGE_ACK) {
@@ -1188,7 +1216,7 @@ static void communication_enter_state_locked(communication_state_t next_state)
         s_comm.keepalive_empty_window_count = 0;
     }
 
-    if (next_state == COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE) {
+    if (next_state == COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE) {
         communication_clear_connection_fault_locked();
         s_comm.keepalive_empty_window_count = 0;
         communication_start_keepalive_window_locked(false);
@@ -1216,40 +1244,56 @@ static bool communication_reason_is_timeout(const char *reason_text)
 }
 
 /**
- * @brief Emit one detailed debug snapshot for the interim-debug state.
+ * @brief Send one pending keepalive response in client-send phase.
  *
- * @details Logs retry counters, timeout counters, and elapsed milliseconds
- * between the last reset entry and interim-debug arrival. The log is emitted
- * once per connect cycle.
+ * @details `KeepAliveClientSend` transmits exactly one response for the latest
+ * accepted keepalive request, then returns to `KeepAliveServerReceive`.
+ *
+ * @return
+ *      - ESP_OK when the response is sent and state advances
+ *      - ESP_ERR_INVALID_STATE when no request metadata is available
+ *      - ESP_FAIL when TX fails
  */
-static void communication_log_interim_debug_state_locked(void)
+static esp_err_t communication_send_pending_keepalive_response_locked(void)
 {
-    int64_t now_us = esp_timer_get_time();
-    uint32_t reset_to_debug_elapsed_ms = 0U;
-
-    if (s_comm.interim_debug_logged) {
-        return;
+    if (!s_comm.last_keepalive_request_valid) {
+        snprintf(s_comm.snapshot.last_error,
+                 sizeof(s_comm.snapshot.last_error),
+                 "No pending keepalive request metadata");
+        return ESP_ERR_INVALID_STATE;
     }
 
-    if (s_comm.reset_cycle_started_us > 0 && now_us >= s_comm.reset_cycle_started_us) {
-        reset_to_debug_elapsed_ms = (uint32_t)((now_us - s_comm.reset_cycle_started_us) / 1000LL);
+    if ((s_comm.snapshot.server_live_integer & 1U) != 0U) {
+        ESP_LOGW(TAG,
+                 "Adjusting server live integer parity before keepalive response: server=%" PRIu32,
+                 s_comm.snapshot.server_live_integer);
+        s_comm.snapshot.server_live_integer++;
     }
 
-    s_comm.snapshot.reset_to_debug_elapsed_ms = reset_to_debug_elapsed_ms;
-    ESP_LOGI(TAG,
-             "InterimDebug details: reset_to_debug_ms=%" PRIu32
-             ", bottom_retries=%" PRIu32
-             ", top_failures=%" PRIu32
-             ", timeout_events=%" PRIu32
-             ", checksum_errors=%" PRIu32
-             ", sequence_errors=%" PRIu32,
-             s_comm.snapshot.reset_to_debug_elapsed_ms,
-             s_comm.snapshot.bottom_layer_retry_count,
-             s_comm.snapshot.top_layer_failure_count,
-             s_comm.snapshot.timeout_event_count,
-             s_comm.snapshot.bottom_layer_checksum_error_count,
-             s_comm.snapshot.bottom_layer_sequence_error_count);
-    s_comm.interim_debug_logged = true;
+    s_comm.snapshot.client_live_integer = s_comm.snapshot.server_live_integer + 1U;
+    if ((s_comm.snapshot.client_live_integer & 1U) == 0U) {
+        s_comm.snapshot.client_live_integer++;
+    }
+
+    char keepalive_payload[COMMUNICATION_FRAME_MAX_PAYLOAD + 1U] = {0};
+    communication_build_keepalive_response_payload_locked(
+        keepalive_payload,
+        sizeof(keepalive_payload),
+        true,
+        s_comm.last_keepalive_request_id);
+
+    if (communication_send_frame_locked(COMMUNICATION_MESSAGE_KEEPALIVE, keepalive_payload) != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    s_comm.last_responded_keepalive_request_id = s_comm.last_keepalive_request_id;
+    s_comm.last_responded_keepalive_request_valid = true;
+    s_comm.keepalive_ack_pending = false;
+    s_comm.keepalive_empty_window_count = 0;
+    s_comm.bottom_layer_retry_count = 0;
+    s_comm.snapshot.bottom_layer_retry_count = 0;
+    communication_enter_state_locked(COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE);
+    return ESP_OK;
 }
 
 /**
@@ -1293,10 +1337,11 @@ static void communication_record_top_layer_failure_locked(const char *reason_tex
     s_comm.session_id_valid = false;
     s_comm.last_keepalive_request_valid = false;
     s_comm.last_responded_keepalive_request_valid = false;
+    s_comm.duplicate_keepalive_replay_valid = false;
     s_comm.active_session_id = 0;
     s_comm.last_keepalive_request_id = 0;
     s_comm.last_responded_keepalive_request_id = 0;
-    s_comm.top_layer_connect_streak = 0;
+    s_comm.duplicate_keepalive_replay_request_id = 0;
     s_comm.snapshot.top_layer_connect_streak = 0;
 
     if (s_comm.top_layer_failure_count >= COMMUNICATION_TOP_LAYER_FAILURE_LIMIT) {
@@ -1353,7 +1398,6 @@ static void communication_schedule_bottom_layer_retry_locked(const char *reason_
     s_comm.active_session_id = 0;
     s_comm.last_keepalive_request_id = 0;
     s_comm.last_responded_keepalive_request_id = 0;
-    s_comm.top_layer_connect_streak = 0;
     s_comm.snapshot.top_layer_connect_streak = 0;
 
     if (s_comm.bottom_layer_retry_count >= COMMUNICATION_BOTTOM_LAYER_RETRY_LIMIT) {
@@ -1364,7 +1408,6 @@ static void communication_schedule_bottom_layer_retry_locked(const char *reason_
                      "BottomLayer retries exhausted with Auto Reconnect enabled; resetting counters and retrying connect");
             s_comm.bottom_layer_retry_count = 0;
             s_comm.top_layer_failure_count = 0;
-            s_comm.top_layer_connect_streak = 0;
             s_comm.snapshot.bottom_layer_retry_count = 0;
             s_comm.snapshot.top_layer_failure_count = 0;
             s_comm.snapshot.top_layer_connect_streak = 0;
@@ -1416,6 +1459,7 @@ static void communication_load_defaults_locked(void)
              "No peer text received yet");
     communication_reset_scan_locked();
     communication_clear_transport_flow_locked();
+    communication_publish_snapshot_locked();
 }
 
 /**
@@ -1444,7 +1488,6 @@ static void communication_start_reset_locked(void)
     s_comm.last_wifi_connect_attempt_us = 0;
     s_comm.bottom_layer_retry_count = 0;
     s_comm.top_layer_failure_count = 0;
-    s_comm.top_layer_connect_streak = 0;
     s_comm.snapshot.bottom_layer_retry_count = 0;
     s_comm.snapshot.top_layer_failure_count = 0;
     s_comm.snapshot.top_layer_connect_streak = 0;
@@ -1629,7 +1672,7 @@ static esp_err_t communication_open_tcp_socket_locked(void)
  *
  * @details The ESP32-C3 server owns keepalive initiation. The client therefore
  * does not emit periodic heartbeat traffic on its own. Instead it tracks one
- * rolling 0.3-second deadline and records a timeout only when no valid
+ * rolling keepalive deadline window and records a timeout only when no valid
  * keepalive request arrives before the deadline expires.
  */
 static void communication_service_keep_alive_locked(void)
@@ -1916,25 +1959,9 @@ static void communication_task_step(void)
             communication_schedule_bottom_layer_retry_locked("TopLayer connect timeout", false);
             break;
         }
-        if (s_comm.running_integer_seeded) {
-            communication_service_keep_alive_locked();
-        }
         break;
 
-    case COMMUNICATION_STATE_TOP_LAYER_INTERIM_DEBUG:
-        communication_log_interim_debug_state_locked();
-        if (!s_comm.snapshot.wifi_has_ip) {
-            communication_schedule_bottom_layer_retry_locked("BottomLayer Wi-Fi link lost", false);
-            break;
-        }
-        if (!s_comm.snapshot.tcp_connected || s_comm.socket_fd < 0) {
-            communication_schedule_bottom_layer_retry_locked("BottomLayer TCP socket lost", false);
-            break;
-        }
-        communication_enter_state_locked(COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE);
-        break;
-
-    case COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE:
+    case COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE:
         if (!s_comm.snapshot.wifi_has_ip) {
             communication_schedule_bottom_layer_retry_locked("BottomLayer Wi-Fi link lost", false);
             break;
@@ -1946,6 +1973,20 @@ static void communication_task_step(void)
         communication_service_keep_alive_locked();
         break;
 
+    case COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_CLIENT_SEND:
+        if (!s_comm.snapshot.wifi_has_ip) {
+            communication_schedule_bottom_layer_retry_locked("BottomLayer Wi-Fi link lost", false);
+            break;
+        }
+        if (!s_comm.snapshot.tcp_connected || s_comm.socket_fd < 0) {
+            communication_schedule_bottom_layer_retry_locked("BottomLayer TCP socket lost", false);
+            break;
+        }
+        if (communication_send_pending_keepalive_response_locked() != ESP_OK) {
+            communication_schedule_bottom_layer_retry_locked("TopLayer keepalive response send failure", false);
+        }
+        break;
+
     case COMMUNICATION_STATE_TOP_LAYER_ERROR:
         break;
 
@@ -1953,6 +1994,7 @@ static void communication_task_step(void)
         break;
     }
 
+    communication_publish_snapshot_locked();
     xSemaphoreGive(s_comm.mutex);
 }
 
@@ -2008,11 +2050,23 @@ esp_err_t communication_functions_init(bool offline)
         return ESP_ERR_NO_MEM;
     }
 
+    ESP_LOGI(TAG, "Communication module init step: xSemaphoreCreateMutex(snapshot)");
+    s_comm.snapshot_mutex = xSemaphoreCreateMutex();
+    ESP_LOGI(TAG, "Communication module init step result: xSemaphoreCreateMutex(snapshot) -> %s",
+             (s_comm.snapshot_mutex != NULL) ? "OK" : "NULL");
+    if (s_comm.snapshot_mutex == NULL) {
+        vSemaphoreDelete(s_comm.mutex);
+        s_comm.mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
     ESP_LOGI(TAG, "Communication module init step: xSemaphoreTake(mutex)");
     if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) != pdTRUE) {
         ESP_LOGW(TAG, "Communication module init step result: xSemaphoreTake(mutex) -> FAILED");
         vSemaphoreDelete(s_comm.mutex);
+        vSemaphoreDelete(s_comm.snapshot_mutex);
         s_comm.mutex = NULL;
+        s_comm.snapshot_mutex = NULL;
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(TAG, "Communication module init step result: xSemaphoreTake(mutex) -> OK");
@@ -2038,7 +2092,9 @@ esp_err_t communication_functions_init(bool offline)
              (task_ret == pdPASS) ? "pdPASS" : "FAILED");
     if (task_ret != pdPASS) {
         vSemaphoreDelete(s_comm.mutex);
+        vSemaphoreDelete(s_comm.snapshot_mutex);
         s_comm.mutex = NULL;
+        s_comm.snapshot_mutex = NULL;
         s_comm.task_handle = NULL;
         return ESP_ERR_NO_MEM;
     }
@@ -2062,6 +2118,7 @@ void communication_functions_request_reset(void)
     if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) == pdTRUE) {
         s_comm.reset_requested = true;
         s_comm.snapshot.reset_requested = true;
+        communication_publish_snapshot_locked();
         xSemaphoreGive(s_comm.mutex);
     }
 }
@@ -2074,6 +2131,7 @@ void communication_functions_request_disconnect(void)
 
     if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) == pdTRUE) {
         s_comm.disconnect_requested = true;
+        communication_publish_snapshot_locked();
         xSemaphoreGive(s_comm.mutex);
     }
 }
@@ -2096,6 +2154,7 @@ void communication_functions_request_scan(void)
         s_comm.snapshot.scan_duration_ms = 0;
         s_comm.snapshot.scan_device_count = 0;
         s_comm.snapshot.scan_results[0] = '\0';
+        communication_publish_snapshot_locked();
         xSemaphoreGive(s_comm.mutex);
     }
 }
@@ -2117,6 +2176,7 @@ void communication_functions_set_auto_reconnect_enabled(bool enabled)
 
     if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) == pdTRUE) {
         s_comm.snapshot.auto_reconnect_enabled = enabled;
+        communication_publish_snapshot_locked();
         xSemaphoreGive(s_comm.mutex);
     }
 }
@@ -2127,7 +2187,7 @@ esp_err_t communication_functions_get_snapshot(communication_snapshot_t *out_sna
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (!s_comm.initialized || s_comm.mutex == NULL) {
+    if (!s_comm.initialized || s_comm.mutex == NULL || s_comm.snapshot_mutex == NULL) {
         memset(out_snapshot, 0, sizeof(*out_snapshot));
         out_snapshot->state = COMMUNICATION_STATE_TOP_LAYER_RESET;
         out_snapshot->scan_state = COMMUNICATION_SCAN_STATE_IDLE;
@@ -2141,12 +2201,12 @@ esp_err_t communication_functions_get_snapshot(communication_snapshot_t *out_sna
         return ESP_OK;
     }
 
-    if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) != pdTRUE) {
+    if (xSemaphoreTake(s_comm.snapshot_mutex, pdMS_TO_TICKS(5)) != pdTRUE) {
         return ESP_FAIL;
     }
 
-    *out_snapshot = s_comm.snapshot;
-    xSemaphoreGive(s_comm.mutex);
+    *out_snapshot = s_comm.published_snapshot;
+    xSemaphoreGive(s_comm.snapshot_mutex);
     return ESP_OK;
 }
 
@@ -2159,10 +2219,10 @@ const char *communication_functions_state_to_string(communication_state_t state)
         return "Initialize";
     case COMMUNICATION_STATE_TOP_LAYER_CONNECT:
         return "Connect";
-    case COMMUNICATION_STATE_TOP_LAYER_INTERIM_DEBUG:
-        return "InterimDebug";
-    case COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE:
-        return "Keepalive";
+    case COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE:
+        return "KeepAliveServerReceive";
+    case COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_CLIENT_SEND:
+        return "KeepAliveClientSend";
     case COMMUNICATION_STATE_TOP_LAYER_ERROR:
         return "Error";
     default:
