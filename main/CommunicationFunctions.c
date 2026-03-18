@@ -45,11 +45,12 @@
 #define COMMUNICATION_KEEPALIVE_WAIT_WINDOW_MS (450)
 #define COMMUNICATION_KEEPALIVE_EMPTY_WINDOW_LIMIT (3)
 #define COMMUNICATION_KEEPALIVE_RESPONSE_ATTEMPT_LIMIT (1U)
+#define COMMUNICATION_DATA_INTERFACE_VERSION (1U)
 #define COMMUNICATION_FRAME_SOF0             (0xA5U)
 #define COMMUNICATION_FRAME_SOF1             (0x5AU)
 #define COMMUNICATION_FRAME_HEADER_BYTES     (15U)
 #define COMMUNICATION_FRAME_CRC_BYTES        (2U)
-#define COMMUNICATION_FRAME_MAX_PAYLOAD      (160U)
+#define COMMUNICATION_FRAME_MAX_PAYLOAD      (256U)
 #define COMMUNICATION_RX_BUFFER_BYTES        (2048U)
 
 typedef enum {
@@ -504,13 +505,14 @@ static void communication_build_keepalive_response_payload_locked(char *buffer,
     if (include_metadata && s_comm.session_id_valid) {
         snprintf(buffer,
                  buffer_len,
-                 "ka_resp;sid=%" PRIu32 ";req=%" PRIu32,
+                 "ka_resp;sid=%" PRIu32 ";req=%" PRIu32 ";rver=%" PRIu32,
                  s_comm.active_session_id,
-                 request_id);
+                 request_id,
+                 (uint32_t)COMMUNICATION_DATA_INTERFACE_VERSION);
         return;
     }
 
-    snprintf(buffer, buffer_len, "keepalive");
+    snprintf(buffer, buffer_len, "keepalive;rver=%" PRIu32, (uint32_t)COMMUNICATION_DATA_INTERFACE_VERSION);
 }
 
 /**
@@ -544,7 +546,9 @@ static void communication_build_initialize_payload_locked(char *buffer, size_t b
     offset = communication_append_text(buffer, buffer_len, offset, ";tcp_timeout_ms=");
     offset = communication_append_u32(buffer, buffer_len, offset, s_comm.snapshot.config.tcp_connect_timeout_ms);
     offset = communication_append_text(buffer, buffer_len, offset, ";keepalive_ms=");
-    (void)communication_append_u32(buffer, buffer_len, offset, s_comm.snapshot.config.keep_alive_period_ms);
+    offset = communication_append_u32(buffer, buffer_len, offset, s_comm.snapshot.config.keep_alive_period_ms);
+    offset = communication_append_text(buffer, buffer_len, offset, ";data_ver=");
+    (void)communication_append_u32(buffer, buffer_len, offset, COMMUNICATION_DATA_INTERFACE_VERSION);
 }
 
 /**
