@@ -103,6 +103,15 @@ typedef struct {
     int socket_fd;
     int64_t state_started_us;
     int64_t last_keep_alive_us;
+    int64_t keepalive_rx_us;
+    int64_t session_established_us;
+    bool ka_timing_valid;
+    bool session_established;
+    uint32_t keepalive_rx_count;
+    uint32_t keepalive_tx_count;
+    uint32_t data_frames_rx_count;
+    int32_t ka_response_time_max_ms;
+    int32_t ka_response_time_min_ms;
     size_t rx_buffer_len;
     uint8_t rx_buffer[COMMUNICATION_RX_BUFFER_BYTES];
 } communication_context_t;
@@ -144,6 +153,15 @@ static communication_context_t s_comm = {
     .socket_fd = -1,
     .state_started_us = 0,
     .last_keep_alive_us = 0,
+    .keepalive_rx_us = 0,
+    .session_established_us = 0,
+    .ka_timing_valid = false,
+    .session_established = false,
+    .keepalive_rx_count = 0,
+    .keepalive_tx_count = 0,
+    .data_frames_rx_count = 0,
+    .ka_response_time_max_ms = 0,
+    .ka_response_time_min_ms = 0,
     .rx_buffer_len = 0,
     .rx_buffer = {0},
 };
@@ -335,6 +353,11 @@ static void communication_publish_snapshot_locked(void)
 {
     if (s_comm.snapshot_mutex == NULL) {
         return;
+    }
+
+    if (s_comm.session_established && s_comm.session_established_us > 0) {
+        s_comm.snapshot.session_uptime_ms =
+            (uint32_t)((esp_timer_get_time() - s_comm.session_established_us) / 1000LL);
     }
 
     if (xSemaphoreTake(s_comm.snapshot_mutex, portMAX_DELAY) == pdTRUE) {
@@ -739,6 +762,8 @@ static void communication_poll_received_frames_locked(void)
                      "%s",
                      (payload_text[0] != '\0') ? payload_text : "Empty peer payload");
             s_comm.snapshot.send_data_enabled = true;
+            s_comm.data_frames_rx_count++;
+            s_comm.snapshot.data_frames_rx_count = s_comm.data_frames_rx_count;
         }
 
         if (s_comm.snapshot.state == COMMUNICATION_STATE_TOP_LAYER_CONNECT &&
@@ -855,6 +880,9 @@ static void communication_poll_received_frames_locked(void)
 
                 if (valid_keepalive_request) {
                     communication_mark_keepalive_window_message_locked();
+                    s_comm.keepalive_rx_us = esp_timer_get_time();
+                    s_comm.keepalive_rx_count++;
+                    s_comm.snapshot.keepalive_rx_count = s_comm.keepalive_rx_count;
                     s_comm.snapshot.server_live_integer = received_server_live_integer;
                     s_comm.snapshot.client_live_integer = received_server_live_integer + 1U;
                     if ((s_comm.snapshot.client_live_integer & 1U) == 0U) {
@@ -951,10 +979,26 @@ static void communication_refresh_rssi_locked(void)
     wifi_ap_record_t ap_record = {0};
     if (esp_wifi_sta_get_ap_info(&ap_record) == ESP_OK) {
         s_comm.snapshot.wifi_rssi = ap_record.rssi;
+        s_comm.snapshot.wifi_noise_floor_dbm = -95;
+        s_comm.snapshot.wifi_snr_estimate_db = (int16_t)((int32_t)ap_record.rssi - (-95));
+        s_comm.snapshot.wifi_channel = ap_record.primary;
+        s_comm.snapshot.wifi_authmode = (uint8_t)ap_record.authmode;
+        snprintf(s_comm.snapshot.wifi_bssid_str,
+                 sizeof(s_comm.snapshot.wifi_bssid_str),
+                 "%02X:%02X:%02X:%02X:%02X:%02X",
+                 ap_record.bssid[0], ap_record.bssid[1], ap_record.bssid[2],
+                 ap_record.bssid[3], ap_record.bssid[4], ap_record.bssid[5]);
         return;
     }
 
     s_comm.snapshot.wifi_rssi = -127;
+    s_comm.snapshot.wifi_noise_floor_dbm = -95;
+    s_comm.snapshot.wifi_snr_estimate_db = 0;
+    s_comm.snapshot.wifi_channel = 0;
+    s_comm.snapshot.wifi_authmode = 0;
+    snprintf(s_comm.snapshot.wifi_bssid_str,
+             sizeof(s_comm.snapshot.wifi_bssid_str),
+             "--:--:--:--:--:--");
 }
 
 /**
@@ -1218,12 +1262,27 @@ static void communication_enter_state_locked(communication_state_t next_state)
         s_comm.keepalive_window_started_us = 0;
         s_comm.keepalive_window_has_message = false;
         s_comm.keepalive_empty_window_count = 0;
+        s_comm.session_established = false;
+        s_comm.session_established_us = 0;
+        s_comm.ka_timing_valid = false;
+        s_comm.ka_response_time_max_ms = 0;
+        s_comm.ka_response_time_min_ms = 0;
+        s_comm.keepalive_rx_us = 0;
+        s_comm.snapshot.ka_response_time_last_ms = 0;
+        s_comm.snapshot.ka_response_time_max_ms = 0;
+        s_comm.snapshot.ka_response_time_min_ms = 0;
+        s_comm.snapshot.ka_jitter_ms = 0;
+        s_comm.snapshot.session_uptime_ms = 0;
     }
 
     if (next_state == COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE) {
         communication_clear_connection_fault_locked();
         s_comm.keepalive_empty_window_count = 0;
         communication_start_keepalive_window_locked(false);
+        if (!s_comm.session_established) {
+            s_comm.session_established = true;
+            s_comm.session_established_us = s_comm.state_started_us;
+        }
     }
 }
 
@@ -1289,6 +1348,24 @@ static esp_err_t communication_send_pending_keepalive_response_locked(void)
     if (communication_send_frame_locked(COMMUNICATION_MESSAGE_KEEPALIVE, keepalive_payload) != ESP_OK) {
         return ESP_FAIL;
     }
+
+    /* Measure keepalive response time and update timing telemetry */
+    if (s_comm.keepalive_rx_us > 0) {
+        int32_t response_ms = (int32_t)((esp_timer_get_time() - s_comm.keepalive_rx_us) / 1000LL);
+        s_comm.snapshot.ka_response_time_last_ms = response_ms;
+        if (response_ms > s_comm.ka_response_time_max_ms) {
+            s_comm.ka_response_time_max_ms = response_ms;
+            s_comm.snapshot.ka_response_time_max_ms = response_ms;
+        }
+        if (!s_comm.ka_timing_valid || response_ms < s_comm.ka_response_time_min_ms) {
+            s_comm.ka_response_time_min_ms = response_ms;
+            s_comm.snapshot.ka_response_time_min_ms = response_ms;
+        }
+        s_comm.ka_timing_valid = true;
+        s_comm.snapshot.ka_jitter_ms = s_comm.ka_response_time_max_ms - s_comm.ka_response_time_min_ms;
+    }
+    s_comm.keepalive_tx_count++;
+    s_comm.snapshot.keepalive_tx_count = s_comm.keepalive_tx_count;
 
     s_comm.last_responded_keepalive_request_id = s_comm.last_keepalive_request_id;
     s_comm.last_responded_keepalive_request_valid = true;
@@ -1455,6 +1532,8 @@ static void communication_load_defaults_locked(void)
     s_comm.snapshot.config.wifi_connect_timeout_ms = COMMUNICATION_DEFAULT_WIFI_TIMEOUT;
     s_comm.snapshot.config.tcp_connect_timeout_ms = COMMUNICATION_DEFAULT_TCP_TIMEOUT;
     s_comm.snapshot.config.keep_alive_period_ms = COMMUNICATION_DEFAULT_KEEPALIVE_MS;
+    s_comm.snapshot.config.ka_wait_window_ms = COMMUNICATION_KEEPALIVE_WAIT_WINDOW_MS;
+    s_comm.snapshot.config.ka_empty_window_limit = COMMUNICATION_KEEPALIVE_EMPTY_WINDOW_LIMIT;
     s_comm.snapshot.config.bottom_layer_retry_limit = COMMUNICATION_BOTTOM_LAYER_RETRY_LIMIT;
     s_comm.snapshot.config.top_layer_failure_limit = COMMUNICATION_TOP_LAYER_FAILURE_LIMIT;
     s_comm.snapshot.auto_reconnect_enabled = true;

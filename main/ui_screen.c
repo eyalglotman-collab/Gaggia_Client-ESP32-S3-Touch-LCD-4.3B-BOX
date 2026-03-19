@@ -673,7 +673,56 @@ static void ui_update_connection_info_overlay_contents(void)
         return;
     }
 
+    char pkt_loss_buf[16] = {0};
+    uint32_t pkt_total = comm_snapshot.keepalive_rx_count + comm_snapshot.timeout_event_count;
+    if (pkt_total > 0U) {
+        uint32_t loss_x10 = (comm_snapshot.timeout_event_count * 1000U) / pkt_total;
+        snprintf(pkt_loss_buf, sizeof(pkt_loss_buf), "%u.%u%%", (unsigned)(loss_x10 / 10U), (unsigned)(loss_x10 % 10U));
+    } else {
+        snprintf(pkt_loss_buf, sizeof(pkt_loss_buf), "N/A");
+    }
+
     lv_label_set_text_fmt(s_ui.connection_info_details_label,
+                          "RF Link Quality\n"
+                          "RSSI: %ld dBm\n"
+                          "Noise Floor: %d dBm (2.4 GHz est)\n"
+                          "SNR Estimate: %+d dB\n"
+                          "Channel: %u\n"
+                          "Auth Mode: %u\n"
+                          "BSSID: %s\n"
+                          "\n"
+                          "Keepalive Timing\n"
+                          "KA Response Last: %ld ms\n"
+                          "KA Response Max: %ld ms\n"
+                          "KA Response Min: %ld ms\n"
+                          "Jitter (max-min): %ld ms\n"
+                          "\n"
+                          "Traffic Counters\n"
+                          "KA Received: %" PRIu32 "\n"
+                          "KA Sent: %" PRIu32 "\n"
+                          "DATA Frames RX: %" PRIu32 "\n"
+                          "Timeout Events: %" PRIu32 "\n"
+                          "Packet Loss Rate: %s\n"
+                          "CRC Frame Errors: %" PRIu32 "\n"
+                          "Sequence Errors: %" PRIu32 "\n"
+                          "Bottom Layer Retries: %" PRIu32 "\n"
+                          "Top Layer Failures: %" PRIu32 "\n"
+                          "Connect Streak: %" PRIu32 "\n"
+                          "Reset-to-Debug: %" PRIu32 " ms\n"
+                          "\n"
+                          "Session\n"
+                          "Session Uptime: %" PRIu32 " ms\n"
+                          "Session Active: %s\n"
+                          "\n"
+                          "Configuration\n"
+                          "KA Period: %" PRIu32 " ms\n"
+                          "KA Wait Window: %u ms\n"
+                          "KA Empty Window Limit: %u\n"
+                          "Bottom Layer Retry Limit: %" PRIu32 "\n"
+                          "Top Layer Failure Limit: %" PRIu32 "\n"
+                          "Wi-Fi Connect Timeout: %" PRIu32 " ms\n"
+                          "TCP Connect Timeout: %" PRIu32 " ms\n"
+                          "\n"
                           "IP: %s\n"
                           "Port: %s\n"
                           "\n"
@@ -703,6 +752,42 @@ static void ui_update_connection_info_overlay_contents(void)
                           "Last Received Text: %s\n"
                           "Scan State: %s\n"
                           "Last Error: %s",
+                          /* RF Link Quality */
+                          (long)comm_snapshot.wifi_rssi,
+                          (int)comm_snapshot.wifi_noise_floor_dbm,
+                          (int)comm_snapshot.wifi_snr_estimate_db,
+                          (unsigned)comm_snapshot.wifi_channel,
+                          (unsigned)comm_snapshot.wifi_authmode,
+                          comm_snapshot.wifi_bssid_str,
+                          /* Keepalive Timing */
+                          (long)comm_snapshot.ka_response_time_last_ms,
+                          (long)comm_snapshot.ka_response_time_max_ms,
+                          (long)comm_snapshot.ka_response_time_min_ms,
+                          (long)comm_snapshot.ka_jitter_ms,
+                          /* Traffic Counters */
+                          comm_snapshot.keepalive_rx_count,
+                          comm_snapshot.keepalive_tx_count,
+                          comm_snapshot.data_frames_rx_count,
+                          comm_snapshot.timeout_event_count,
+                          pkt_loss_buf,
+                          comm_snapshot.bottom_layer_checksum_error_count,
+                          comm_snapshot.bottom_layer_sequence_error_count,
+                          comm_snapshot.bottom_layer_retry_count,
+                          comm_snapshot.top_layer_failure_count,
+                          comm_snapshot.top_layer_connect_streak,
+                          comm_snapshot.reset_to_debug_elapsed_ms,
+                          /* Session */
+                          comm_snapshot.session_uptime_ms,
+                          comm_snapshot.session_uptime_ms > 0U ? "Yes" : "No",
+                          /* Configuration */
+                          comm_snapshot.config.keep_alive_period_ms,
+                          (unsigned)comm_snapshot.config.ka_wait_window_ms,
+                          (unsigned)comm_snapshot.config.ka_empty_window_limit,
+                          comm_snapshot.config.bottom_layer_retry_limit,
+                          comm_snapshot.config.top_layer_failure_limit,
+                          comm_snapshot.config.wifi_connect_timeout_ms,
+                          comm_snapshot.config.tcp_connect_timeout_ms,
+                          /* Existing data — unchanged */
                           info.ip_address,
                           info.port_text,
                           info.wifi_ready ? "Yes" : "No",

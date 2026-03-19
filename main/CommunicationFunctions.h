@@ -62,6 +62,8 @@ typedef struct {
     uint32_t wifi_connect_timeout_ms;
     uint32_t tcp_connect_timeout_ms;
     uint32_t keep_alive_period_ms;
+    uint32_t ka_wait_window_ms;
+    uint32_t ka_empty_window_limit;
     uint32_t bottom_layer_retry_limit;
     uint32_t top_layer_failure_limit;
 } communication_config_t;
@@ -100,6 +102,23 @@ typedef struct {
     uint32_t scan_duration_ms;
     uint16_t scan_device_count;
     int32_t wifi_rssi;
+    /* RF link quality */
+    int8_t wifi_noise_floor_dbm;
+    int16_t wifi_snr_estimate_db;
+    uint8_t wifi_channel;
+    uint8_t wifi_authmode;
+    char wifi_bssid_str[18];
+    /* Keepalive response timing */
+    int32_t ka_response_time_last_ms;
+    int32_t ka_response_time_max_ms;
+    int32_t ka_response_time_min_ms;
+    int32_t ka_jitter_ms;
+    /* Traffic counters */
+    uint32_t keepalive_rx_count;
+    uint32_t keepalive_tx_count;
+    uint32_t data_frames_rx_count;
+    /* Session timing */
+    uint32_t session_uptime_ms;
     char local_ip[16];
     char last_error[96];
     char last_received_text[160];
