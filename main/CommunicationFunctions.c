@@ -5,6 +5,7 @@
  */
 
 #include "CommunicationFunctions.h"
+#include "data_payload.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -50,8 +51,11 @@
 #define COMMUNICATION_FRAME_SOF1             (0x5AU)
 #define COMMUNICATION_FRAME_HEADER_BYTES     (15U)
 #define COMMUNICATION_FRAME_CRC_BYTES        (2U)
-#define COMMUNICATION_FRAME_MAX_PAYLOAD      (256U)
-#define COMMUNICATION_RX_BUFFER_BYTES        (2048U)
+/* Must be >= sizeof(data_downlink_packet_t) and sizeof(data_uplink_packet_t).
+ * Downlink: 1+4+(DATA_SIZE_FLOATS*4)+(DATA_SIZE_INT*4)+DATA_SIZE_STRING = 535 B
+ * Uplink:   1+4+4+(DATA_SIZE_FLOATS*4)+(DATA_SIZE_INT*4)+DATA_SIZE_STRING = 539 B */
+#define COMMUNICATION_FRAME_MAX_PAYLOAD      (600U)
+#define COMMUNICATION_RX_BUFFER_BYTES        (4096U)
 
 typedef enum {
     COMMUNICATION_MESSAGE_RESET = 1,
@@ -176,6 +180,7 @@ static void communication_start_keepalive_window_locked(bool clear_transport_buf
 static void communication_mark_keepalive_window_message_locked(void);
 static bool communication_reason_is_timeout(const char *reason_text);
 static esp_err_t communication_send_pending_keepalive_response_locked(void);
+static void communication_drain_uplink_fifo_locked(void);
 static size_t communication_append_text(char *buffer, size_t buffer_len, size_t offset, const char *text);
 static size_t communication_append_u32(char *buffer, size_t buffer_len, size_t offset, uint32_t value);
 static bool communication_try_parse_u32_payload_value(const char *payload_text,
@@ -587,19 +592,34 @@ static void communication_build_initialize_payload_locked(char *buffer, size_t b
  *      - ESP_OK on success
  *      - ESP_FAIL when the socket write fails
  */
-static esp_err_t communication_send_frame_locked(communication_message_type_t message_type, const char *payload_text)
+/**
+ * @brief Low-level binary-capable frame encoder and sender.
+ *
+ * @details Accepts raw bytes for the payload so both text control frames and
+ * binary data payload frames can share the same encoding path.
+ *
+ * @param[in] message_type Frame message type.
+ * @param[in] payload      Payload bytes (may contain null bytes for binary).
+ * @param[in] payload_len  Payload length in bytes.
+ *
+ * @return ESP_OK on success, ESP_FAIL on send error.
+ */
+static esp_err_t communication_send_raw_frame_locked(communication_message_type_t message_type,
+                                                      const uint8_t *payload,
+                                                      size_t payload_len)
 {
     uint8_t frame[COMMUNICATION_FRAME_HEADER_BYTES + COMMUNICATION_FRAME_MAX_PAYLOAD + COMMUNICATION_FRAME_CRC_BYTES] = {0};
-    size_t payload_len = 0U;
     size_t frame_len = 0U;
-    const char *safe_payload = (payload_text != NULL) ? payload_text : "";
 
     if (s_comm.socket_fd < 0 || !s_comm.snapshot.tcp_connected) {
         communication_set_generic_failure_locked("Frame send", "Socket is not connected");
         return ESP_FAIL;
     }
 
-    payload_len = strnlen(safe_payload, COMMUNICATION_FRAME_MAX_PAYLOAD);
+    if (payload_len > COMMUNICATION_FRAME_MAX_PAYLOAD) {
+        payload_len = COMMUNICATION_FRAME_MAX_PAYLOAD;
+    }
+
     frame[0] = COMMUNICATION_FRAME_SOF0;
     frame[1] = COMMUNICATION_FRAME_SOF1;
     frame[2] = (uint8_t)message_type;
@@ -609,15 +629,16 @@ static esp_err_t communication_send_frame_locked(communication_message_type_t me
     frame[6] = (uint8_t)((s_comm.snapshot.server_live_integer >> 8) & 0xFFU);
     frame[7] = (uint8_t)((s_comm.snapshot.server_live_integer >> 16) & 0xFFU);
     frame[8] = (uint8_t)((s_comm.snapshot.server_live_integer >> 24) & 0xFFU);
-    frame[9] = (uint8_t)(s_comm.snapshot.client_live_integer & 0xFFU);
+    frame[9]  = (uint8_t)(s_comm.snapshot.client_live_integer & 0xFFU);
     frame[10] = (uint8_t)((s_comm.snapshot.client_live_integer >> 8) & 0xFFU);
     frame[11] = (uint8_t)((s_comm.snapshot.client_live_integer >> 16) & 0xFFU);
     frame[12] = (uint8_t)((s_comm.snapshot.client_live_integer >> 24) & 0xFFU);
     s_comm.snapshot.sequence = (uint16_t)((s_comm.snapshot.sequence + 1U) & 0xFFFFU);
     frame[13] = (uint8_t)(s_comm.snapshot.sequence & 0xFFU);
     frame[14] = (uint8_t)((s_comm.snapshot.sequence >> 8) & 0xFFU);
-    if (payload_len > 0U) {
-        memcpy(&frame[COMMUNICATION_FRAME_HEADER_BYTES], safe_payload, payload_len);
+
+    if (payload != NULL && payload_len > 0U) {
+        memcpy(&frame[COMMUNICATION_FRAME_HEADER_BYTES], payload, payload_len);
     }
 
     frame_len = COMMUNICATION_FRAME_HEADER_BYTES + payload_len + COMMUNICATION_FRAME_CRC_BYTES;
@@ -632,6 +653,13 @@ static esp_err_t communication_send_frame_locked(communication_message_type_t me
     }
 
     return ESP_OK;
+}
+
+static esp_err_t communication_send_frame_locked(communication_message_type_t message_type, const char *payload_text)
+{
+    const char *safe = (payload_text != NULL) ? payload_text : "";
+    size_t len = strnlen(safe, COMMUNICATION_FRAME_MAX_PAYLOAD);
+    return communication_send_raw_frame_locked(message_type, (const uint8_t *)safe, len);
 }
 
 /**
@@ -757,13 +785,22 @@ static void communication_poll_received_frames_locked(void)
                 communication_record_top_layer_failure_locked("TopLayer DATA received before KeepAlive state");
                 return;
             }
-            snprintf(s_comm.snapshot.last_received_text,
-                     sizeof(s_comm.snapshot.last_received_text),
-                     "%s",
-                     (payload_text[0] != '\0') ? payload_text : "Empty peer payload");
             s_comm.snapshot.send_data_enabled = true;
             s_comm.data_frames_rx_count++;
             s_comm.snapshot.data_frames_rx_count = s_comm.data_frames_rx_count;
+
+            /* Binary downlink data packet — route to FIFO for app consumption. */
+            if (payload_len == sizeof(data_downlink_packet_t) &&
+                (uint8_t)payload_text[0] == DATA_PAYLOAD_MAGIC_DOWNLINK) {
+                data_downlink_push((const data_downlink_packet_t *)(const void *)
+                                   &s_comm.rx_buffer[COMMUNICATION_FRAME_HEADER_BYTES]);
+            } else {
+                /* Text control frame: update last_received_text as before. */
+                snprintf(s_comm.snapshot.last_received_text,
+                         sizeof(s_comm.snapshot.last_received_text),
+                         "%s",
+                         (payload_text[0] != '\0') ? payload_text : "Empty peer payload");
+            }
         }
 
         if (s_comm.snapshot.state == COMMUNICATION_STATE_TOP_LAYER_CONNECT &&
@@ -1951,6 +1988,36 @@ static void communication_service_scan_locked(void)
  * latch tracks repeated keepalive loss and eventually stops in
  * `error` until the operator requests a reset.
  */
+
+/**
+ * @brief Send one pending uplink data packet from the transmit FIFO.
+ *
+ * @details Called from the task step whenever the keepalive session is active.
+ * Sends at most one packet per task tick (20 ms) to avoid starving keepalive
+ * traffic.  The application layer is responsible for the push rate.
+ */
+static void communication_drain_uplink_fifo_locked(void)
+{
+    if (!s_comm.snapshot.send_data_enabled) {
+        return;
+    }
+
+    data_uplink_packet_t pkt;
+    if (data_uplink_pop(&pkt) != DATA_FIFO_OK) {
+        return;
+    }
+
+    pkt.magic        = DATA_PAYLOAD_MAGIC_UPLINK;
+    pkt.timestamp_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+
+    if (communication_send_raw_frame_locked(COMMUNICATION_MESSAGE_DATA,
+                                            (const uint8_t *)&pkt,
+                                            sizeof(pkt)) == ESP_OK) {
+        s_comm.keepalive_tx_count++;
+        s_comm.snapshot.keepalive_tx_count = s_comm.keepalive_tx_count;
+    }
+}
+
 static void communication_task_step(void)
 {
     if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) != pdTRUE) {
@@ -2054,6 +2121,7 @@ static void communication_task_step(void)
             break;
         }
         communication_service_keep_alive_locked();
+        communication_drain_uplink_fifo_locked();
         break;
 
     case COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_CLIENT_SEND:
@@ -2068,6 +2136,7 @@ static void communication_task_step(void)
         if (communication_send_pending_keepalive_response_locked() != ESP_OK) {
             communication_schedule_bottom_layer_retry_locked("TopLayer keepalive response send failure", false);
         }
+        communication_drain_uplink_fifo_locked();
         break;
 
     case COMMUNICATION_STATE_TOP_LAYER_ERROR:
@@ -2154,6 +2223,16 @@ esp_err_t communication_functions_init(bool offline)
     }
     ESP_LOGI(TAG, "Communication module init step result: xSemaphoreTake(mutex) -> OK");
 
+    ESP_LOGI(TAG, "Communication module init step: data_payload_init");
+    if (data_payload_init() != ESP_OK) {
+        xSemaphoreGive(s_comm.mutex);
+        vSemaphoreDelete(s_comm.mutex);
+        vSemaphoreDelete(s_comm.snapshot_mutex);
+        s_comm.mutex = NULL;
+        s_comm.snapshot_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "Communication module init step result: data_payload_init -> OK");
     ESP_LOGI(TAG, "Communication module init step: communication_load_defaults_locked");
     communication_load_defaults_locked();
     ESP_LOGI(TAG, "Communication module init step result: communication_load_defaults_locked -> OK");
