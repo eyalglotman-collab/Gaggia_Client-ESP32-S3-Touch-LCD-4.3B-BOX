@@ -1227,10 +1227,11 @@ static void ui_settings_connection_info_event_cb(lv_event_t *e)
     lv_obj_set_width(s_ui.connection_info_auto_reconnect_btn, 320);
 
     lv_obj_t *info_body = lv_obj_create(panel);
-    lv_obj_set_size(info_body, 720, 162);
+    lv_obj_set_size(info_body, 720, LV_SIZE_CONTENT);
     lv_obj_align(info_body, LV_ALIGN_TOP_MID, 0, 184);
     ui_style_card(info_body, UI_COLOR_CARD);
-    lv_obj_set_scrollbar_mode(info_body, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_scrollbar_mode(info_body, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(info_body, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(info_body, 18, 0);
     lv_obj_set_style_pad_row(info_body, 14, 0);
     lv_obj_set_layout(info_body, LV_LAYOUT_FLEX);
