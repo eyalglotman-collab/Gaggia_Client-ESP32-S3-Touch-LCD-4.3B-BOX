@@ -132,11 +132,52 @@ cmd.exe /c C:/Espressif/Eyal_Projects_ESP32_S3/Eyal_espresso_client/scripts/idfw
 - Always run `build` first, then `flash` sequentially.
 - This is the required method for all sessions (including Codex/WSL).
 
+### Claude Code Build Verification (non-interactive shell limitation)
+When running inside Claude Code's bash shell, Windows console programs (`idf.py`, `ninja`) write output
+to the Windows console buffer rather than the pipe, so no build output is visible and output capture
+via `2>&1` or PowerShell redirects does not work. If the binary timestamp does not update after running
+the build command, the build did not reach ninja.
+
+**Confirmed working method from Claude Code's shell** (clears MSYSTEM, uses -NoNewWindow to pipe output):
+
+Build:
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process cmd.exe -ArgumentList '/c set MSYSTEM=& C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_client\scripts\idfw.cmd build' -Wait -NoNewWindow -PassThru"
+```
+
+Flash:
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process cmd.exe -ArgumentList '/c set MSYSTEM=& C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_client\scripts\idfw.cmd -p <PORT> flash' -Wait -NoNewWindow -PassThru"
+```
+
+If these fail, ask Eyal to run `idfw.cmd build` or `idfw.cmd -p <PORT> flash` from a real CMD or VS Code integrated terminal and report back.
+
+Otherwise verify the build result using these checks instead of looking at idf.py output:
+
+1. Check the binary exists and has a recent timestamp:
+```bash
+ls -la .idfbuild/Eyal_espresso_client.bin
+```
+
+2. Confirm no source changes since the last known-good build:
+```bash
+git diff <last-good-commit> HEAD -- main/
+```
+If the diff is empty, the existing binary in `.idfbuild/` is valid and up to date.
+
+3. Play the build success sound after confirming a valid binary:
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_client\scripts\play_build_success_sound.ps1
+```
+
 ### Session Startup — Client + Server Workflow
 1. Start the server with `launch_simulator_ui.ps1` from the server repository.
 2. If server startup fails, use the terminal diagnostic block (not just the popup) as source of truth.
 3. Keep the server interpreter pinned to `C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_server_simulator\.venv\Scripts\python.exe` in VS Code.
 4. Only after the server is healthy, run client build/flash via `scripts/idfw.cmd`.
+
+### Current Client/Server Boundary
+The client owns the operator UI and the Wi-Fi/TCP client transport. The server side owns mirrored transport behavior, simulator controls, and host-side serial ownership. The two projects share the same low-level message vocabulary and watchdog assumptions, but they are maintained as separate repositories.
 
 ### Sound Cues
 Use the sound cue scripts in `scripts/` as workflow notifications for build/flash outcomes.
@@ -145,7 +186,7 @@ Use the sound cue scripts in `scripts/` as workflow notifications for build/flas
 Perform all git commits with real git access (not sandboxed). Reference format:
 ```bash
 git add <file>
-git -c user.name="Codex" -c user.email="codex@local" commit -m "type: <message>"
+git -c user.name="Codex" -c user.email="codex@local" commit -m "docs: <message>"
 ```
 
 ### Workspace Review Rules
@@ -167,6 +208,9 @@ Before substantial work, request saved prefix approvals for:
 ---
 
 ## Architecture Notes
+- The client owns the operator UI and the Wi-Fi/TCP client transport.
+- The server side owns mirrored transport behavior, simulator controls, and host-side serial ownership.
+- The two projects share the same low-level message vocabulary and watchdog assumptions, but they are maintained as separate repositories.
 - Transport diagrams and contracts are under `docs/architecture/`.
 - The framed transport is the critical integration seam between firmware and server simulator.
 - Current design is transport-first; brew-machine business logic is lighter than board/UI/transport.
@@ -176,4 +220,4 @@ Before substantial work, request saved prefix approvals for:
 
 ---
 
-*Last synced: 2026-03-18 — No gaps detected on initial creation.*
+*Last synced: 2026-03-21 — Updated to include README build-verification and boundary sections; commit template aligned.*
