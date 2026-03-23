@@ -4,9 +4,10 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.3.7\par
+0.4.0\par
 \par
 \b Latest Version Feature List\b0\par
+- Minor version release checkpoint: promoted client version line to 0.4.0 for the synchronized dual-project release.\par
 - Simulate Data graph now updates per packet with labeled X/Y axes, packet/sample timing display, stream idle auto-sync, and stop-action FIFO+plot reset behavior.\par
 - Downlink Simulate Data FIFO now prefers delayed processing over packet drops, with larger queue depth and live backlog telemetry (`RX_FIFO_PacketBacklogNPackets`).\par
 - Build/flash workflow scripts now enforce COM release before and after build, flash, and monitor operations, aligned with the documented rule-gated sequence.\par
@@ -56,6 +57,13 @@
 - TopLayer keepalive flow is now explicitly split into `KeepAliveServerReceive` and `KeepAliveClientSend`, with one response per accepted request and parity checks to keep server values even and client values odd.\par
 - Reset now fast-paths directly to `connect` when low-layer Wi-Fi is still healthy, reducing reconnect latency after reset retries.\par
 \par
+\b X=0, Y=4\b0\par
+\b 2026-03-23 15:20:00\b0\par
+- Version: 0.4.0\par
+- Summary: Minor-version promotion checkpoint for the client project.\par
+- Notes: Updated `VERSION` to `0.4.0` and refreshed this revision document to reflect the synchronized cross-project release baseline.\par
+\par
+\b X=0, Y=3\b0\par
 \b 2026-03-23 17:20:00\b0\par
 - Version: 0.3.7\par
 - Summary: Improved Simulate Data graph fidelity/timing visibility, removed packet-loss behavior from RX FIFO handling, and hardened COM release behavior in build/flash/monitor tooling.\par
