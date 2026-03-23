@@ -48,6 +48,17 @@ typedef enum {
 } communication_scan_state_t;
 
 /**
+ * @brief Data-channel control events sent from client UI to simulator runtime.
+ *
+ * @details These events are encoded as low-level DATA text payload commands
+ * that the simulator parses to start or stop synthetic data generation.
+ */
+typedef enum {
+    COMMUNICATION_DATA_EVENT_SIMULATION_ON = 0,
+    COMMUNICATION_DATA_EVENT_SIMULATION_OFF,
+} communication_data_event_t;
+
+/**
  * @brief Defaultable Wi-Fi server communication settings.
  *
  * @details Stores the station credentials and remote TCP endpoint required for
@@ -121,6 +132,7 @@ typedef struct {
     uint32_t session_uptime_ms;
     char local_ip[16];
     char last_error[96];
+    uint32_t last_received_text_event_count;
     char last_received_text[160];
     char scan_results[640];
 } communication_snapshot_t;
@@ -176,6 +188,21 @@ void communication_functions_request_scan(void);
  * @param[in] enabled `true` to enable Auto Reconnect, `false` to disable it.
  */
 void communication_functions_set_auto_reconnect_enabled(bool enabled);
+
+/**
+ * @brief Queue one data-channel control event for the simulator runtime.
+ *
+ * @details Stores one pending DATA text command that is transmitted by the
+ * background communication task once the keepalive session is active.
+ *
+ * @param[in] event_id Data control event to send.
+ *
+ * @return
+ *      - ESP_OK: Event queued successfully
+ *      - ESP_ERR_INVALID_ARG: `event_id` is not recognized
+ *      - ESP_ERR_INVALID_STATE: Communication module is not initialized
+ */
+esp_err_t communication_functions_request_data_event(communication_data_event_t event_id);
 
 /**
  * @brief Read the latest communication snapshot.

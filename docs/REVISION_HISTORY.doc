@@ -4,9 +4,10 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.2.21\par
+0.3.6\par
 \par
 \b Latest Version Feature List\b0\par
+- Simulate Data toggle now mirrors backend DataSimulationOn/DataSimulationOFF events in real time, including resilient text-event synchronization in the client communication snapshot.\par
 - ESP32-S3-Touch-LCD-4.3b-Box hardware initialization (RGB LCD + GT911 touch).\par
 - LVGL 9.x display and input integration.\par
 - Demo-based LVGL porting layer imported from `08_lvgl_Porting` and adapted to project layout.\par
@@ -51,6 +52,11 @@
 - Connection fault latching now occurs at the third keepalive timeout window and clears only after re-entering `KEEPALIVE`, with Wi-Fi and TCP default timeout windows reduced to 1000 ms.\par
 - TopLayer keepalive flow is now explicitly split into `KeepAliveServerReceive` and `KeepAliveClientSend`, with one response per accepted request and parity checks to keep server values even and client values odd.\par
 - Reset now fast-paths directly to `connect` when low-layer Wi-Fi is still healthy, reducing reconnect latency after reset retries.\par
+\par
+\b 2026-03-23 16:40:00\b0\par
+- Version: 0.3.6\par
+- Summary: Release checkpoint commit covering all current workspace updates and backend-aware Simulate Data toggle synchronization.\par
+- Notes: The client now mirrors DataSimulationOn and DataSimulationOFF backend text events into the Simulate Data toggle state while preserving existing chart and packet-flow behavior.\par
 \par
 \b 2026-03-17 14:50:00\b0\par
 - Version: 0.2.21\par

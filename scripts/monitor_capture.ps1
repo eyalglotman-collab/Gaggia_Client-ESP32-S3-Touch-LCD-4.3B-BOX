@@ -6,6 +6,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# @brief Release the COM port held by the simulator before opening it for capture.
+# @details POSTs to the simulator HTTP API to force-release the serial link.
+# All errors are suppressed so monitor proceeds even when the sim is not running.
+function Invoke-SimulatorComRelease {
+    try {
+        Invoke-WebRequest -Uri 'http://localhost:8000/api/transport/release-com' `
+            -Method Post -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue | Out-Null
+    } catch { }
+    Start-Sleep -Milliseconds 500
+}
+
+Write-Host "Releasing COM port before monitor..."
+Invoke-SimulatorComRelease
+
 if (-not ([System.Management.Automation.PSTypeName]'System.IO.Ports.SerialPort').Type) {
     try {
         Add-Type -AssemblyName System.IO.Ports

@@ -47,6 +47,8 @@
 #define COMMUNICATION_KEEPALIVE_EMPTY_WINDOW_LIMIT (3)
 #define COMMUNICATION_KEEPALIVE_RESPONSE_ATTEMPT_LIMIT (1U)
 #define COMMUNICATION_DATA_INTERFACE_VERSION (1U)
+#define COMMUNICATION_DATA_EVENT_SIMULATION_ON_TEXT  "DataSimulationOn"
+#define COMMUNICATION_DATA_EVENT_SIMULATION_OFF_TEXT "DataSimulationOFF"
 #define COMMUNICATION_FRAME_SOF0             (0xA5U)
 #define COMMUNICATION_FRAME_SOF1             (0x5AU)
 #define COMMUNICATION_FRAME_HEADER_BYTES     (15U)
@@ -82,6 +84,7 @@ typedef struct {
     bool wifi_connect_started;
     bool tcp_connect_started;
     bool keepalive_ack_pending;
+    bool pending_data_command_valid;
     bool running_integer_seeded;
     bool fast_reset_skip_wifi;
     bool keepalive_window_has_message;
@@ -118,6 +121,7 @@ typedef struct {
     int32_t ka_response_time_min_ms;
     size_t rx_buffer_len;
     uint8_t rx_buffer[COMMUNICATION_RX_BUFFER_BYTES];
+    char pending_data_command[COMMUNICATION_FRAME_MAX_PAYLOAD + 1U];
 } communication_context_t;
 
 static communication_context_t s_comm = {
@@ -132,6 +136,7 @@ static communication_context_t s_comm = {
     .wifi_connect_started = false,
     .tcp_connect_started = false,
     .keepalive_ack_pending = false,
+    .pending_data_command_valid = false,
     .running_integer_seeded = false,
     .fast_reset_skip_wifi = false,
     .keepalive_window_has_message = false,
@@ -168,6 +173,7 @@ static communication_context_t s_comm = {
     .ka_response_time_min_ms = 0,
     .rx_buffer_len = 0,
     .rx_buffer = {0},
+    .pending_data_command = {0},
 };
 
 static void communication_close_socket_locked(void);
@@ -181,6 +187,8 @@ static void communication_mark_keepalive_window_message_locked(void);
 static bool communication_reason_is_timeout(const char *reason_text);
 static esp_err_t communication_send_pending_keepalive_response_locked(void);
 static void communication_drain_uplink_fifo_locked(void);
+static esp_err_t communication_queue_data_command_locked(const char *payload_text);
+static esp_err_t communication_send_pending_data_command_locked(void);
 static size_t communication_append_text(char *buffer, size_t buffer_len, size_t offset, const char *text);
 static size_t communication_append_u32(char *buffer, size_t buffer_len, size_t offset, uint32_t value);
 static bool communication_try_parse_u32_payload_value(const char *payload_text,
@@ -292,6 +300,7 @@ static void communication_clear_transport_flow_locked(void)
     s_comm.last_rx_sequence = 0;
     s_comm.last_rx_sequence_valid = false;
     s_comm.snapshot.reset_to_debug_elapsed_ms = 0;
+    s_comm.snapshot.last_received_text_event_count = 0;
     snprintf(s_comm.snapshot.last_received_text,
              sizeof(s_comm.snapshot.last_received_text),
              "No peer text received yet");
@@ -796,6 +805,7 @@ static void communication_poll_received_frames_locked(void)
                                    &s_comm.rx_buffer[COMMUNICATION_FRAME_HEADER_BYTES]);
             } else {
                 /* Text control frame: update last_received_text as before. */
+                s_comm.snapshot.last_received_text_event_count++;
                 snprintf(s_comm.snapshot.last_received_text,
                          sizeof(s_comm.snapshot.last_received_text),
                          "%s",
@@ -2018,6 +2028,66 @@ static void communication_drain_uplink_fifo_locked(void)
     }
 }
 
+/**
+ * @brief Queue one text DATA command for deferred keepalive-safe transmission.
+ *
+ * @details UI threads call into the communication API while the background
+ * transport task owns the socket. This helper stores one latest command and the
+ * task sends it on the next keepalive-active tick.
+ *
+ * @param[in] payload_text Command payload text.
+ *
+ * @return
+ *      - ESP_OK when the command is queued
+ *      - ESP_ERR_INVALID_ARG when payload is NULL or empty
+ */
+static esp_err_t communication_queue_data_command_locked(const char *payload_text)
+{
+    size_t command_len = 0U;
+
+    if (payload_text == NULL || payload_text[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    command_len = strlen(payload_text);
+    if (command_len > COMMUNICATION_FRAME_MAX_PAYLOAD) {
+        command_len = COMMUNICATION_FRAME_MAX_PAYLOAD;
+    }
+    memcpy(s_comm.pending_data_command, payload_text, command_len);
+    s_comm.pending_data_command[command_len] = '\0';
+    s_comm.pending_data_command_valid = true;
+    return ESP_OK;
+}
+
+/**
+ * @brief Send one queued text DATA command when keepalive is active.
+ *
+ * @details Commands are transmitted only from keepalive states to match the
+ * existing send-data gating policy. Failed sends keep the command queued for
+ * the next task tick.
+ *
+ * @return ESP_OK on success or when nothing is pending, otherwise ESP_FAIL.
+ */
+static esp_err_t communication_send_pending_data_command_locked(void)
+{
+    if (!s_comm.pending_data_command_valid) {
+        return ESP_OK;
+    }
+
+    if (s_comm.snapshot.state != COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE &&
+        s_comm.snapshot.state != COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_CLIENT_SEND) {
+        return ESP_OK;
+    }
+
+    if (communication_send_frame_locked(COMMUNICATION_MESSAGE_DATA, s_comm.pending_data_command) != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    s_comm.pending_data_command[0] = '\0';
+    s_comm.pending_data_command_valid = false;
+    return ESP_OK;
+}
+
 static void communication_task_step(void)
 {
     if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) != pdTRUE) {
@@ -2121,6 +2191,7 @@ static void communication_task_step(void)
             break;
         }
         communication_service_keep_alive_locked();
+        (void)communication_send_pending_data_command_locked();
         communication_drain_uplink_fifo_locked();
         break;
 
@@ -2136,6 +2207,7 @@ static void communication_task_step(void)
         if (communication_send_pending_keepalive_response_locked() != ESP_OK) {
             communication_schedule_bottom_layer_retry_locked("TopLayer keepalive response send failure", false);
         }
+        (void)communication_send_pending_data_command_locked();
         communication_drain_uplink_fifo_locked();
         break;
 
@@ -2341,6 +2413,45 @@ void communication_functions_set_auto_reconnect_enabled(bool enabled)
         communication_publish_snapshot_locked();
         xSemaphoreGive(s_comm.mutex);
     }
+}
+
+/**
+ * @brief Queue one simulator data-control event for low-level transmission.
+ *
+ * @details The communication worker sends queued events as DATA text payloads
+ * once keepalive is active, preserving thread ownership of the socket.
+ *
+ * @param[in] event_id Requested simulator data-control event.
+ *
+ * @return ESP_OK when queued, otherwise an ESP error code.
+ */
+esp_err_t communication_functions_request_data_event(communication_data_event_t event_id)
+{
+    const char *event_payload = NULL;
+
+    if (!s_comm.initialized || s_comm.mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    switch (event_id) {
+    case COMMUNICATION_DATA_EVENT_SIMULATION_ON:
+        event_payload = COMMUNICATION_DATA_EVENT_SIMULATION_ON_TEXT;
+        break;
+    case COMMUNICATION_DATA_EVENT_SIMULATION_OFF:
+        event_payload = COMMUNICATION_DATA_EVENT_SIMULATION_OFF_TEXT;
+        break;
+    default:
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_FAIL;
+    }
+
+    esp_err_t ret = communication_queue_data_command_locked(event_payload);
+    communication_publish_snapshot_locked();
+    xSemaphoreGive(s_comm.mutex);
+    return ret;
 }
 
 esp_err_t communication_functions_get_snapshot(communication_snapshot_t *out_snapshot)

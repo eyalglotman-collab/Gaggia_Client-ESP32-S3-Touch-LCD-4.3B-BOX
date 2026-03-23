@@ -7,12 +7,15 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <string.h>
+#include <math.h>
 
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "lvgl.h"
 #include "CommunicationFunctions.h"
+#include "data_payload.h"
 #include "ui_screen.h"
 #include "hardware_init.h"
 #include "peripherals_manager.h"
@@ -48,6 +51,7 @@ typedef struct {
     lv_obj_t *clock_set_overlay;
     lv_obj_t *connection_info_overlay;
     lv_obj_t *system_constants_overlay;
+    lv_obj_t *sim_data_overlay;
     lv_obj_t *clock_set_day_roller;
     lv_obj_t *clock_set_month_roller;
     lv_obj_t *clock_set_year_roller;
@@ -55,7 +59,12 @@ typedef struct {
     lv_obj_t *clock_set_minute_roller;
     lv_obj_t *connection_info_details_label;
     lv_obj_t *connection_info_auto_reconnect_btn;
+    lv_obj_t *sim_data_toggle_btn;
+    lv_obj_t *sim_data_status_label;
+    lv_obj_t *sim_data_chart;
+    lv_chart_series_t *sim_data_series;
     bool connection_info_show_scan_results;
+    bool sim_data_toggle_syncing;
     lv_obj_t *content;
     lv_obj_t *brew_toggle_btn;
     lv_obj_t *steam_toggle_btn;
@@ -67,6 +76,7 @@ typedef struct {
     lv_obj_t *settings_preinf_value;
     lv_obj_t *settings_backlight_toggle;
     lv_timer_t *heartbeat_timer;
+    lv_timer_t *sim_data_poll_timer;
     lv_timer_t *init_mode_countdown_timer;
     ui_page_t active_page;
     ui_init_mode_t init_mode_selection;
@@ -77,6 +87,11 @@ typedef struct {
     int target_temp_c;
     int preinf_s;
     int shot_s;
+    bool sim_data_enabled;
+    uint32_t sim_data_packets_received;
+    uint32_t sim_data_last_seq;
+    bool sim_data_last_seq_valid;
+    uint32_t sim_data_last_peer_event_count;
     bool reinit_requested;
     bool init_failure_confirm_requested;
 } ui_state_t;
@@ -101,6 +116,7 @@ static ui_state_t s_ui = {
     .clock_set_overlay = NULL,
     .connection_info_overlay = NULL,
     .system_constants_overlay = NULL,
+    .sim_data_overlay = NULL,
     .clock_set_day_roller = NULL,
     .clock_set_month_roller = NULL,
     .clock_set_year_roller = NULL,
@@ -108,7 +124,12 @@ static ui_state_t s_ui = {
     .clock_set_minute_roller = NULL,
     .connection_info_details_label = NULL,
     .connection_info_auto_reconnect_btn = NULL,
+    .sim_data_toggle_btn = NULL,
+    .sim_data_status_label = NULL,
+    .sim_data_chart = NULL,
+    .sim_data_series = NULL,
     .connection_info_show_scan_results = false,
+    .sim_data_toggle_syncing = false,
     .content = NULL,
     .brew_toggle_btn = NULL,
     .steam_toggle_btn = NULL,
@@ -120,6 +141,7 @@ static ui_state_t s_ui = {
     .settings_preinf_value = NULL,
     .settings_backlight_toggle = NULL,
     .heartbeat_timer = NULL,
+    .sim_data_poll_timer = NULL,
     .init_mode_countdown_timer = NULL,
     .active_page = UI_PAGE_HOME,
     .init_mode_selection = UI_INIT_MODE_NONE,
@@ -130,6 +152,11 @@ static ui_state_t s_ui = {
     .target_temp_c = 93,
     .preinf_s = 4,
     .shot_s = 0,
+    .sim_data_enabled = false,
+    .sim_data_packets_received = 0,
+    .sim_data_last_seq = 0,
+    .sim_data_last_seq_valid = false,
+    .sim_data_last_peer_event_count = 0,
     .reinit_requested = false,
     .init_failure_confirm_requested = false,
 };
@@ -150,12 +177,21 @@ static ui_state_t s_ui = {
 #define UI_TABVIEW_HEIGHT      (432)
 #define UI_CLOCK_BAR_HEIGHT    (56)
 #define UI_SYSTEM_CONSTANTS_TEXT_MAX (4096)
+#define UI_SIM_DATA_POLL_PERIOD_MS (100)
+#define UI_SIM_DATA_CHART_SCALE_FACTOR (100.0f)
 
 static const system_constants_data_t *ui_get_constants(void);
 static const system_constants_profile_t *ui_get_profile_constants(int profile_index);
 static void ui_apply_profile_defaults(int profile_index);
 static const char *ui_get_system_constants_pretty_text(void);
 static void ui_update_connection_info_overlay_contents(void);
+static void ui_update_sim_data_status_label(void);
+static esp_err_t ui_request_sim_data_toggle(bool enabled, bool sync_toggle_button);
+static bool ui_try_parse_sim_data_event_from_text(const char *payload_text, bool *out_enabled);
+static void ui_sync_sim_data_toggle_from_peer_event(void);
+static void ui_process_sim_data_fifo(void);
+static void ui_plot_sim_data_packet(const data_downlink_packet_t *packet);
+static void ui_close_sim_data_overlay(void);
 static void ui_update_init_mode_prompt_text(void);
 static lv_obj_t *ui_create_toggle_button(lv_obj_t *parent,
                                          const char *text,
@@ -858,6 +894,282 @@ static void ui_close_system_constants_overlay(void)
     }
 
     s_ui.system_constants_overlay = NULL;
+}
+
+/**
+ * @brief Close the Simulate Data overlay and clear widget handles.
+ *
+ * @details Deletes the dedicated simulation screen opened from Settings and
+ * clears all related LVGL object pointers.
+ */
+static void ui_close_sim_data_overlay(void)
+{
+    if (s_ui.sim_data_overlay) {
+        lv_obj_del(s_ui.sim_data_overlay);
+    }
+
+    s_ui.sim_data_overlay = NULL;
+    s_ui.sim_data_toggle_btn = NULL;
+    s_ui.sim_data_status_label = NULL;
+    s_ui.sim_data_chart = NULL;
+    s_ui.sim_data_series = NULL;
+}
+
+/**
+ * @brief Refresh the Simulate Data status line.
+ *
+ * @details Shows stream enable state and packet progress so operators can
+ * confirm that simulator data is flowing into the client graph.
+ */
+static void ui_update_sim_data_status_label(void)
+{
+    if (s_ui.sim_data_status_label == NULL) {
+        return;
+    }
+
+    if (!s_ui.sim_data_enabled) {
+        lv_label_set_text(s_ui.sim_data_status_label, "Simulator stream is OFF");
+        return;
+    }
+
+    if (!s_ui.sim_data_last_seq_valid) {
+        lv_label_set_text(s_ui.sim_data_status_label, "Simulator stream is ON | Waiting for packets...");
+        return;
+    }
+
+    lv_label_set_text_fmt(
+        s_ui.sim_data_status_label,
+        "Simulator stream is ON | Packets: %" PRIu32 " | Last Seq: %" PRIu32,
+        s_ui.sim_data_packets_received,
+        s_ui.sim_data_last_seq);
+}
+
+/**
+ * @brief Parse simulator stream ON/OFF events from a text payload.
+ *
+ * @details Text comparisons are case-insensitive so payload variations from
+ * bridge/runtime logs still map to a single stream toggle state.
+ *
+ * @param[in] payload_text Text payload from communication snapshot.
+ * @param[out] out_enabled Parsed stream enable state.
+ *
+ * @return `true` when an ON/OFF event token is found; otherwise `false`.
+ */
+static bool ui_try_parse_sim_data_event_from_text(const char *payload_text, bool *out_enabled)
+{
+    char normalized[160] = {0};
+    size_t index = 0;
+
+    if (payload_text == NULL || out_enabled == NULL) {
+        return false;
+    }
+
+    for (index = 0; payload_text[index] != '\0' && index < (sizeof(normalized) - 1U); index++) {
+        normalized[index] = (char)tolower((unsigned char)payload_text[index]);
+    }
+    normalized[index] = '\0';
+
+    if (strstr(normalized, "datasimulationoff") != NULL) {
+        *out_enabled = false;
+        return true;
+    }
+
+    if (strstr(normalized, "datasimulationon") != NULL) {
+        *out_enabled = true;
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * @brief Mirror backend ON/OFF simulation events into the local toggle UI.
+ *
+ * @details Consumes each newly received backend text-event exactly once using
+ * the communication snapshot event counter, then updates the local stream
+ * state and checkable button presentation without sending another command.
+ */
+static void ui_sync_sim_data_toggle_from_peer_event(void)
+{
+    communication_snapshot_t comm_snapshot = {0};
+    bool enabled = false;
+
+    if (communication_functions_get_snapshot(&comm_snapshot) != ESP_OK) {
+        return;
+    }
+
+    if (comm_snapshot.last_received_text_event_count == s_ui.sim_data_last_peer_event_count) {
+        return;
+    }
+    s_ui.sim_data_last_peer_event_count = comm_snapshot.last_received_text_event_count;
+
+    if (!ui_try_parse_sim_data_event_from_text(comm_snapshot.last_received_text, &enabled)) {
+        return;
+    }
+
+    s_ui.sim_data_enabled = enabled;
+    if (s_ui.sim_data_toggle_btn != NULL) {
+        s_ui.sim_data_toggle_syncing = true;
+        if (enabled) {
+            lv_obj_add_state(s_ui.sim_data_toggle_btn, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(s_ui.sim_data_toggle_btn, LV_STATE_CHECKED);
+        }
+        s_ui.sim_data_toggle_syncing = false;
+    }
+    ui_update_sim_data_status_label();
+}
+
+/**
+ * @brief Queue a simulator data-stream toggle command in communication task.
+ *
+ * @details Converts a UI toggle action into a low-level DATA event and mirrors
+ * the accepted state back into the screen controls.
+ *
+ * @param[in] enabled Requested stream state.
+ * @param[in] sync_toggle_button `true` to force button checked-state sync.
+ *
+ * @return ESP_OK on success, otherwise an ESP_ERR_* code.
+ */
+static esp_err_t ui_request_sim_data_toggle(bool enabled, bool sync_toggle_button)
+{
+    bool previous_enabled = s_ui.sim_data_enabled;
+    communication_data_event_t event_id = enabled
+                                              ? COMMUNICATION_DATA_EVENT_SIMULATION_ON
+                                              : COMMUNICATION_DATA_EVENT_SIMULATION_OFF;
+    esp_err_t ret = communication_functions_request_data_event(event_id);
+
+    if (ret == ESP_OK) {
+        s_ui.sim_data_enabled = enabled;
+        ESP_LOGI(TAG,
+                 "Simulate Data toggle requested: %s",
+                 enabled ? "DataSimulationOn" : "DataSimulationOFF");
+    } else {
+        s_ui.sim_data_enabled = previous_enabled;
+        ESP_LOGW(TAG,
+                 "Simulate Data toggle request failed (%s): %s",
+                 enabled ? "DataSimulationOn" : "DataSimulationOFF",
+                 esp_err_to_name(ret));
+    }
+
+    if (sync_toggle_button && s_ui.sim_data_toggle_btn != NULL) {
+        s_ui.sim_data_toggle_syncing = true;
+        if (s_ui.sim_data_enabled) {
+            lv_obj_add_state(s_ui.sim_data_toggle_btn, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(s_ui.sim_data_toggle_btn, LV_STATE_CHECKED);
+        }
+        s_ui.sim_data_toggle_syncing = false;
+    }
+
+    ui_update_sim_data_status_label();
+    return ret;
+}
+
+/**
+ * @brief Render one simulator packet onto the 100-point line chart.
+ *
+ * @details Each incoming packet carries 100 float samples. The chart is updated
+ * with the latest packet and auto-ranges vertically around the current signal.
+ *
+ * @param[in] packet Received simulator downlink packet.
+ */
+static void ui_plot_sim_data_packet(const data_downlink_packet_t *packet)
+{
+    int32_t y_min = 0;
+    int32_t y_max = 0;
+
+    if (packet == NULL || s_ui.sim_data_chart == NULL || s_ui.sim_data_series == NULL) {
+        return;
+    }
+
+    for (uint32_t index = 0; index < DATA_SIZE_FLOATS; index++) {
+        int32_t scaled_value = (int32_t)lroundf(packet->f[index] * UI_SIM_DATA_CHART_SCALE_FACTOR);
+        lv_chart_set_series_value_by_id(
+            s_ui.sim_data_chart,
+            s_ui.sim_data_series,
+            index,
+            scaled_value);
+        if (index == 0U) {
+            y_min = scaled_value;
+            y_max = scaled_value;
+        } else {
+            if (scaled_value < y_min) {
+                y_min = scaled_value;
+            }
+            if (scaled_value > y_max) {
+                y_max = scaled_value;
+            }
+        }
+    }
+
+    if (y_min == y_max) {
+        y_min -= 50;
+        y_max += 50;
+    }
+    int32_t margin = (y_max - y_min) / 6;
+    if (margin < 20) {
+        margin = 20;
+    }
+
+    lv_chart_set_range(s_ui.sim_data_chart,
+                       LV_CHART_AXIS_PRIMARY_Y,
+                       (lv_coord_t)(y_min - margin),
+                       (lv_coord_t)(y_max + margin));
+    lv_chart_refresh(s_ui.sim_data_chart);
+}
+
+/**
+ * @brief Drain received simulator downlink packets from the shared FIFO.
+ *
+ * @details The communication task pushes binary downlink packets into the FIFO.
+ * This UI helper consumes all available packets and keeps only the latest frame
+ * visible on the graph.
+ */
+static void ui_process_sim_data_fifo(void)
+{
+    data_downlink_packet_t packet = {0};
+    bool received_packet = false;
+
+    while (data_downlink_pop(&packet) == DATA_FIFO_OK) {
+        if (s_ui.sim_data_last_seq_valid) {
+            uint32_t expected_seq = s_ui.sim_data_last_seq + 1U;
+            if (packet.seq != expected_seq) {
+                ESP_LOGW(TAG,
+                         "Simulate Data packet sequence gap: expected=%" PRIu32 ", got=%" PRIu32,
+                         expected_seq,
+                         packet.seq);
+            }
+        }
+
+        s_ui.sim_data_last_seq = packet.seq;
+        s_ui.sim_data_last_seq_valid = true;
+        s_ui.sim_data_packets_received++;
+        received_packet = true;
+
+        if (s_ui.sim_data_enabled && s_ui.sim_data_overlay != NULL) {
+            ui_plot_sim_data_packet(&packet);
+        }
+    }
+
+    if (received_packet || s_ui.sim_data_overlay != NULL) {
+        ui_update_sim_data_status_label();
+    }
+}
+
+/**
+ * @brief Poll the simulator downlink FIFO for graph updates.
+ *
+ * @details Runs at 100 ms cadence so the Simulate Data chart remains responsive
+ * while keeping UI processing independent from socket-thread timing.
+ *
+ * @param[in] timer LVGL timer payload.
+ */
+static void ui_sim_data_poll_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    ui_sync_sim_data_toggle_from_peer_event();
+    ui_process_sim_data_fifo();
 }
 
 /**
@@ -1654,6 +1966,126 @@ static void ui_settings_backlight_toggle_event_cb(lv_event_t *e)
 }
 
 /**
+ * @brief Close Simulate Data screen and stop simulator stream.
+ *
+ * @details Ensures the stream toggle is switched off before returning to the
+ * Settings page so background traffic does not continue unintentionally.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_sim_data_done_event_cb(lv_event_t *e)
+{
+    (void)e;
+    (void)ui_request_sim_data_toggle(false, true);
+    ui_close_sim_data_overlay();
+}
+
+/**
+ * @brief Handle Simulate Data toggle state changes.
+ *
+ * @details Queues `DataSimulationOn` / `DataSimulationOFF` events for the
+ * communication task and mirrors accepted state into the toggle button.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_sim_data_toggle_event_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    bool enabled = lv_obj_has_state(obj, LV_STATE_CHECKED);
+
+    if (s_ui.sim_data_toggle_syncing) {
+        return;
+    }
+
+    (void)ui_request_sim_data_toggle(enabled, true);
+}
+
+/**
+ * @brief Open the Simulate Data service screen from Settings.
+ *
+ * @details Builds a dedicated overlay with a top simulation toggle and a live
+ * graph that plots all 100 float samples from each simulator downlink packet.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_settings_simulate_data_event_cb(lv_event_t *e)
+{
+    (void)e;
+
+    ui_close_sim_data_overlay();
+
+    lv_obj_t *scr = lv_screen_active();
+    s_ui.sim_data_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_ui.sim_data_overlay);
+    lv_obj_set_size(s_ui.sim_data_overlay, 800, 480);
+    lv_obj_set_style_bg_color(s_ui.sim_data_overlay, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(s_ui.sim_data_overlay, LV_OPA_COVER, 0);
+
+    lv_obj_t *panel = lv_obj_create(s_ui.sim_data_overlay);
+    lv_obj_set_size(panel, 760, 440);
+    lv_obj_center(panel);
+    ui_style_card(panel, UI_COLOR_PANEL);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(panel);
+    lv_label_set_text(title, "Simulate Data");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 16);
+
+    s_ui.sim_data_toggle_btn = ui_create_toggle_button(panel,
+                                                       "Simulate Data",
+                                                       s_ui.sim_data_enabled,
+                                                       20,
+                                                       60,
+                                                       ui_sim_data_toggle_event_cb);
+    lv_obj_set_width(s_ui.sim_data_toggle_btn, 300);
+
+    s_ui.sim_data_status_label = lv_label_create(panel);
+    lv_obj_set_style_text_font(s_ui.sim_data_status_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_ui.sim_data_status_label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+    lv_obj_align(s_ui.sim_data_status_label, LV_ALIGN_TOP_RIGHT, -20, 80);
+    ui_update_sim_data_status_label();
+
+    lv_obj_t *chart_card = lv_obj_create(panel);
+    lv_obj_set_size(chart_card, 720, 230);
+    lv_obj_align(chart_card, LV_ALIGN_TOP_MID, 0, 132);
+    ui_style_card(chart_card, UI_COLOR_CARD);
+    lv_obj_clear_flag(chart_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(chart_card, 12, 0);
+
+    s_ui.sim_data_chart = lv_chart_create(chart_card);
+    lv_obj_set_size(s_ui.sim_data_chart, 696, 206);
+    lv_obj_center(s_ui.sim_data_chart);
+    lv_obj_set_style_bg_color(s_ui.sim_data_chart, lv_color_hex(UI_COLOR_CARD_ALT), LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_ui.sim_data_chart, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_ui.sim_data_chart, lv_color_hex(UI_COLOR_BORDER), LV_PART_MAIN);
+    lv_obj_set_style_line_width(s_ui.sim_data_chart, 2, LV_PART_ITEMS);
+    lv_chart_set_type(s_ui.sim_data_chart, LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(s_ui.sim_data_chart, DATA_SIZE_FLOATS);
+    lv_chart_set_div_line_count(s_ui.sim_data_chart, 5, 8);
+    lv_chart_set_range(s_ui.sim_data_chart, LV_CHART_AXIS_PRIMARY_Y, -200, 200);
+    s_ui.sim_data_series = lv_chart_add_series(s_ui.sim_data_chart,
+                                               lv_color_hex(UI_COLOR_ACCENT),
+                                               LV_CHART_AXIS_PRIMARY_Y);
+    if (s_ui.sim_data_series != NULL) {
+        lv_chart_set_all_values(s_ui.sim_data_chart, s_ui.sim_data_series, 0);
+    }
+    lv_chart_refresh(s_ui.sim_data_chart);
+
+    lv_obj_t *done_btn = lv_button_create(panel);
+    lv_obj_set_size(done_btn, 300, 58);
+    lv_obj_align(done_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
+    ui_style_action_button(done_btn);
+    lv_obj_add_event_cb(done_btn, ui_sim_data_done_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *done_lbl = lv_label_create(done_btn);
+    lv_label_set_text(done_lbl, "Done");
+    ui_style_button_label(done_lbl);
+    lv_obj_center(done_lbl);
+}
+
+/**
  * @brief Return the client UI to the initialization state.
  *
  * @details Rebuilds the splash screen so the client visually returns to the
@@ -1664,6 +2096,7 @@ static void ui_settings_backlight_toggle_event_cb(lv_event_t *e)
 static void ui_settings_reboot_client_event_cb(lv_event_t *e)
 {
     (void)e;
+    (void)ui_request_sim_data_toggle(false, false);
     s_ui.brewing = false;
     s_ui.steaming = false;
     s_ui.shot_s = 0;
@@ -1842,6 +2275,17 @@ static void ui_build_page_settings(void)
     lv_label_set_text(system_constants_lbl, "System Constants");
     ui_style_button_label(system_constants_lbl);
     lv_obj_center(system_constants_lbl);
+
+    lv_obj_t *simulate_data_btn = lv_button_create(s_ui.content);
+    lv_obj_set_size(simulate_data_btn, action_btn_width, action_btn_height);
+    lv_obj_align(simulate_data_btn, LV_ALIGN_TOP_LEFT, action_right_x, action_row3_y);
+    ui_style_action_button(simulate_data_btn);
+    lv_obj_add_event_cb(simulate_data_btn, ui_settings_simulate_data_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *simulate_data_lbl = lv_label_create(simulate_data_btn);
+    lv_label_set_text(simulate_data_lbl, "Simulate Data");
+    ui_style_button_label(simulate_data_lbl);
+    lv_obj_center(simulate_data_lbl);
 }
 
 /**
@@ -2012,6 +2456,9 @@ static void ui_build_main_screen(void)
     if (!s_ui.heartbeat_timer) {
         s_ui.heartbeat_timer = lv_timer_create(ui_heartbeat_timer_cb, 1000, NULL);
     }
+    if (!s_ui.sim_data_poll_timer) {
+        s_ui.sim_data_poll_timer = lv_timer_create(ui_sim_data_poll_timer_cb, UI_SIM_DATA_POLL_PERIOD_MS, NULL);
+    }
 
     ESP_LOGI(TAG, "UI screen created successfully");
 }
@@ -2043,9 +2490,15 @@ void ui_screen_create(void)
     s_ui.clock_set_overlay = NULL;
     s_ui.connection_info_overlay = NULL;
     s_ui.system_constants_overlay = NULL;
+    s_ui.sim_data_overlay = NULL;
     s_ui.connection_info_details_label = NULL;
     s_ui.connection_info_auto_reconnect_btn = NULL;
+    s_ui.sim_data_toggle_btn = NULL;
+    s_ui.sim_data_status_label = NULL;
+    s_ui.sim_data_chart = NULL;
+    s_ui.sim_data_series = NULL;
     s_ui.connection_info_show_scan_results = false;
+    s_ui.sim_data_toggle_syncing = false;
     s_ui.clock_set_day_roller = NULL;
     s_ui.clock_set_month_roller = NULL;
     s_ui.clock_set_year_roller = NULL;
@@ -2057,6 +2510,11 @@ void ui_screen_create(void)
     s_ui.clock_label = NULL;
     s_ui.brew_toggle_btn = NULL;
     s_ui.steam_toggle_btn = NULL;
+    s_ui.sim_data_enabled = false;
+    s_ui.sim_data_packets_received = 0;
+    s_ui.sim_data_last_seq = 0;
+    s_ui.sim_data_last_seq_valid = false;
+    s_ui.sim_data_last_peer_event_count = 0;
     s_ui.init_mode_selection = UI_INIT_MODE_NONE;
     s_ui.init_mode_countdown_seconds = UI_INIT_MODE_DEFAULT_COUNTDOWN_SEC;
     s_ui.init_failure_confirm_requested = false;
