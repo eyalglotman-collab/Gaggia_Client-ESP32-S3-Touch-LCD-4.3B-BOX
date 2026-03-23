@@ -28,7 +28,7 @@ extern "C" {
 #define DATA_SIZE_STRING   (50U)
 
 /** @brief FIFO depth for the downlink (server → client) receive buffer. */
-#define DATA_DOWNLINK_FIFO_DEPTH  (10U)
+#define DATA_DOWNLINK_FIFO_DEPTH  (64U)
 
 /** @brief FIFO depth for the uplink (client → server) transmit buffer. */
 #define DATA_UPLINK_FIFO_DEPTH    (10U)

@@ -28,8 +28,11 @@ flowchart TD
 
     subgraph DATA["DATA"]
         P1["Upper layer sends DATA payload"] --> P2["Low-level layer validates framing and CRC"]
-        P2 --> P3["Validated payload is forwarded"]
-        P3 --> P4["Peer returns DATA response or ACK"]
+        P2 --> P3["Validated downlink payload is enqueued into DATA downlink FIFO (depth 64)"]
+        P3 --> P4["If FIFO is full, enqueue waits (delay/back-pressure, no client-side drop)"]
+        P4 --> P5["UI poll timer (20 ms) pops one packet per tick in FIFO order"]
+        P5 --> P6["Simulate Data chart updates once per popped packet"]
+        P6 --> P7["Peer returns DATA response or ACK"]
     end
 
     subgraph RETRY["RETRY / CONNECTION FAULT"]

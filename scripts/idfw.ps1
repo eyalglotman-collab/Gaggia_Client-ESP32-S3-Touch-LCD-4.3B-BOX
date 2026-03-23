@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# @brief Release the COM port held by the simulator before flash or monitor.
+# @brief Release the COM port held by the simulator around idf actions.
 # @details POSTs to the simulator HTTP API to force-release the serial link.
 # All errors are suppressed so the command proceeds even when the sim is not running.
 function Invoke-SimulatorComRelease {
@@ -28,10 +28,22 @@ if (-not ($IdfArgs -contains "-B")) {
 
 $effectiveArgs += $IdfArgs
 
-if (($IdfArgs -contains 'flash') -or ($IdfArgs -contains 'monitor')) {
-    Write-Host "Releasing COM port before $( if ($IdfArgs -contains 'flash') { 'flash' } else { 'monitor' } )..."
-    Invoke-SimulatorComRelease
+$needsComRelease = ($IdfArgs.Count -eq 0) -or ($IdfArgs -contains 'build') -or ($IdfArgs -contains 'flash') -or ($IdfArgs -contains 'monitor')
+$exitCode = 1
+
+try {
+    if ($needsComRelease) {
+        Write-Host "Releasing COM port before idf action..."
+        Invoke-SimulatorComRelease
+    }
+
+    idf.py @effectiveArgs
+    $exitCode = $LASTEXITCODE
+} finally {
+    if ($needsComRelease) {
+        Write-Host "Releasing COM port after idf action..."
+        Invoke-SimulatorComRelease
+    }
 }
 
-idf.py @effectiveArgs
-exit $LASTEXITCODE
+exit $exitCode

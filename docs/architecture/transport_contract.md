@@ -80,6 +80,17 @@ This file is the canonical machine-readable design baseline for low-level transp
 | `DATA` | Carry application payload after validation. | Either side | Peer | payload, sequence, CRC | `ACK` or application response | Normal transport timeout policy applies. | Invalid frame is rejected before upper layer sees payload. |
 | `SCAN` | Discover available Wi-Fi devices for operator selection. | Client communication task | ESP32-S3 Wi-Fi driver | scan request flag, 10-second window, current STA configuration | formatted AP list in `scan_results` | Operator-visible scan lasts 10 seconds. | Scan API or result-read failure enters `COMMUNICATION_SCAN_STATE_ERROR`. |
 
+## Client DATA Path and Buffering Policy (Implemented)
+
+| Stage | Module | Implemented Behavior | Design Intent |
+| --- | --- | --- | --- |
+| Binary DATA RX frame decode | `main/CommunicationFunctions.c` | Valid DATA frames with `DATA_PAYLOAD_MAGIC_DOWNLINK` are pushed into the downlink FIFO. | Keep framing/CRC ownership in the low-level communication module. |
+| Downlink buffering | `main/data_payload.c` + `main/data_payload.h` | `DATA_DOWNLINK_FIFO_DEPTH = 64`; push waits for free slot instead of dropping when full. | Prefer processing delay and back-pressure over client-side packet loss. |
+| UI consume cadence | `main/ui_screen.c` | Simulate Data poll timer runs every `20 ms`. | Keep graph refresh responsive and reduce burst collapse. |
+| UI consume policy | `main/ui_screen.c` | One packet is popped and processed per poll tick (FIFO order preserved). | Ensure deterministic packet-by-packet graph updates. |
+| Graph rendering | `main/ui_screen.c` | Plot updates per packet, with Y auto-scale by max absolute amplitude and X range from packet interval timing. | Keep waveform readable and time-base aligned to observed transport timing. |
+| Back-pressure semantics | Comm task -> FIFO boundary | If UI cannot consume fast enough, communication-side enqueue waits until FIFO space is available. | Convert overload from data loss to bounded latency growth. |
+
 ## Timing Rules
 
 - Wi-Fi association timeout in the client initialize state is `1000 mSec`.

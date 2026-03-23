@@ -22,6 +22,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
 /* ---------------------------------------------------------------------------
  * Internal FIFO structures
@@ -84,11 +85,14 @@ data_fifo_result_t data_downlink_push(const data_downlink_packet_t *pkt)
         return DATA_FIFO_EMPTY;
     }
 
-    xSemaphoreTake(s_dl.mutex, portMAX_DELAY);
-
-    if (s_dl.count >= DATA_DOWNLINK_FIFO_DEPTH) {
+    /* Delay instead of dropping: wait until one slot is available. */
+    while (true) {
+        xSemaphoreTake(s_dl.mutex, portMAX_DELAY);
+        if (s_dl.count < DATA_DOWNLINK_FIFO_DEPTH) {
+            break;
+        }
         xSemaphoreGive(s_dl.mutex);
-        return DATA_FIFO_FULL;
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 
     memcpy(&s_dl.buf[s_dl.head], pkt, sizeof(*pkt));

@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# @brief Release the COM port held by the simulator before opening it for capture.
+# @brief Release the COM port held by the simulator around monitor capture.
 # @details POSTs to the simulator HTTP API to force-release the serial link.
 # All errors are suppressed so monitor proceeds even when the sim is not running.
 function Invoke-SimulatorComRelease {
@@ -75,6 +75,9 @@ try {
     [System.GC]::Collect()
     [System.GC]::WaitForPendingFinalizers()
     Start-Sleep -Milliseconds 200
+
+    Write-Host "Releasing COM port after monitor..."
+    Invoke-SimulatorComRelease
 }
 
 $buffer.ToString()
