@@ -63,8 +63,12 @@ typedef struct {
     lv_obj_t *sim_data_status_label;
     lv_obj_t *sim_data_chart;
     lv_chart_series_t *sim_data_series;
+    int32_t sim_data_chart_y_values[DATA_SIZE_FLOATS];
     lv_obj_t *sim_data_x_axis_labels[6];
     lv_obj_t *sim_data_y_axis_labels[5];
+    char sim_data_status_text[256];
+    char sim_data_x_axis_label_text[6][24];
+    char sim_data_y_axis_label_text[5][24];
     bool connection_info_show_scan_results;
     bool sim_data_toggle_syncing;
     lv_obj_t *content;
@@ -94,11 +98,18 @@ typedef struct {
     uint32_t sim_data_last_seq;
     bool sim_data_last_seq_valid;
     uint32_t sim_data_last_peer_event_count;
+    data_downlink_packet_t sim_data_work_packet;
     int64_t sim_data_last_packet_rx_us;
     uint32_t sim_data_packet_interval_us;
     uint32_t sim_data_sample_period_us;
     uint16_t sim_data_rx_fifo_packet_backlog_npackets;
     bool sim_data_timing_valid;
+    int32_t sim_data_last_y_axis_limit;
+    uint32_t sim_data_last_axis_packet_interval_us;
+    int64_t sim_data_last_axis_refresh_us;
+    int64_t sim_data_last_seq_gap_log_us;
+    int64_t sim_data_last_chart_refresh_us;
+    int64_t sim_data_last_status_refresh_us;
     bool reinit_requested;
     bool init_failure_confirm_requested;
 } ui_state_t;
@@ -135,8 +146,12 @@ static ui_state_t s_ui = {
     .sim_data_status_label = NULL,
     .sim_data_chart = NULL,
     .sim_data_series = NULL,
+    .sim_data_chart_y_values = {0},
     .sim_data_x_axis_labels = {NULL},
     .sim_data_y_axis_labels = {NULL},
+    .sim_data_status_text = {0},
+    .sim_data_x_axis_label_text = {{0}},
+    .sim_data_y_axis_label_text = {{0}},
     .connection_info_show_scan_results = false,
     .sim_data_toggle_syncing = false,
     .content = NULL,
@@ -166,11 +181,18 @@ static ui_state_t s_ui = {
     .sim_data_last_seq = 0,
     .sim_data_last_seq_valid = false,
     .sim_data_last_peer_event_count = 0,
+    .sim_data_work_packet = {0},
     .sim_data_last_packet_rx_us = 0,
     .sim_data_packet_interval_us = 0,
     .sim_data_sample_period_us = 0,
     .sim_data_rx_fifo_packet_backlog_npackets = 0U,
     .sim_data_timing_valid = false,
+    .sim_data_last_y_axis_limit = 0,
+    .sim_data_last_axis_packet_interval_us = 0U,
+    .sim_data_last_axis_refresh_us = 0,
+    .sim_data_last_seq_gap_log_us = 0,
+    .sim_data_last_chart_refresh_us = 0,
+    .sim_data_last_status_refresh_us = 0,
     .reinit_requested = false,
     .init_failure_confirm_requested = false,
 };
@@ -192,11 +214,16 @@ static ui_state_t s_ui = {
 #define UI_CLOCK_BAR_HEIGHT    (56)
 #define UI_SYSTEM_CONSTANTS_TEXT_MAX (4096)
 #define UI_SIM_DATA_POLL_PERIOD_MS (20)
+#define UI_SIM_DATA_CHART_REFRESH_PERIOD_MS (100U)
+#define UI_SIM_DATA_STATUS_REFRESH_PERIOD_MS (250U)
+#define UI_SIM_DATA_MAX_DRAIN_PER_TICK (8U)
 #define UI_SIM_DATA_CHART_SCALE_FACTOR (100.0f)
 #define UI_SIM_DATA_DEFAULT_PACKET_INTERVAL_US (100000U)
 #define UI_SIM_DATA_STREAM_IDLE_TIMEOUT_US (1500000U)
 #define UI_SIM_DATA_X_LABEL_COUNT (6U)
 #define UI_SIM_DATA_Y_LABEL_COUNT (5U)
+#define UI_SIM_DATA_AXIS_REFRESH_PERIOD_US (500000LL)
+#define UI_SIM_DATA_GAP_LOG_PERIOD_US (1000000LL)
 
 static const system_constants_data_t *ui_get_constants(void);
 static const system_constants_profile_t *ui_get_profile_constants(int profile_index);
@@ -212,6 +239,7 @@ static void ui_clear_sim_data_fifo(void);
 static void ui_clear_sim_data_plot(void);
 static void ui_reset_sim_data_stream_state(void);
 static void ui_update_sim_data_axis_labels(uint32_t packet_interval_us, int32_t y_axis_limit);
+static bool ui_sim_data_refresh_due(int64_t now_us, int64_t last_refresh_us, uint32_t period_ms);
 static void ui_process_sim_data_fifo(void);
 static void ui_plot_sim_data_packet(const data_downlink_packet_t *packet, uint32_t packet_interval_us);
 static void ui_close_sim_data_overlay(void);
@@ -952,8 +980,7 @@ static void ui_close_sim_data_overlay(void)
  */
 static void ui_clear_sim_data_fifo(void)
 {
-    data_downlink_packet_t discarded_packet = {0};
-    while (data_downlink_pop(&discarded_packet) == DATA_FIFO_OK) {
+    while (data_downlink_pop(&s_ui.sim_data_work_packet) == DATA_FIFO_OK) {
         /* drain FIFO */
     }
 }
@@ -970,7 +997,9 @@ static void ui_clear_sim_data_plot(void)
         return;
     }
 
-    lv_chart_set_all_values(s_ui.sim_data_chart, s_ui.sim_data_series, LV_CHART_POINT_NONE);
+    for (uint32_t index = 0; index < DATA_SIZE_FLOATS; index++) {
+        s_ui.sim_data_chart_y_values[index] = LV_CHART_POINT_NONE;
+    }
     lv_chart_refresh(s_ui.sim_data_chart);
 }
 
@@ -993,6 +1022,12 @@ static void ui_reset_sim_data_stream_state(void)
     s_ui.sim_data_sample_period_us = 0;
     s_ui.sim_data_rx_fifo_packet_backlog_npackets = 0U;
     s_ui.sim_data_timing_valid = false;
+    s_ui.sim_data_last_y_axis_limit = 0;
+    s_ui.sim_data_last_axis_packet_interval_us = 0U;
+    s_ui.sim_data_last_axis_refresh_us = 0;
+    s_ui.sim_data_last_seq_gap_log_us = 0;
+    s_ui.sim_data_last_chart_refresh_us = 0;
+    s_ui.sim_data_last_status_refresh_us = 0;
     ui_update_sim_data_axis_labels(UI_SIM_DATA_DEFAULT_PACKET_INTERVAL_US, 200);
 }
 
@@ -1031,8 +1066,9 @@ static void ui_update_sim_data_status_label(void)
         snprintf(sample_dt_value, sizeof(sample_dt_value), "%" PRIu32, s_ui.sim_data_sample_period_us);
     }
 
-    lv_label_set_text_fmt(
-        s_ui.sim_data_status_label,
+    snprintf(
+        s_ui.sim_data_status_text,
+        sizeof(s_ui.sim_data_status_text),
         "Stream: %s"
         "\nPackets: %s"
         "\nLast Seq: %s"
@@ -1045,6 +1081,8 @@ static void ui_update_sim_data_status_label(void)
         packet_dt_value,
         sample_dt_value,
         s_ui.sim_data_rx_fifo_packet_backlog_npackets);
+    lv_label_set_text_static(s_ui.sim_data_status_label, s_ui.sim_data_status_text);
+    s_ui.sim_data_last_status_refresh_us = esp_timer_get_time();
 }
 
 /**
@@ -1212,7 +1250,12 @@ static void ui_update_sim_data_axis_labels(uint32_t packet_interval_us, int32_t 
             continue;
         }
 
-        lv_label_set_text_fmt(label, "%" PRIu32 ".%" PRIu32 "ms", value_ms_x10 / 10U, value_ms_x10 % 10U);
+        snprintf(s_ui.sim_data_x_axis_label_text[index],
+                 sizeof(s_ui.sim_data_x_axis_label_text[index]),
+                 "%" PRIu32 ".%" PRIu32 "ms",
+                 value_ms_x10 / 10U,
+                 value_ms_x10 % 10U);
+        lv_label_set_text_static(label, s_ui.sim_data_x_axis_label_text[index]);
         lv_obj_update_layout(label);
         pos_x -= lv_obj_get_width(label) / 2;
         lv_obj_set_pos(label, pos_x, chart_y + chart_h - 18);
@@ -1229,7 +1272,12 @@ static void ui_update_sim_data_axis_labels(uint32_t packet_interval_us, int32_t 
             continue;
         }
 
-        lv_label_set_text_fmt(label, "%ld.%02d", (long)(value_x100 / 100), abs((int)(value_x100 % 100)));
+        snprintf(s_ui.sim_data_y_axis_label_text[index],
+                 sizeof(s_ui.sim_data_y_axis_label_text[index]),
+                 "%ld.%02d",
+                 (long)(value_x100 / 100),
+                 abs((int)(value_x100 % 100)));
+        lv_label_set_text_static(label, s_ui.sim_data_y_axis_label_text[index]);
         lv_obj_update_layout(label);
         pos_y -= lv_obj_get_height(label) / 2;
         lv_obj_set_pos(label, chart_x + 4, pos_y);
@@ -1237,16 +1285,39 @@ static void ui_update_sim_data_axis_labels(uint32_t packet_interval_us, int32_t 
 }
 
 /**
- * @brief Render one simulator packet onto the 100-point line chart.
+ * @brief Check whether a periodic UI refresh deadline has elapsed.
  *
- * @details Each incoming packet carries 100 float samples. The chart is updated
- * with the latest packet and auto-ranges vertically around the current signal.
+ * @param[in] now_us Current monotonic timestamp in microseconds.
+ * @param[in] last_refresh_us Previous refresh timestamp in microseconds.
+ * @param[in] period_ms Target refresh period in milliseconds.
+ *
+ * @return `true` when refresh should run now.
+ */
+static bool ui_sim_data_refresh_due(int64_t now_us, int64_t last_refresh_us, uint32_t period_ms)
+{
+    int64_t period_us = (int64_t)period_ms * 1000LL;
+
+    if (last_refresh_us <= 0 || now_us <= last_refresh_us) {
+        return true;
+    }
+
+    return (now_us - last_refresh_us) >= period_us;
+}
+
+/**
+ * @brief Render one simulator packet onto the fixed-size line chart.
+ *
+ * @details Each incoming packet carries DATA_SIZE_FLOATS samples. The chart is
+ * updated with the latest packet and auto-ranges vertically around the current
+ * signal.
  *
  * @param[in] packet Received simulator downlink packet.
  */
 static void ui_plot_sim_data_packet(const data_downlink_packet_t *packet, uint32_t packet_interval_us)
 {
     int32_t max_abs = 0;
+    int64_t now_us = 0;
+    bool refresh_axes = false;
 
     if (packet == NULL || s_ui.sim_data_chart == NULL || s_ui.sim_data_series == NULL) {
         return;
@@ -1254,11 +1325,7 @@ static void ui_plot_sim_data_packet(const data_downlink_packet_t *packet, uint32
 
     for (uint32_t index = 0; index < DATA_SIZE_FLOATS; index++) {
         int32_t scaled_value = (int32_t)lroundf(packet->f[index] * UI_SIM_DATA_CHART_SCALE_FACTOR);
-        lv_chart_set_series_value_by_id(
-            s_ui.sim_data_chart,
-            s_ui.sim_data_series,
-            index,
-            scaled_value);
+        s_ui.sim_data_chart_y_values[index] = scaled_value;
         int32_t abs_value = (scaled_value >= 0) ? scaled_value : -scaled_value;
         if (abs_value > max_abs) {
             max_abs = abs_value;
@@ -1279,15 +1346,35 @@ static void ui_plot_sim_data_packet(const data_downlink_packet_t *packet, uint32
         x_axis_max_ms = 1;
     }
 
-    lv_chart_set_range(s_ui.sim_data_chart,
-                       LV_CHART_AXIS_PRIMARY_X,
-                       0,
-                       x_axis_max_ms);
-    lv_chart_set_range(s_ui.sim_data_chart,
-                       LV_CHART_AXIS_PRIMARY_Y,
-                       (lv_coord_t)(-y_axis_limit),
-                       (lv_coord_t)(y_axis_limit));
-    ui_update_sim_data_axis_labels(x_interval_us, y_axis_limit);
+    now_us = esp_timer_get_time();
+    if (s_ui.sim_data_last_axis_refresh_us <= 0) {
+        refresh_axes = true;
+    } else if ((now_us - s_ui.sim_data_last_axis_refresh_us) >= UI_SIM_DATA_AXIS_REFRESH_PERIOD_US) {
+        refresh_axes = true;
+    } else if (s_ui.sim_data_last_axis_packet_interval_us == 0U) {
+        refresh_axes = true;
+    } else if (x_interval_us > (s_ui.sim_data_last_axis_packet_interval_us + 2000U) ||
+               x_interval_us + 2000U < s_ui.sim_data_last_axis_packet_interval_us) {
+        refresh_axes = true;
+    } else if (abs(y_axis_limit - s_ui.sim_data_last_y_axis_limit) >= 40) {
+        refresh_axes = true;
+    }
+
+    if (refresh_axes) {
+        lv_chart_set_range(s_ui.sim_data_chart,
+                           LV_CHART_AXIS_PRIMARY_X,
+                           0,
+                           x_axis_max_ms);
+        lv_chart_set_range(s_ui.sim_data_chart,
+                           LV_CHART_AXIS_PRIMARY_Y,
+                           (lv_coord_t)(-y_axis_limit),
+                           (lv_coord_t)(y_axis_limit));
+        ui_update_sim_data_axis_labels(x_interval_us, y_axis_limit);
+        s_ui.sim_data_last_axis_packet_interval_us = x_interval_us;
+        s_ui.sim_data_last_y_axis_limit = y_axis_limit;
+        s_ui.sim_data_last_axis_refresh_us = now_us;
+    }
+
     lv_chart_refresh(s_ui.sim_data_chart);
 }
 
@@ -1295,31 +1382,64 @@ static void ui_plot_sim_data_packet(const data_downlink_packet_t *packet, uint32
  * @brief Drain received simulator downlink packets from the shared FIFO.
  *
  * @details The communication task pushes binary downlink packets into the FIFO.
- * This UI helper consumes one packet per poll tick so the graph redraw path
- * reflects packet order deterministically instead of collapsing bursts.
+ * This UI helper drains as many packets as possible per poll tick, while chart
+ * rendering remains rate-limited to a lower cadence to avoid UI bottlenecks.
  */
 static void ui_process_sim_data_fifo(void)
 {
-    data_downlink_packet_t packet = {0};
+    data_downlink_packet_t *packet = &s_ui.sim_data_work_packet;
     int64_t now_us = 0;
     uint32_t packet_interval_us = 0U;
+    uint32_t drained_packets = 0U;
+    bool have_packet = false;
+    uint32_t sequence_gap_count = 0U;
+    uint32_t first_gap_expected = 0U;
+    uint32_t first_gap_actual = 0U;
+    bool first_gap_valid = false;
 
     if (!s_ui.sim_data_enabled) {
         ui_clear_sim_data_fifo();
-        if (s_ui.sim_data_overlay != NULL) {
-            ui_update_sim_data_status_label();
-        }
         return;
     }
 
-    if (data_downlink_pop(&packet) != DATA_FIFO_OK) {
-        if (s_ui.sim_data_overlay != NULL) {
-            ui_update_sim_data_status_label();
+    while (drained_packets < UI_SIM_DATA_MAX_DRAIN_PER_TICK &&
+           data_downlink_pop(packet) == DATA_FIFO_OK) {
+        drained_packets++;
+        have_packet = true;
+
+        if (s_ui.sim_data_last_seq_valid) {
+            uint32_t expected_seq = s_ui.sim_data_last_seq + 1U;
+            if (packet->seq != expected_seq) {
+                sequence_gap_count++;
+                if (!first_gap_valid) {
+                    first_gap_expected = expected_seq;
+                    first_gap_actual = packet->seq;
+                    first_gap_valid = true;
+                }
+            }
         }
+
+        s_ui.sim_data_last_seq = packet->seq;
+        s_ui.sim_data_last_seq_valid = true;
+        s_ui.sim_data_packets_received++;
+    }
+
+    if (!have_packet) {
         return;
     }
 
     now_us = esp_timer_get_time();
+    if (sequence_gap_count > 0U &&
+        (s_ui.sim_data_last_seq_gap_log_us <= 0 ||
+         (now_us - s_ui.sim_data_last_seq_gap_log_us) >= UI_SIM_DATA_GAP_LOG_PERIOD_US)) {
+        ESP_LOGW(TAG,
+                 "Simulate Data sequence gaps: count=%" PRIu32 ", first expected=%" PRIu32 ", got=%" PRIu32,
+                 sequence_gap_count,
+                 first_gap_expected,
+                 first_gap_actual);
+        s_ui.sim_data_last_seq_gap_log_us = now_us;
+    }
+
     packet_interval_us = s_ui.sim_data_packet_interval_us;
     if (s_ui.sim_data_last_packet_rx_us > 0 && now_us > s_ui.sim_data_last_packet_rx_us) {
         packet_interval_us = (uint32_t)(now_us - s_ui.sim_data_last_packet_rx_us);
@@ -1332,24 +1452,13 @@ static void ui_process_sim_data_fifo(void)
     s_ui.sim_data_packet_interval_us = packet_interval_us;
     s_ui.sim_data_sample_period_us = packet_interval_us / DATA_SIZE_FLOATS;
 
-    if (s_ui.sim_data_last_seq_valid) {
-        uint32_t expected_seq = s_ui.sim_data_last_seq + 1U;
-        if (packet.seq != expected_seq) {
-            ESP_LOGW(TAG,
-                     "Simulate Data packet sequence gap: expected=%" PRIu32 ", got=%" PRIu32,
-                     expected_seq,
-                     packet.seq);
-        }
+    if (s_ui.sim_data_overlay != NULL &&
+        ui_sim_data_refresh_due(now_us,
+                                s_ui.sim_data_last_chart_refresh_us,
+                                UI_SIM_DATA_CHART_REFRESH_PERIOD_MS)) {
+        ui_plot_sim_data_packet(packet, packet_interval_us);
+        s_ui.sim_data_last_chart_refresh_us = now_us;
     }
-
-    s_ui.sim_data_last_seq = packet.seq;
-    s_ui.sim_data_last_seq_valid = true;
-    s_ui.sim_data_packets_received++;
-
-    if (s_ui.sim_data_overlay != NULL) {
-        ui_plot_sim_data_packet(&packet, packet_interval_us);
-    }
-    ui_update_sim_data_status_label();
 }
 
 /**
@@ -1392,17 +1501,28 @@ static void ui_sync_sim_data_toggle_from_stream_activity(void)
 /**
  * @brief Poll the simulator downlink FIFO for graph updates.
  *
- * @details Runs at 100 ms cadence so the Simulate Data chart remains responsive
- * while keeping UI processing independent from socket-thread timing.
+ * @details Runs at the configured UI poll cadence
+ * (`UI_SIM_DATA_POLL_PERIOD_MS`) so FIFO draining remains responsive, while
+ * chart and status redraw work is throttled to their own cadences.
  *
  * @param[in] timer LVGL timer payload.
  */
 static void ui_sim_data_poll_timer_cb(lv_timer_t *timer)
 {
+    int64_t now_us = 0;
+
     (void)timer;
     ui_sync_sim_data_toggle_from_peer_event();
     ui_process_sim_data_fifo();
     ui_sync_sim_data_toggle_from_stream_activity();
+    if (s_ui.sim_data_overlay != NULL) {
+        now_us = esp_timer_get_time();
+        if (ui_sim_data_refresh_due(now_us,
+                                    s_ui.sim_data_last_status_refresh_us,
+                                    UI_SIM_DATA_STATUS_REFRESH_PERIOD_MS)) {
+            ui_update_sim_data_status_label();
+        }
+    }
 }
 
 /**
@@ -2237,7 +2357,8 @@ static void ui_sim_data_toggle_event_cb(lv_event_t *e)
  * @brief Open the Simulate Data service screen from Settings.
  *
  * @details Builds a dedicated overlay with a top simulation toggle and a live
- * graph that plots all 100 float samples from each simulator downlink packet.
+ * graph that plots all DATA_SIZE_FLOATS samples from each simulator downlink
+ * packet.
  *
  * @param[in] e LVGL event payload.
  */
@@ -2305,19 +2426,32 @@ static void ui_settings_simulate_data_event_cb(lv_event_t *e)
                                                lv_color_hex(UI_COLOR_ACCENT),
                                                LV_CHART_AXIS_PRIMARY_Y);
     if (s_ui.sim_data_series != NULL) {
-        lv_chart_set_all_values(s_ui.sim_data_chart, s_ui.sim_data_series, 0);
+        for (uint32_t index = 0; index < DATA_SIZE_FLOATS; index++) {
+            s_ui.sim_data_chart_y_values[index] = 0;
+        }
+        lv_chart_set_series_ext_y_array(s_ui.sim_data_chart,
+                                        s_ui.sim_data_series,
+                                        s_ui.sim_data_chart_y_values);
     }
     for (uint32_t index = 0; index < UI_SIM_DATA_X_LABEL_COUNT; index++) {
         s_ui.sim_data_x_axis_labels[index] = lv_label_create(chart_card);
         lv_obj_set_style_text_font(s_ui.sim_data_x_axis_labels[index], &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(s_ui.sim_data_x_axis_labels[index], lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
-        lv_label_set_text(s_ui.sim_data_x_axis_labels[index], "0.0ms");
+        snprintf(s_ui.sim_data_x_axis_label_text[index],
+                 sizeof(s_ui.sim_data_x_axis_label_text[index]),
+                 "0.0ms");
+        lv_label_set_text_static(s_ui.sim_data_x_axis_labels[index],
+                                 s_ui.sim_data_x_axis_label_text[index]);
     }
     for (uint32_t index = 0; index < UI_SIM_DATA_Y_LABEL_COUNT; index++) {
         s_ui.sim_data_y_axis_labels[index] = lv_label_create(chart_card);
         lv_obj_set_style_text_font(s_ui.sim_data_y_axis_labels[index], &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(s_ui.sim_data_y_axis_labels[index], lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
-        lv_label_set_text(s_ui.sim_data_y_axis_labels[index], "0.00");
+        snprintf(s_ui.sim_data_y_axis_label_text[index],
+                 sizeof(s_ui.sim_data_y_axis_label_text[index]),
+                 "0.00");
+        lv_label_set_text_static(s_ui.sim_data_y_axis_labels[index],
+                                 s_ui.sim_data_y_axis_label_text[index]);
     }
     ui_update_sim_data_axis_labels(UI_SIM_DATA_DEFAULT_PACKET_INTERVAL_US, 200);
     lv_chart_refresh(s_ui.sim_data_chart);
@@ -2767,11 +2901,18 @@ void ui_screen_create(void)
     s_ui.sim_data_last_seq = 0;
     s_ui.sim_data_last_seq_valid = false;
     s_ui.sim_data_last_peer_event_count = 0;
+    memset(&s_ui.sim_data_work_packet, 0, sizeof(s_ui.sim_data_work_packet));
     s_ui.sim_data_last_packet_rx_us = 0;
     s_ui.sim_data_packet_interval_us = 0;
     s_ui.sim_data_sample_period_us = 0;
     s_ui.sim_data_rx_fifo_packet_backlog_npackets = 0U;
     s_ui.sim_data_timing_valid = false;
+    s_ui.sim_data_last_y_axis_limit = 0;
+    s_ui.sim_data_last_axis_packet_interval_us = 0U;
+    s_ui.sim_data_last_axis_refresh_us = 0;
+    s_ui.sim_data_last_seq_gap_log_us = 0;
+    s_ui.sim_data_last_chart_refresh_us = 0;
+    s_ui.sim_data_last_status_refresh_us = 0;
     s_ui.init_mode_selection = UI_INIT_MODE_NONE;
     s_ui.init_mode_countdown_seconds = UI_INIT_MODE_DEFAULT_COUNTDOWN_SEC;
     s_ui.init_failure_confirm_requested = false;

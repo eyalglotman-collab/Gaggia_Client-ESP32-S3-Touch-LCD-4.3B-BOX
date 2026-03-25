@@ -284,7 +284,10 @@ static bool espresso_run_client_initialization_sequence(const espresso_startup_o
 
     ui_set_init_status_and_yield("Preparing communication state machine...");
     esp_err_t comm_ret = communication_functions_init(startup_options->offline_mode_requested);
-    if (!espresso_handle_init_step_result(startup_options->offline_mode_requested,
+    /* Communication is required in both startup modes for the current product
+     * scope, so initialization failures must remain blocking even when the user
+     * selected Offline mode for other startup diagnostics. */
+    if (!espresso_handle_init_step_result(false,
                                           "Communication state machine",
                                           comm_ret)) {
         return false;

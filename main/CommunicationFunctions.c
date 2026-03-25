@@ -19,6 +19,7 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -27,7 +28,7 @@
 #include "peripherals_manager.h"
 
 #define COMMUNICATION_TASK_NAME              "comm_link"
-#define COMMUNICATION_TASK_STACK_BYTES       (16384)
+#define COMMUNICATION_TASK_STACK_WORDS       (16384U)
 #define COMMUNICATION_TASK_PRIORITY          (5)
 #define COMMUNICATION_STEP_PERIOD_MS         (20)
 #define COMMUNICATION_DEFAULT_WIFI_SSID      "EyalSimulatorAP"
@@ -47,6 +48,7 @@
 #define COMMUNICATION_KEEPALIVE_EMPTY_WINDOW_LIMIT (3)
 #define COMMUNICATION_KEEPALIVE_RESPONSE_ATTEMPT_LIMIT (1U)
 #define COMMUNICATION_DATA_INTERFACE_VERSION (1U)
+#define COMMUNICATION_API_LOCK_TIMEOUT_MS   (5U)
 #define COMMUNICATION_DATA_EVENT_SIMULATION_ON_TEXT  "DataSimulationOn"
 #define COMMUNICATION_DATA_EVENT_SIMULATION_OFF_TEXT "DataSimulationOFF"
 #define COMMUNICATION_FRAME_SOF0             (0xA5U)
@@ -56,8 +58,9 @@
 /* Must be >= sizeof(data_downlink_packet_t) and sizeof(data_uplink_packet_t).
  * Downlink: 1+4+(DATA_SIZE_FLOATS*4)+(DATA_SIZE_INT*4)+DATA_SIZE_STRING = 535 B
  * Uplink:   1+4+4+(DATA_SIZE_FLOATS*4)+(DATA_SIZE_INT*4)+DATA_SIZE_STRING = 539 B */
-#define COMMUNICATION_FRAME_MAX_PAYLOAD      (600U)
-#define COMMUNICATION_RX_BUFFER_BYTES        (4096U)
+#define COMMUNICATION_FRAME_MAX_PAYLOAD      (2300U)
+#define COMMUNICATION_RX_BUFFER_BYTES        (16384U)
+#define COMMUNICATION_RX_BUFFER_MIN_BYTES    ((COMMUNICATION_FRAME_HEADER_BYTES + COMMUNICATION_FRAME_MAX_PAYLOAD + COMMUNICATION_FRAME_CRC_BYTES) * 2U)
 
 typedef enum {
     COMMUNICATION_MESSAGE_RESET = 1,
@@ -71,6 +74,27 @@ typedef enum {
 } communication_message_type_t;
 
 static const char *TAG = "CommunicationFunctions";
+
+/**
+ * @brief Emit heap availability at critical initialization checkpoints.
+ *
+ * @details Helps pinpoint `ESP_ERR_NO_MEM` causes by showing free and largest
+ * allocatable blocks in both internal RAM and SPIRAM.
+ */
+static void communication_log_heap_checkpoint(const char *step)
+{
+    size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    ESP_LOGI(TAG,
+             "Heap checkpoint (%s): internal_free=%u internal_largest=%u psram_free=%u psram_largest=%u",
+             (step != NULL) ? step : "n/a",
+             (unsigned)internal_free,
+             (unsigned)internal_largest,
+             (unsigned)psram_free,
+             (unsigned)psram_largest);
+}
 
 typedef struct {
     SemaphoreHandle_t mutex;
@@ -120,7 +144,11 @@ typedef struct {
     int32_t ka_response_time_max_ms;
     int32_t ka_response_time_min_ms;
     size_t rx_buffer_len;
-    uint8_t rx_buffer[COMMUNICATION_RX_BUFFER_BYTES];
+    size_t rx_buffer_capacity;
+    uint8_t *rx_buffer;
+    /* Shared scratch buffers keep large frame/payload arrays off task stack. */
+    uint8_t frame_encode_buffer[COMMUNICATION_FRAME_HEADER_BYTES + COMMUNICATION_FRAME_MAX_PAYLOAD + COMMUNICATION_FRAME_CRC_BYTES];
+    char scratch_payload[COMMUNICATION_FRAME_MAX_PAYLOAD + 1U];
     char pending_data_command[COMMUNICATION_FRAME_MAX_PAYLOAD + 1U];
 } communication_context_t;
 
@@ -172,7 +200,10 @@ static communication_context_t s_comm = {
     .ka_response_time_max_ms = 0,
     .ka_response_time_min_ms = 0,
     .rx_buffer_len = 0,
-    .rx_buffer = {0},
+    .rx_buffer_capacity = 0,
+    .rx_buffer = NULL,
+    .frame_encode_buffer = {0},
+    .scratch_payload = {0},
     .pending_data_command = {0},
 };
 
@@ -199,6 +230,8 @@ static void communication_build_keepalive_response_payload_locked(char *buffer,
                                                                   size_t buffer_len,
                                                                   bool include_metadata,
                                                                   uint32_t request_id);
+static void communication_free_rx_buffer_locked(void);
+static esp_err_t communication_alloc_rx_buffer_locked(void);
 
 /**
  * @brief Format a precise TCP server availability error.
@@ -266,6 +299,73 @@ static uint16_t communication_crc16_ccitt(const uint8_t *data, size_t length)
 }
 
 /**
+ * @brief Release the dynamic RX frame assembly buffer.
+ */
+static void communication_free_rx_buffer_locked(void)
+{
+    if (s_comm.rx_buffer != NULL) {
+        heap_caps_free(s_comm.rx_buffer);
+        s_comm.rx_buffer = NULL;
+    }
+    s_comm.rx_buffer_capacity = 0U;
+    s_comm.rx_buffer_len = 0U;
+}
+
+/**
+ * @brief Allocate RX frame assembly storage with SPIRAM preference.
+ *
+ * @return
+ *      - ESP_OK on success
+ *      - ESP_ERR_NO_MEM on allocation failure
+ */
+static esp_err_t communication_alloc_rx_buffer_locked(void)
+{
+    size_t target_capacity = COMMUNICATION_RX_BUFFER_BYTES;
+
+    if (s_comm.rx_buffer != NULL) {
+        return ESP_OK;
+    }
+
+    while (target_capacity >= COMMUNICATION_RX_BUFFER_MIN_BYTES) {
+        s_comm.rx_buffer = (uint8_t *)heap_caps_malloc(target_capacity,
+                                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_comm.rx_buffer == NULL) {
+            s_comm.rx_buffer = (uint8_t *)heap_caps_malloc(target_capacity,
+                                                            MALLOC_CAP_8BIT);
+        }
+        if (s_comm.rx_buffer != NULL) {
+            break;
+        }
+
+        if (target_capacity == COMMUNICATION_RX_BUFFER_MIN_BYTES) {
+            break;
+        }
+        target_capacity /= 2U;
+        if (target_capacity < COMMUNICATION_RX_BUFFER_MIN_BYTES) {
+            target_capacity = COMMUNICATION_RX_BUFFER_MIN_BYTES;
+        }
+    }
+
+    if (s_comm.rx_buffer == NULL) {
+        s_comm.rx_buffer_capacity = 0U;
+        s_comm.rx_buffer_len = 0U;
+        ESP_LOGE(TAG,
+                 "RX buffer allocation failed (requested=%u min=%u)",
+                 (unsigned)COMMUNICATION_RX_BUFFER_BYTES,
+                 (unsigned)COMMUNICATION_RX_BUFFER_MIN_BYTES);
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_comm.rx_buffer_capacity = target_capacity;
+    s_comm.rx_buffer_len = 0U;
+    memset(s_comm.rx_buffer, 0, s_comm.rx_buffer_capacity);
+    ESP_LOGI(TAG,
+             "RX buffer allocated: capacity=%u bytes",
+             (unsigned)s_comm.rx_buffer_capacity);
+    return ESP_OK;
+}
+
+/**
  * @brief Reset framed-link bookkeeping while keeping configured defaults.
  *
  * @details Clears transient RX buffering and staged progression flags so the
@@ -296,7 +396,9 @@ static void communication_clear_transport_flow_locked(void)
     s_comm.connect_requested_us = 0;
     s_comm.last_valid_rx_us = 0;
     s_comm.last_keep_alive_us = 0;
-    s_comm.rx_buffer_len = 0;
+    if (s_comm.rx_buffer != NULL) {
+        s_comm.rx_buffer_len = 0;
+    }
     s_comm.last_rx_sequence = 0;
     s_comm.last_rx_sequence_valid = false;
     s_comm.snapshot.reset_to_debug_elapsed_ms = 0;
@@ -317,7 +419,7 @@ static void communication_clear_transport_flow_locked(void)
  */
 static void communication_start_keepalive_window_locked(bool clear_transport_buffer)
 {
-    if (clear_transport_buffer) {
+    if (clear_transport_buffer && s_comm.rx_buffer != NULL) {
         s_comm.rx_buffer_len = 0;
     }
 
@@ -617,7 +719,7 @@ static esp_err_t communication_send_raw_frame_locked(communication_message_type_
                                                       const uint8_t *payload,
                                                       size_t payload_len)
 {
-    uint8_t frame[COMMUNICATION_FRAME_HEADER_BYTES + COMMUNICATION_FRAME_MAX_PAYLOAD + COMMUNICATION_FRAME_CRC_BYTES] = {0};
+    uint8_t *frame = s_comm.frame_encode_buffer;
     size_t frame_len = 0U;
 
     if (s_comm.socket_fd < 0 || !s_comm.snapshot.tcp_connected) {
@@ -638,7 +740,7 @@ static esp_err_t communication_send_raw_frame_locked(communication_message_type_
     frame[6] = (uint8_t)((s_comm.snapshot.server_live_integer >> 8) & 0xFFU);
     frame[7] = (uint8_t)((s_comm.snapshot.server_live_integer >> 16) & 0xFFU);
     frame[8] = (uint8_t)((s_comm.snapshot.server_live_integer >> 24) & 0xFFU);
-    frame[9]  = (uint8_t)(s_comm.snapshot.client_live_integer & 0xFFU);
+    frame[9] = (uint8_t)(s_comm.snapshot.client_live_integer & 0xFFU);
     frame[10] = (uint8_t)((s_comm.snapshot.client_live_integer >> 8) & 0xFFU);
     frame[11] = (uint8_t)((s_comm.snapshot.client_live_integer >> 16) & 0xFFU);
     frame[12] = (uint8_t)((s_comm.snapshot.client_live_integer >> 24) & 0xFFU);
@@ -679,9 +781,15 @@ static esp_err_t communication_send_frame_locked(communication_message_type_t me
  */
 static void communication_poll_received_frames_locked(void)
 {
-    uint8_t temp[128];
+    uint8_t temp[1024];
+    char *payload_text = s_comm.scratch_payload;
 
     if (s_comm.socket_fd < 0 || !s_comm.snapshot.tcp_connected) {
+        return;
+    }
+    if (s_comm.rx_buffer == NULL || s_comm.rx_buffer_capacity == 0U) {
+        communication_set_generic_failure_locked("RX parser", "RX buffer unavailable");
+        communication_schedule_bottom_layer_retry_locked("RX buffer unavailable", false);
         return;
     }
 
@@ -689,12 +797,12 @@ static void communication_poll_received_frames_locked(void)
         int bytes_read = recv(s_comm.socket_fd, temp, sizeof(temp), MSG_DONTWAIT);
         if (bytes_read > 0) {
             size_t copy_len = (size_t)bytes_read;
-            if ((s_comm.rx_buffer_len + copy_len) > sizeof(s_comm.rx_buffer)) {
+            if ((s_comm.rx_buffer_len + copy_len) > s_comm.rx_buffer_capacity) {
                 ESP_LOGW(TAG,
                          "RX buffer overflow (%u + %u > %u), clearing buffered frames",
                          (unsigned)s_comm.rx_buffer_len,
                          (unsigned)copy_len,
-                         (unsigned)sizeof(s_comm.rx_buffer));
+                         (unsigned)s_comm.rx_buffer_capacity);
                 s_comm.rx_buffer_len = 0U;
             }
             memcpy(&s_comm.rx_buffer[s_comm.rx_buffer_len], temp, copy_len);
@@ -775,7 +883,7 @@ static void communication_poll_received_frames_locked(void)
         s_comm.last_rx_sequence = received_sequence;
         s_comm.last_rx_sequence_valid = true;
 
-        char payload_text[COMMUNICATION_FRAME_MAX_PAYLOAD + 1U] = {0};
+        payload_text[0] = '\0';
         if (payload_len > 0U) {
             memcpy(payload_text, &s_comm.rx_buffer[COMMUNICATION_FRAME_HEADER_BYTES], payload_len);
             payload_text[payload_len] = '\0';
@@ -1266,7 +1374,10 @@ static esp_err_t communication_retry_wifi_connect_locked(void)
     ESP_LOGI(TAG, "Communication initialize retry step: esp_wifi_disconnect");
     ret = esp_wifi_disconnect();
     ESP_LOGI(TAG, "Communication initialize retry result: esp_wifi_disconnect -> %s", esp_err_to_name(ret));
-    if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_CONNECT && ret != ESP_ERR_WIFI_CONN) {
+    if (ret != ESP_OK &&
+        ret != ESP_ERR_WIFI_NOT_CONNECT &&
+        ret != ESP_ERR_WIFI_CONN &&
+        ret != ESP_ERR_WIFI_STATE) {
         communication_set_generic_failure_locked("Wi-Fi disconnect retry", esp_err_to_name(ret));
         return ret;
     }
@@ -1274,9 +1385,12 @@ static esp_err_t communication_retry_wifi_connect_locked(void)
     ESP_LOGI(TAG, "Communication initialize retry step: esp_wifi_connect");
     ret = esp_wifi_connect();
     ESP_LOGI(TAG, "Communication initialize retry result: esp_wifi_connect -> %s", esp_err_to_name(ret));
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_STATE) {
         communication_set_generic_failure_locked("Wi-Fi connect retry", esp_err_to_name(ret));
         return ret;
+    }
+    if (ret == ESP_ERR_WIFI_STATE) {
+        ESP_LOGI(TAG, "esp_wifi_connect retry skipped because station association is already in progress");
     }
 
     s_comm.wifi_connect_started = true;
@@ -1323,6 +1437,8 @@ static void communication_enter_state_locked(communication_state_t next_state)
     }
 
     if (next_state == COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE) {
+        /* Link is established; allow uplink payload draining immediately. */
+        s_comm.snapshot.send_data_enabled = true;
         communication_clear_connection_fault_locked();
         s_comm.keepalive_empty_window_count = 0;
         communication_start_keepalive_window_locked(false);
@@ -1330,6 +1446,11 @@ static void communication_enter_state_locked(communication_state_t next_state)
             s_comm.session_established = true;
             s_comm.session_established_us = s_comm.state_started_us;
         }
+    }
+
+    if (next_state == COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_CLIENT_SEND) {
+        /* Keepalive response phase is still link-active; keep TX enabled. */
+        s_comm.snapshot.send_data_enabled = true;
     }
 }
 
@@ -1385,10 +1506,11 @@ static esp_err_t communication_send_pending_keepalive_response_locked(void)
         s_comm.snapshot.client_live_integer++;
     }
 
-    char keepalive_payload[COMMUNICATION_FRAME_MAX_PAYLOAD + 1U] = {0};
+    char *keepalive_payload = s_comm.scratch_payload;
+    keepalive_payload[0] = '\0';
     communication_build_keepalive_response_payload_locked(
         keepalive_payload,
-        sizeof(keepalive_payload),
+        COMMUNICATION_FRAME_MAX_PAYLOAD + 1U,
         true,
         s_comm.last_keepalive_request_id);
 
@@ -1653,7 +1775,7 @@ static esp_err_t communication_begin_initialize_locked(void)
     ret = communication_validate_target_ap_visible_locked();
     ESP_LOGI(TAG, "Communication initialize step result: validate target AP visibility -> %s",
              esp_err_to_name(ret));
-    if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND) {
+    if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND && ret != ESP_ERR_WIFI_STATE) {
         if (ret != ESP_ERR_INVALID_STATE && ret != ESP_ERR_NO_MEM) {
             communication_set_generic_failure_locked("Initialize precheck", esp_err_to_name(ret));
         }
@@ -1663,6 +1785,9 @@ static esp_err_t communication_begin_initialize_locked(void)
         ESP_LOGW(TAG,
                  "Configured Wi-Fi AP '%s' not visible yet; continuing initialize retry window",
                  s_comm.snapshot.config.wifi_ssid);
+    } else if (ret == ESP_ERR_WIFI_STATE) {
+        ESP_LOGI(TAG,
+                 "Wi-Fi visibility precheck skipped because station is busy (connecting/scanning)");
     }
 
     wifi_config_t wifi_cfg = {0};
@@ -1695,9 +1820,12 @@ static esp_err_t communication_begin_initialize_locked(void)
     ESP_LOGI(TAG, "Communication initialize step: esp_wifi_connect");
     ret = esp_wifi_connect();
     ESP_LOGI(TAG, "Communication initialize step result: esp_wifi_connect -> %s", esp_err_to_name(ret));
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_STATE) {
         communication_set_generic_failure_locked("Wi-Fi connect", esp_err_to_name(ret));
         return ret;
+    }
+    if (ret == ESP_ERR_WIFI_STATE) {
+        ESP_LOGI(TAG, "esp_wifi_connect skipped because station association is already in progress");
     }
 
     s_comm.wifi_connect_started = true;
@@ -1774,8 +1902,10 @@ static esp_err_t communication_open_tcp_socket_locked(void)
     s_comm.snapshot.tcp_connected = true;
     ESP_LOGI(TAG, "Communication TCP step result: keepalive counters remain server-authoritative");
 
-    char initialize_payload[COMMUNICATION_FRAME_MAX_PAYLOAD + 1U] = {0};
-    communication_build_initialize_payload_locked(initialize_payload, sizeof(initialize_payload));
+    char *initialize_payload = s_comm.scratch_payload;
+    initialize_payload[0] = '\0';
+    communication_build_initialize_payload_locked(initialize_payload,
+                                                  COMMUNICATION_FRAME_MAX_PAYLOAD + 1U);
     ESP_LOGI(TAG, "Communication TCP step: send INITIALIZE frame");
     if (communication_send_frame_locked(COMMUNICATION_MESSAGE_INITIALIZE, initialize_payload) != ESP_OK) {
         communication_close_socket_locked();
@@ -1848,8 +1978,15 @@ static void communication_service_keep_alive_locked(void)
  */
 static void communication_begin_scan_locked(void)
 {
+    ESP_LOGI(TAG,
+             "Scan begin requested (state=%s, wifi_has_ip=%d, tcp_connected=%d)",
+             communication_functions_state_to_string(s_comm.snapshot.state),
+             (int)s_comm.snapshot.wifi_has_ip,
+             (int)s_comm.snapshot.tcp_connected);
+
     esp_err_t ret = communication_ensure_wifi_stack_ready_locked();
     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Scan unavailable: communication_ensure_wifi_stack_ready_locked -> %s", esp_err_to_name(ret));
         s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
         snprintf(s_comm.snapshot.scan_results,
                  sizeof(s_comm.snapshot.scan_results),
@@ -1872,8 +2009,12 @@ static void communication_begin_scan_locked(void)
              sizeof(s_comm.snapshot.scan_results),
              "Scanning for devices...\nPlease wait 10 seconds.");
 
+    ESP_LOGI(TAG,
+             "Scan start call: esp_wifi_scan_start(blocking=false, show_hidden=%d)",
+             (int)scan_cfg.show_hidden);
     ret = esp_wifi_scan_start(&scan_cfg, false);
     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Scan failed to start: esp_wifi_scan_start -> %s", esp_err_to_name(ret));
         s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
         snprintf(s_comm.snapshot.scan_results,
                  sizeof(s_comm.snapshot.scan_results),
@@ -1884,6 +2025,7 @@ static void communication_begin_scan_locked(void)
 
     s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_IN_PROGRESS;
     s_comm.scan_started_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "Scan in progress (window=%u ms)", (unsigned)COMMUNICATION_SCAN_WINDOW_MS);
 }
 
 /**
@@ -1898,10 +2040,12 @@ static void communication_complete_scan_locked(void)
     uint16_t total_ap_count = 0;
     esp_err_t ret = ESP_OK;
 
-    (void)esp_wifi_scan_stop();
+    esp_err_t stop_ret = esp_wifi_scan_stop();
+    ESP_LOGI(TAG, "Scan complete step: esp_wifi_scan_stop -> %s", esp_err_to_name(stop_ret));
 
     ret = esp_wifi_scan_get_ap_num(&total_ap_count);
     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Scan result read failed: esp_wifi_scan_get_ap_num -> %s", esp_err_to_name(ret));
         s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
         snprintf(s_comm.snapshot.scan_results,
                  sizeof(s_comm.snapshot.scan_results),
@@ -1909,9 +2053,11 @@ static void communication_complete_scan_locked(void)
                  esp_err_to_name(ret));
         return;
     }
+    ESP_LOGI(TAG, "Scan result count: total_ap_count=%u", (unsigned)total_ap_count);
 
     wifi_ap_record_t *ap_records = communication_alloc_ap_records(ap_count);
     if (ap_count > 0U && ap_records == NULL) {
+        ESP_LOGE(TAG, "Scan device allocation failed (requested=%u)", (unsigned)ap_count);
         s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
         snprintf(s_comm.snapshot.scan_results,
                  sizeof(s_comm.snapshot.scan_results),
@@ -1921,6 +2067,7 @@ static void communication_complete_scan_locked(void)
 
     ret = esp_wifi_scan_get_ap_records(&ap_count, ap_records);
     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Scan device list failed: esp_wifi_scan_get_ap_records -> %s", esp_err_to_name(ret));
         s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_ERROR;
         snprintf(s_comm.snapshot.scan_results,
                  sizeof(s_comm.snapshot.scan_results),
@@ -1933,8 +2080,14 @@ static void communication_complete_scan_locked(void)
     s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_COMPLETE;
     s_comm.snapshot.scan_duration_ms = COMMUNICATION_SCAN_WINDOW_MS;
     s_comm.snapshot.scan_device_count = total_ap_count;
+    ESP_LOGI(TAG,
+             "Scan complete: total_ap_count=%u returned_records=%u duration_ms=%u",
+             (unsigned)total_ap_count,
+             (unsigned)ap_count,
+             (unsigned)s_comm.snapshot.scan_duration_ms);
 
     if (total_ap_count == 0 || ap_count == 0) {
+        ESP_LOGW(TAG, "Scan complete with no discoverable AP records");
         snprintf(s_comm.snapshot.scan_results,
                  sizeof(s_comm.snapshot.scan_results),
                  "Scan complete in %u ms.\nNo devices were discovered.",
@@ -1951,6 +2104,12 @@ static void communication_complete_scan_locked(void)
         const char *ssid_text = ((const char *)ap_records[index].ssid)[0] != '\0'
                                     ? (const char *)ap_records[index].ssid
                                     : "<hidden>";
+        ESP_LOGI(TAG,
+                 "Scan AP[%u]: SSID='%s' RSSI=%d CH=%u",
+                 (unsigned)index,
+                 ssid_text,
+                 ap_records[index].rssi,
+                 (unsigned)ap_records[index].primary);
         int written = snprintf(&s_comm.snapshot.scan_results[offset],
                                sizeof(s_comm.snapshot.scan_results) - (size_t)offset,
                                "%u. %s | RSSI %d dBm | CH %u\n",
@@ -1977,6 +2136,10 @@ static void communication_complete_scan_locked(void)
 static void communication_service_scan_locked(void)
 {
     if (s_comm.snapshot.scan_requested) {
+        ESP_LOGI(TAG,
+                 "Scan request consumed (scan_state=%s, comm_state=%s)",
+                 communication_functions_scan_state_to_string(s_comm.snapshot.scan_state),
+                 communication_functions_state_to_string(s_comm.snapshot.state));
         s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_REQUESTED;
         communication_begin_scan_locked();
     }
@@ -1984,6 +2147,7 @@ static void communication_service_scan_locked(void)
     if (s_comm.snapshot.scan_state == COMMUNICATION_SCAN_STATE_IN_PROGRESS) {
         int64_t elapsed_ms = (esp_timer_get_time() - s_comm.scan_started_us) / 1000LL;
         if (elapsed_ms >= COMMUNICATION_SCAN_WINDOW_MS) {
+            ESP_LOGI(TAG, "Scan window elapsed (%u ms), collecting results", (unsigned)elapsed_ms);
             communication_complete_scan_locked();
         }
     }
@@ -2233,9 +2397,17 @@ static void communication_task_step(void)
 static void communication_task(void *arg)
 {
     (void)arg;
+    uint32_t stack_log_ticks = 0U;
 
     while (true) {
         communication_task_step();
+        stack_log_ticks++;
+        if ((stack_log_ticks % 250U) == 0U) {
+            UBaseType_t free_words = uxTaskGetStackHighWaterMark(NULL);
+            ESP_LOGI(TAG,
+                     "comm_link stack watermark: free=%u bytes",
+                     (unsigned)(free_words * sizeof(StackType_t)));
+        }
         vTaskDelay(pdMS_TO_TICKS(COMMUNICATION_STEP_PERIOD_MS));
     }
 }
@@ -2257,6 +2429,7 @@ static void communication_task(void *arg)
 esp_err_t communication_functions_init(bool offline)
 {
     ESP_LOGI(TAG, "Communication module init begin (offline=%d)", offline);
+    communication_log_heap_checkpoint("init_begin");
     if (offline) {
         ESP_LOGI(TAG, "Communication init running in offline mode; caller downgrades failures to warnings");
     }
@@ -2267,6 +2440,7 @@ esp_err_t communication_functions_init(bool offline)
     }
 
     ESP_LOGI(TAG, "Communication module init step: xSemaphoreCreateMutex");
+    communication_log_heap_checkpoint("before_mutex");
     s_comm.mutex = xSemaphoreCreateMutex();
     ESP_LOGI(TAG, "Communication module init step result: xSemaphoreCreateMutex -> %s",
              (s_comm.mutex != NULL) ? "OK" : "NULL");
@@ -2275,6 +2449,7 @@ esp_err_t communication_functions_init(bool offline)
     }
 
     ESP_LOGI(TAG, "Communication module init step: xSemaphoreCreateMutex(snapshot)");
+    communication_log_heap_checkpoint("before_snapshot_mutex");
     s_comm.snapshot_mutex = xSemaphoreCreateMutex();
     ESP_LOGI(TAG, "Communication module init step result: xSemaphoreCreateMutex(snapshot) -> %s",
              (s_comm.snapshot_mutex != NULL) ? "OK" : "NULL");
@@ -2295,8 +2470,26 @@ esp_err_t communication_functions_init(bool offline)
     }
     ESP_LOGI(TAG, "Communication module init step result: xSemaphoreTake(mutex) -> OK");
 
+    ESP_LOGI(TAG, "Communication module init step: communication_alloc_rx_buffer_locked");
+    communication_log_heap_checkpoint("before_rx_buffer_alloc");
+    esp_err_t rx_buffer_ret = communication_alloc_rx_buffer_locked();
+    ESP_LOGI(TAG, "Communication module init step result: communication_alloc_rx_buffer_locked -> %s",
+             esp_err_to_name(rx_buffer_ret));
+    if (rx_buffer_ret != ESP_OK) {
+        xSemaphoreGive(s_comm.mutex);
+        vSemaphoreDelete(s_comm.mutex);
+        vSemaphoreDelete(s_comm.snapshot_mutex);
+        s_comm.mutex = NULL;
+        s_comm.snapshot_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
     ESP_LOGI(TAG, "Communication module init step: data_payload_init");
-    if (data_payload_init() != ESP_OK) {
+    communication_log_heap_checkpoint("before_data_payload_init");
+    esp_err_t data_payload_ret = data_payload_init();
+    if (data_payload_ret != ESP_OK) {
+        ESP_LOGE(TAG, "data_payload_init failed: %s", esp_err_to_name(data_payload_ret));
+        communication_free_rx_buffer_locked();
         xSemaphoreGive(s_comm.mutex);
         vSemaphoreDelete(s_comm.mutex);
         vSemaphoreDelete(s_comm.snapshot_mutex);
@@ -2316,15 +2509,22 @@ esp_err_t communication_functions_init(bool offline)
     ESP_LOGI(TAG, "Communication module init step result: xSemaphoreGive(mutex) -> OK");
 
     ESP_LOGI(TAG, "Communication module init step: xTaskCreate(communication_task)");
+    communication_log_heap_checkpoint("before_task_create");
     BaseType_t task_ret = xTaskCreate(communication_task,
                                       COMMUNICATION_TASK_NAME,
-                                      COMMUNICATION_TASK_STACK_BYTES,
+                                      COMMUNICATION_TASK_STACK_WORDS,
                                       NULL,
                                       COMMUNICATION_TASK_PRIORITY,
                                       &s_comm.task_handle);
     ESP_LOGI(TAG, "Communication module init step result: xTaskCreate -> %s",
              (task_ret == pdPASS) ? "pdPASS" : "FAILED");
     if (task_ret != pdPASS) {
+        if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) == pdTRUE) {
+            communication_free_rx_buffer_locked();
+            xSemaphoreGive(s_comm.mutex);
+        } else {
+            communication_free_rx_buffer_locked();
+        }
         vSemaphoreDelete(s_comm.mutex);
         vSemaphoreDelete(s_comm.snapshot_mutex);
         s_comm.mutex = NULL;
@@ -2349,11 +2549,15 @@ void communication_functions_request_reset(void)
         return;
     }
 
-    if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(s_comm.mutex, pdMS_TO_TICKS(COMMUNICATION_API_LOCK_TIMEOUT_MS)) == pdTRUE) {
         s_comm.reset_requested = true;
         s_comm.snapshot.reset_requested = true;
         communication_publish_snapshot_locked();
         xSemaphoreGive(s_comm.mutex);
+    } else {
+        /* Do not block UI threads indefinitely while comm task is in Wi-Fi APIs. */
+        s_comm.reset_requested = true;
+        ESP_LOGW(TAG, "Reset request queued while communication mutex was busy");
     }
 }
 
@@ -2363,10 +2567,13 @@ void communication_functions_request_disconnect(void)
         return;
     }
 
-    if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(s_comm.mutex, pdMS_TO_TICKS(COMMUNICATION_API_LOCK_TIMEOUT_MS)) == pdTRUE) {
         s_comm.disconnect_requested = true;
         communication_publish_snapshot_locked();
         xSemaphoreGive(s_comm.mutex);
+    } else {
+        s_comm.disconnect_requested = true;
+        ESP_LOGW(TAG, "Disconnect request queued while communication mutex was busy");
     }
 }
 
@@ -2379,10 +2586,16 @@ void communication_functions_request_disconnect(void)
 void communication_functions_request_scan(void)
 {
     if (!s_comm.initialized || s_comm.mutex == NULL) {
+        ESP_LOGW(TAG, "Scan request ignored because communication module is not initialized");
         return;
     }
 
-    if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(s_comm.mutex, pdMS_TO_TICKS(COMMUNICATION_API_LOCK_TIMEOUT_MS)) == pdTRUE) {
+        ESP_LOGI(TAG,
+                 "Scan requested from UI (scan_state=%s, comm_state=%s, wifi_has_ip=%d)",
+                 communication_functions_scan_state_to_string(s_comm.snapshot.scan_state),
+                 communication_functions_state_to_string(s_comm.snapshot.state),
+                 (int)s_comm.snapshot.wifi_has_ip);
         s_comm.snapshot.scan_requested = true;
         s_comm.snapshot.scan_state = COMMUNICATION_SCAN_STATE_REQUESTED;
         s_comm.snapshot.scan_duration_ms = 0;
@@ -2390,6 +2603,8 @@ void communication_functions_request_scan(void)
         s_comm.snapshot.scan_results[0] = '\0';
         communication_publish_snapshot_locked();
         xSemaphoreGive(s_comm.mutex);
+    } else {
+        ESP_LOGW(TAG, "Scan request deferred because communication mutex was busy");
     }
 }
 
@@ -2408,10 +2623,12 @@ void communication_functions_set_auto_reconnect_enabled(bool enabled)
         return;
     }
 
-    if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(s_comm.mutex, pdMS_TO_TICKS(COMMUNICATION_API_LOCK_TIMEOUT_MS)) == pdTRUE) {
         s_comm.snapshot.auto_reconnect_enabled = enabled;
         communication_publish_snapshot_locked();
         xSemaphoreGive(s_comm.mutex);
+    } else {
+        ESP_LOGW(TAG, "Auto Reconnect update skipped because communication mutex was busy");
     }
 }
 
@@ -2444,8 +2661,9 @@ esp_err_t communication_functions_request_data_event(communication_data_event_t 
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (xSemaphoreTake(s_comm.mutex, portMAX_DELAY) != pdTRUE) {
-        return ESP_FAIL;
+    if (xSemaphoreTake(s_comm.mutex, pdMS_TO_TICKS(COMMUNICATION_API_LOCK_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGW(TAG, "Data event queue skipped because communication mutex was busy");
+        return ESP_ERR_TIMEOUT;
     }
 
     esp_err_t ret = communication_queue_data_command_locked(event_payload);
