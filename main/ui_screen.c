@@ -23,10 +23,14 @@
 
 static const char *TAG = "ui_screen";
 
+#define UI_PLOT_POINT_COUNT      (1000U)
+#define UI_PLOT_X_LABEL_COUNT    (21U)
+#define UI_PLOT_Y_LABEL_COUNT    (10U)
+
 typedef enum {
-    UI_PAGE_HOME = 0,
-    UI_PAGE_BREW,
+    UI_PAGE_BREW = 0,
     UI_PAGE_PROFILES,
+    UI_PAGE_PLOT,
     UI_PAGE_SETTINGS,
     UI_PAGE_COUNT
 } ui_page_t;
@@ -71,6 +75,20 @@ typedef struct {
     char sim_data_y_axis_label_text[5][24];
     bool connection_info_show_scan_results;
     bool sim_data_toggle_syncing;
+    lv_obj_t *plot_chart;
+    lv_chart_series_t *plot_pressure_series;
+    lv_chart_series_t *plot_flow_series;
+    int32_t plot_pressure_chart_y_values[UI_PLOT_POINT_COUNT];
+    int32_t plot_flow_chart_y_values[UI_PLOT_POINT_COUNT];
+    lv_obj_t *plot_x_axis_labels[UI_PLOT_X_LABEL_COUNT];
+    lv_obj_t *plot_pressure_y_axis_labels[UI_PLOT_Y_LABEL_COUNT];
+    lv_obj_t *plot_flow_y_axis_labels[UI_PLOT_Y_LABEL_COUNT];
+    char plot_x_axis_label_text[UI_PLOT_X_LABEL_COUNT][24];
+    char plot_pressure_y_axis_label_text[UI_PLOT_Y_LABEL_COUNT][24];
+    char plot_flow_y_axis_label_text[UI_PLOT_Y_LABEL_COUNT][24];
+    int32_t plot_pressure_y_axis_limit;
+    int32_t plot_flow_y_axis_limit;
+    bool plot_stream_started;
     lv_obj_t *content;
     lv_obj_t *brew_toggle_btn;
     lv_obj_t *steam_toggle_btn;
@@ -86,6 +104,7 @@ typedef struct {
     lv_timer_t *init_mode_countdown_timer;
     ui_page_t active_page;
     ui_init_mode_t init_mode_selection;
+    ui_init_mode_t startup_mode;
     uint32_t init_mode_countdown_seconds;
     bool brewing;
     bool steaming;
@@ -154,6 +173,20 @@ static ui_state_t s_ui = {
     .sim_data_y_axis_label_text = {{0}},
     .connection_info_show_scan_results = false,
     .sim_data_toggle_syncing = false,
+    .plot_chart = NULL,
+    .plot_pressure_series = NULL,
+    .plot_flow_series = NULL,
+    .plot_pressure_chart_y_values = {0},
+    .plot_flow_chart_y_values = {0},
+    .plot_x_axis_labels = {NULL},
+    .plot_pressure_y_axis_labels = {NULL},
+    .plot_flow_y_axis_labels = {NULL},
+    .plot_x_axis_label_text = {{0}},
+    .plot_pressure_y_axis_label_text = {{0}},
+    .plot_flow_y_axis_label_text = {{0}},
+    .plot_pressure_y_axis_limit = 0,
+    .plot_flow_y_axis_limit = 0,
+    .plot_stream_started = false,
     .content = NULL,
     .brew_toggle_btn = NULL,
     .steam_toggle_btn = NULL,
@@ -167,8 +200,9 @@ static ui_state_t s_ui = {
     .heartbeat_timer = NULL,
     .sim_data_poll_timer = NULL,
     .init_mode_countdown_timer = NULL,
-    .active_page = UI_PAGE_HOME,
+    .active_page = UI_PAGE_BREW,
     .init_mode_selection = UI_INIT_MODE_NONE,
+    .startup_mode = UI_INIT_MODE_NONE,
     .init_mode_countdown_seconds = 0,
     .brewing = false,
     .steaming = false,
@@ -224,6 +258,10 @@ static ui_state_t s_ui = {
 #define UI_SIM_DATA_Y_LABEL_COUNT (5U)
 #define UI_SIM_DATA_AXIS_REFRESH_PERIOD_US (500000LL)
 #define UI_SIM_DATA_GAP_LOG_PERIOD_US (1000000LL)
+#define UI_PLOT_WINDOW_SECONDS (10U)
+#define UI_PLOT_X_LABEL_STEP_MS (500U)
+#define UI_PLOT_FLOAT_SCALE_FACTOR (100.0f)
+#define UI_PLOT_SAMPLES_PER_CHANNEL (10U)
 
 static const system_constants_data_t *ui_get_constants(void);
 static const system_constants_profile_t *ui_get_profile_constants(int profile_index);
@@ -242,6 +280,10 @@ static void ui_update_sim_data_axis_labels(uint32_t packet_interval_us, int32_t 
 static bool ui_sim_data_refresh_due(int64_t now_us, int64_t last_refresh_us, uint32_t period_ms);
 static void ui_process_sim_data_fifo(void);
 static void ui_plot_sim_data_packet(const data_downlink_packet_t *packet, uint32_t packet_interval_us);
+static void ui_clear_plot_data(void);
+static void ui_update_plot_axis_labels(float pressure_max, float flow_max);
+static void ui_plot_realtime_packet(const data_downlink_packet_t *packet);
+static void ui_send_profile_selection_command(bool offline_startup);
 static void ui_close_sim_data_overlay(void);
 static void ui_update_init_mode_prompt_text(void);
 static lv_obj_t *ui_create_toggle_button(lv_obj_t *parent,
@@ -1004,6 +1046,192 @@ static void ui_clear_sim_data_plot(void)
 }
 
 /**
+ * @brief Clear the RealTime Plot rolling buffers.
+ *
+ * @details Resets both pressure and flow traces to zero so a new StartBrew
+ * session starts from an empty timeline.
+ */
+static void ui_clear_plot_data(void)
+{
+    for (uint32_t index = 0; index < UI_PLOT_POINT_COUNT; index++) {
+        s_ui.plot_pressure_chart_y_values[index] = 0;
+        s_ui.plot_flow_chart_y_values[index] = 0;
+    }
+    s_ui.plot_stream_started = false;
+    s_ui.plot_pressure_y_axis_limit = 0;
+    s_ui.plot_flow_y_axis_limit = 0;
+    if (s_ui.plot_chart != NULL) {
+        lv_chart_refresh(s_ui.plot_chart);
+    }
+}
+
+/**
+ * @brief Update RealTime Plot custom X and dual right-side Y labels.
+ *
+ * @details The X axis is fixed to 10 seconds with 0.5-second spacing. Two
+ * color-coded Y scales are rendered on the right side for pressure and flow.
+ */
+static void ui_update_plot_axis_labels(float pressure_max, float flow_max)
+{
+    lv_coord_t chart_x = 0;
+    lv_coord_t chart_y = 0;
+    lv_coord_t chart_w = 0;
+    lv_coord_t chart_h = 0;
+
+    if (s_ui.plot_chart == NULL) {
+        return;
+    }
+
+    chart_x = lv_obj_get_x(s_ui.plot_chart);
+    chart_y = lv_obj_get_y(s_ui.plot_chart);
+    chart_w = lv_obj_get_width(s_ui.plot_chart);
+    chart_h = lv_obj_get_height(s_ui.plot_chart);
+
+    for (uint32_t index = 0; index < UI_PLOT_X_LABEL_COUNT; index++) {
+        lv_obj_t *label = s_ui.plot_x_axis_labels[index];
+        float seconds_value = (float)(UI_PLOT_WINDOW_SECONDS * 1000U - (index * UI_PLOT_X_LABEL_STEP_MS)) / 1000.0f;
+        lv_coord_t pos_x = chart_x + (lv_coord_t)(((chart_w - 1) * (int32_t)index) / (int32_t)(UI_PLOT_X_LABEL_COUNT - 1U));
+        if (label == NULL) {
+            continue;
+        }
+        snprintf(
+            s_ui.plot_x_axis_label_text[index],
+            sizeof(s_ui.plot_x_axis_label_text[index]),
+            "%.1fs",
+            seconds_value);
+        lv_label_set_text_static(label, s_ui.plot_x_axis_label_text[index]);
+        lv_obj_update_layout(label);
+        pos_x -= lv_obj_get_width(label) / 2;
+        lv_obj_set_pos(label, pos_x, chart_y + chart_h + 2);
+    }
+
+    for (uint32_t index = 0; index < UI_PLOT_Y_LABEL_COUNT; index++) {
+        lv_coord_t pos_y = chart_y + (lv_coord_t)(((chart_h - 1) * (int32_t)index) / (int32_t)(UI_PLOT_Y_LABEL_COUNT - 1U));
+        float normalized = 1.0f - ((float)index / (float)(UI_PLOT_Y_LABEL_COUNT - 1U));
+        lv_obj_t *pressure_label = s_ui.plot_pressure_y_axis_labels[index];
+        lv_obj_t *flow_label = s_ui.plot_flow_y_axis_labels[index];
+
+        if (pressure_label != NULL) {
+            snprintf(
+                s_ui.plot_pressure_y_axis_label_text[index],
+                sizeof(s_ui.plot_pressure_y_axis_label_text[index]),
+                "%.2f",
+                pressure_max * normalized);
+            lv_label_set_text_static(pressure_label, s_ui.plot_pressure_y_axis_label_text[index]);
+            lv_obj_update_layout(pressure_label);
+            lv_obj_set_pos(pressure_label, chart_x + chart_w + 8, pos_y - (lv_obj_get_height(pressure_label) / 2));
+        }
+
+        if (flow_label != NULL) {
+            snprintf(
+                s_ui.plot_flow_y_axis_label_text[index],
+                sizeof(s_ui.plot_flow_y_axis_label_text[index]),
+                "%.2f",
+                flow_max * normalized);
+            lv_label_set_text_static(flow_label, s_ui.plot_flow_y_axis_label_text[index]);
+            lv_obj_update_layout(flow_label);
+            lv_obj_set_pos(flow_label, chart_x + chart_w + 64, pos_y - (lv_obj_get_height(flow_label) / 2));
+        }
+    }
+}
+
+/**
+ * @brief Append one packet of pressure/flow samples to the RealTime Plot.
+ *
+ * @details Uses packet float layout:
+ * - f[0..9]: pressure samples in bar
+ * - f[10..19]: flow samples in ml/sec
+ * - f[20..29]: temperature samples (currently not plotted)
+ */
+static void ui_plot_realtime_packet(const data_downlink_packet_t *packet)
+{
+    const uint32_t sample_count = UI_PLOT_SAMPLES_PER_CHANNEL;
+    int32_t pressure_max_scaled = 0;
+    int32_t flow_max_scaled = 0;
+
+    if (packet == NULL ||
+        s_ui.plot_chart == NULL ||
+        s_ui.plot_pressure_series == NULL ||
+        s_ui.plot_flow_series == NULL ||
+        sample_count >= UI_PLOT_POINT_COUNT) {
+        return;
+    }
+
+    memmove(
+        &s_ui.plot_pressure_chart_y_values[0],
+        &s_ui.plot_pressure_chart_y_values[sample_count],
+        (UI_PLOT_POINT_COUNT - sample_count) * sizeof(s_ui.plot_pressure_chart_y_values[0]));
+    memmove(
+        &s_ui.plot_flow_chart_y_values[0],
+        &s_ui.plot_flow_chart_y_values[sample_count],
+        (UI_PLOT_POINT_COUNT - sample_count) * sizeof(s_ui.plot_flow_chart_y_values[0]));
+
+    for (uint32_t sample_index = 0; sample_index < sample_count; sample_index++) {
+        uint32_t dst_index = (UI_PLOT_POINT_COUNT - sample_count) + sample_index;
+        float pressure_value = packet->f[sample_index];
+        float flow_value = packet->f[sample_count + sample_index];
+        s_ui.plot_pressure_chart_y_values[dst_index] = (int32_t)lroundf(pressure_value * UI_PLOT_FLOAT_SCALE_FACTOR);
+        s_ui.plot_flow_chart_y_values[dst_index] = (int32_t)lroundf(flow_value * UI_PLOT_FLOAT_SCALE_FACTOR);
+    }
+
+    for (uint32_t index = 0; index < UI_PLOT_POINT_COUNT; index++) {
+        int32_t pressure_scaled = s_ui.plot_pressure_chart_y_values[index];
+        int32_t flow_scaled = s_ui.plot_flow_chart_y_values[index];
+        if (pressure_scaled > pressure_max_scaled) {
+            pressure_max_scaled = pressure_scaled;
+        }
+        if (flow_scaled > flow_max_scaled) {
+            flow_max_scaled = flow_scaled;
+        }
+    }
+
+    if (pressure_max_scaled < (int32_t)lroundf(1.0f * UI_PLOT_FLOAT_SCALE_FACTOR)) {
+        pressure_max_scaled = (int32_t)lroundf(1.0f * UI_PLOT_FLOAT_SCALE_FACTOR);
+    }
+    if (flow_max_scaled < (int32_t)lroundf(0.5f * UI_PLOT_FLOAT_SCALE_FACTOR)) {
+        flow_max_scaled = (int32_t)lroundf(0.5f * UI_PLOT_FLOAT_SCALE_FACTOR);
+    }
+
+    pressure_max_scaled = (pressure_max_scaled * 11) / 10;
+    flow_max_scaled = (flow_max_scaled * 11) / 10;
+
+    lv_chart_set_range(s_ui.plot_chart, LV_CHART_AXIS_PRIMARY_Y, 0, (lv_coord_t)pressure_max_scaled);
+    lv_chart_set_range(s_ui.plot_chart, LV_CHART_AXIS_SECONDARY_Y, 0, (lv_coord_t)flow_max_scaled);
+
+    s_ui.plot_stream_started = true;
+    s_ui.plot_pressure_y_axis_limit = pressure_max_scaled;
+    s_ui.plot_flow_y_axis_limit = flow_max_scaled;
+    ui_update_plot_axis_labels(
+        (float)pressure_max_scaled / UI_PLOT_FLOAT_SCALE_FACTOR,
+        (float)flow_max_scaled / UI_PLOT_FLOAT_SCALE_FACTOR);
+    lv_chart_refresh(s_ui.plot_chart);
+}
+
+/**
+ * @brief Queue ProfileSelection payload for simulator-side profile binding.
+ *
+ * @details The simulator currently supports one active brew profile, but this
+ * payload keeps profile metadata explicit so multi-profile expansion is easy.
+ */
+static void ui_send_profile_selection_command(bool offline_startup)
+{
+    char payload_text[96];
+    esp_err_t ret;
+    snprintf(
+        payload_text,
+        sizeof(payload_text),
+        "ProfileSelection;profile=%d;offline=%d",
+        s_ui.active_profile,
+        offline_startup ? 1 : 0);
+    ret = communication_functions_queue_data_text_command(payload_text);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "ProfileSelection queue failed: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "ProfileSelection queued: %s", payload_text);
+    }
+}
+
+/**
  * @brief Reset queued and visible Simulate Data stream state.
  *
  * @details Called when simulation transitions to OFF, either by local toggle
@@ -1013,6 +1241,7 @@ static void ui_reset_sim_data_stream_state(void)
 {
     ui_clear_sim_data_fifo();
     ui_clear_sim_data_plot();
+    ui_clear_plot_data();
 
     s_ui.sim_data_packets_received = 0;
     s_ui.sim_data_last_seq = 0;
@@ -1110,12 +1339,15 @@ static bool ui_try_parse_sim_data_event_from_text(const char *payload_text, bool
     }
     normalized[index] = '\0';
 
-    if (strstr(normalized, "datasimulationoff") != NULL) {
+    if (strstr(normalized, "datasimulationoff") != NULL ||
+        strstr(normalized, "brewcomplete") != NULL ||
+        strstr(normalized, "stopbrew") != NULL) {
         *out_enabled = false;
         return true;
     }
 
-    if (strstr(normalized, "datasimulationon") != NULL) {
+    if (strstr(normalized, "datasimulationon") != NULL ||
+        strstr(normalized, "startbrew") != NULL) {
         *out_enabled = true;
         return true;
     }
@@ -1134,6 +1366,9 @@ static void ui_sync_sim_data_toggle_from_peer_event(void)
 {
     communication_snapshot_t comm_snapshot = {0};
     bool enabled = false;
+    bool brew_event = false;
+    char normalized[160] = {0};
+    size_t index = 0;
 
     if (communication_functions_get_snapshot(&comm_snapshot) != ESP_OK) {
         return;
@@ -1148,9 +1383,33 @@ static void ui_sync_sim_data_toggle_from_peer_event(void)
         return;
     }
 
+    for (index = 0;
+         comm_snapshot.last_received_text[index] != '\0' && index < (sizeof(normalized) - 1U);
+         index++) {
+        normalized[index] = (char)tolower((unsigned char)comm_snapshot.last_received_text[index]);
+    }
+    normalized[index] = '\0';
+    brew_event = (strstr(normalized, "startbrew") != NULL) ||
+                 (strstr(normalized, "brewcomplete") != NULL) ||
+                 (strstr(normalized, "stopbrew") != NULL);
+
     s_ui.sim_data_enabled = enabled;
+    if (enabled && brew_event) {
+        ui_clear_plot_data();
+    }
     if (!enabled) {
         ui_reset_sim_data_stream_state();
+    }
+    if (brew_event) {
+        s_ui.brewing = enabled;
+        if (s_ui.brew_toggle_btn != NULL) {
+            if (enabled) {
+                lv_obj_add_state(s_ui.brew_toggle_btn, LV_STATE_CHECKED);
+            } else {
+                lv_obj_clear_state(s_ui.brew_toggle_btn, LV_STATE_CHECKED);
+            }
+        }
+        ui_update_header_status();
     }
     if (s_ui.sim_data_toggle_btn != NULL) {
         s_ui.sim_data_toggle_syncing = true;
@@ -1422,6 +1681,7 @@ static void ui_process_sim_data_fifo(void)
         s_ui.sim_data_last_seq = packet->seq;
         s_ui.sim_data_last_seq_valid = true;
         s_ui.sim_data_packets_received++;
+        ui_plot_realtime_packet(packet);
     }
 
     if (!have_packet) {
@@ -1450,7 +1710,7 @@ static void ui_process_sim_data_fifo(void)
     }
     s_ui.sim_data_last_packet_rx_us = now_us;
     s_ui.sim_data_packet_interval_us = packet_interval_us;
-    s_ui.sim_data_sample_period_us = packet_interval_us / DATA_SIZE_FLOATS;
+    s_ui.sim_data_sample_period_us = packet_interval_us / UI_PLOT_SAMPLES_PER_CHANNEL;
 
     if (s_ui.sim_data_overlay != NULL &&
         ui_sim_data_refresh_due(now_us,
@@ -1490,11 +1750,16 @@ static void ui_sync_sim_data_toggle_from_stream_activity(void)
 
     s_ui.sim_data_enabled = false;
     ui_reset_sim_data_stream_state();
+    s_ui.brewing = false;
+    if (s_ui.brew_toggle_btn != NULL) {
+        lv_obj_clear_state(s_ui.brew_toggle_btn, LV_STATE_CHECKED);
+    }
     if (s_ui.sim_data_toggle_btn != NULL) {
         s_ui.sim_data_toggle_syncing = true;
         lv_obj_clear_state(s_ui.sim_data_toggle_btn, LV_STATE_CHECKED);
         s_ui.sim_data_toggle_syncing = false;
     }
+    ui_update_header_status();
     ui_update_sim_data_status_label();
 }
 
@@ -2128,15 +2393,34 @@ static void ui_build_main_screen(void);
 static void ui_brew_toggle_event_cb(lv_event_t *e)
 {
     lv_obj_t *obj = lv_event_get_target(e);
+    esp_err_t ret = ESP_OK;
     s_ui.brewing = lv_obj_has_state(obj, LV_STATE_CHECKED);
     if (s_ui.brewing) {
+        char payload_text[96];
         s_ui.shot_s = 0;
         s_ui.steaming = false;
         if (s_ui.steam_toggle_btn) {
             lv_obj_clear_state(s_ui.steam_toggle_btn, LV_STATE_CHECKED);
         }
-        ESP_LOGI(TAG, "brew ON");
+        ui_clear_plot_data();
+        s_ui.sim_data_enabled = true;
+        snprintf(
+            payload_text,
+            sizeof(payload_text),
+            "StartBrew;profile=%d;packet_interval_ms=100",
+            s_ui.active_profile);
+        ret = communication_functions_queue_data_text_command(payload_text);
+        if (ret != ESP_OK) {
+            s_ui.brewing = false;
+            s_ui.sim_data_enabled = false;
+            lv_obj_clear_state(obj, LV_STATE_CHECKED);
+            ESP_LOGW(TAG, "StartBrew queue failed: %s", esp_err_to_name(ret));
+        } else {
+            ESP_LOGI(TAG, "brew ON");
+        }
     } else {
+        (void)communication_functions_queue_data_text_command("StopBrew");
+        s_ui.sim_data_enabled = false;
         ESP_LOGI(TAG, "brew OFF");
     }
     ui_update_header_status();
@@ -2155,6 +2439,8 @@ static void ui_steam_toggle_event_cb(lv_event_t *e)
     s_ui.steaming = lv_obj_has_state(obj, LV_STATE_CHECKED);
     if (s_ui.steaming) {
         s_ui.brewing = false;
+        s_ui.sim_data_enabled = false;
+        (void)communication_functions_queue_data_text_command("StopBrew");
         if (s_ui.brew_toggle_btn) {
             lv_obj_clear_state(s_ui.brew_toggle_btn, LV_STATE_CHECKED);
         }
@@ -2181,6 +2467,7 @@ static void ui_profile_btn_event_cb(lv_event_t *e)
     ui_apply_profile_defaults((int)profile);
     ui_update_home_labels();
     ui_update_header_status();
+    ui_send_profile_selection_command(s_ui.startup_mode == UI_INIT_MODE_OFFLINE);
     if (s_ui.active_page == UI_PAGE_PROFILES) {
         ui_render_active_page();
     }
@@ -2221,38 +2508,95 @@ static void ui_settings_slider_event_cb(lv_event_t *e)
 }
 
 /**
- * @brief Construct home dashboard page.
+ * @brief Construct RealTime Plot page.
  *
- * @details Renders machine overview cards with active profile and target
- * metrics similar to a workflow dashboard landing page.
+ * @details Renders a rolling 10-second dual-series plot (pressure + flow)
+ * sourced from binary downlink packets after a StartBrew event.
  */
 static void ui_build_page_home(void)
 {
-    ui_build_page_title(s_ui.content, "Dashboard");
+    ui_build_page_title(s_ui.content, "RealTime Plot");
     ui_build_page_live_summary(s_ui.content);
 
     lv_obj_t *card = lv_obj_create(s_ui.content);
-    lv_obj_set_size(card, 760, 250);
+    lv_obj_set_size(card, 760, 300);
     lv_obj_align(card, LV_ALIGN_TOP_LEFT, 8, 92);
     ui_style_card(card, UI_COLOR_CARD);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(card, 12, 0);
 
-    s_ui.home_active_profile = lv_label_create(card);
-    lv_obj_align(s_ui.home_active_profile, LV_ALIGN_TOP_LEFT, 20, 24);
-    lv_obj_set_style_text_font(s_ui.home_active_profile, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(s_ui.home_active_profile, lv_color_hex(UI_COLOR_TEXT), 0);
+    s_ui.plot_chart = lv_chart_create(card);
+    lv_obj_set_size(s_ui.plot_chart, 640, 248);
+    lv_obj_align(s_ui.plot_chart, LV_ALIGN_TOP_LEFT, 8, 10);
+    lv_obj_set_style_bg_color(s_ui.plot_chart, lv_color_hex(UI_COLOR_CARD_ALT), LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_ui.plot_chart, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_ui.plot_chart, lv_color_hex(UI_COLOR_BORDER), LV_PART_MAIN);
+    lv_obj_set_style_line_width(s_ui.plot_chart, 2, LV_PART_ITEMS);
+    lv_chart_set_type(s_ui.plot_chart, LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(s_ui.plot_chart, UI_PLOT_POINT_COUNT);
+    lv_chart_set_div_line_count(s_ui.plot_chart, 10, 20);
+    lv_chart_set_range(
+        s_ui.plot_chart,
+        LV_CHART_AXIS_PRIMARY_Y,
+        0,
+        (lv_coord_t)lroundf(10.0f * UI_PLOT_FLOAT_SCALE_FACTOR));
+    lv_chart_set_range(
+        s_ui.plot_chart,
+        LV_CHART_AXIS_SECONDARY_Y,
+        0,
+        (lv_coord_t)lroundf(5.0f * UI_PLOT_FLOAT_SCALE_FACTOR));
 
-    s_ui.home_target_label = lv_label_create(card);
-    lv_obj_align(s_ui.home_target_label, LV_ALIGN_TOP_LEFT, 20, 68);
-    lv_obj_set_style_text_font(s_ui.home_target_label, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(s_ui.home_target_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    s_ui.plot_pressure_series = lv_chart_add_series(
+        s_ui.plot_chart,
+        lv_color_hex(UI_COLOR_SUCCESS),
+        LV_CHART_AXIS_PRIMARY_Y);
+    s_ui.plot_flow_series = lv_chart_add_series(
+        s_ui.plot_chart,
+        lv_color_hex(UI_COLOR_ACCENT),
+        LV_CHART_AXIS_SECONDARY_Y);
 
-    lv_obj_t *hint = lv_label_create(card);
-    lv_label_set_text(hint, "Use Brew page to start shot workflow\nUse Profiles page to switch recipe");
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(hint, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
-    lv_obj_align(hint, LV_ALIGN_TOP_LEFT, 20, 130);
+    for (uint32_t index = 0; index < UI_PLOT_POINT_COUNT; index++) {
+        s_ui.plot_pressure_chart_y_values[index] = 0;
+        s_ui.plot_flow_chart_y_values[index] = 0;
+    }
+    if (s_ui.plot_pressure_series != NULL) {
+        lv_chart_set_series_ext_y_array(
+            s_ui.plot_chart,
+            s_ui.plot_pressure_series,
+            s_ui.plot_pressure_chart_y_values);
+    }
+    if (s_ui.plot_flow_series != NULL) {
+        lv_chart_set_series_ext_y_array(
+            s_ui.plot_chart,
+            s_ui.plot_flow_series,
+            s_ui.plot_flow_chart_y_values);
+    }
 
-    ui_update_home_labels();
+    for (uint32_t index = 0; index < UI_PLOT_X_LABEL_COUNT; index++) {
+        s_ui.plot_x_axis_labels[index] = lv_label_create(card);
+        lv_obj_set_style_text_font(s_ui.plot_x_axis_labels[index], &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(s_ui.plot_x_axis_labels[index], lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+    }
+    for (uint32_t index = 0; index < UI_PLOT_Y_LABEL_COUNT; index++) {
+        s_ui.plot_pressure_y_axis_labels[index] = lv_label_create(card);
+        lv_obj_set_style_text_font(s_ui.plot_pressure_y_axis_labels[index], &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(s_ui.plot_pressure_y_axis_labels[index], lv_color_hex(UI_COLOR_SUCCESS), 0);
+        s_ui.plot_flow_y_axis_labels[index] = lv_label_create(card);
+        lv_obj_set_style_text_font(s_ui.plot_flow_y_axis_labels[index], &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(s_ui.plot_flow_y_axis_labels[index], lv_color_hex(UI_COLOR_ACCENT), 0);
+    }
+
+    lv_obj_t *legend = lv_label_create(card);
+    lv_label_set_text(legend, "Pressure [bar] (green)  |  Flow [ml/sec] (blue)");
+    lv_obj_set_style_text_font(legend, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(legend, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+    lv_obj_align(legend, LV_ALIGN_BOTTOM_LEFT, 12, -4);
+
+    s_ui.plot_stream_started = false;
+    s_ui.plot_pressure_y_axis_limit = 0;
+    s_ui.plot_flow_y_axis_limit = 0;
+    ui_update_plot_axis_labels(10.0f, 5.0f);
+    lv_chart_refresh(s_ui.plot_chart);
 }
 
 /**
@@ -2488,6 +2832,7 @@ static void ui_settings_reboot_client_event_cb(lv_event_t *e)
     s_ui.shot_s = 0;
     s_ui.reinit_requested = true;
     s_ui.init_mode_selection = UI_INIT_MODE_NONE;
+    s_ui.startup_mode = UI_INIT_MODE_NONE;
     s_ui.init_failure_confirm_requested = false;
     ui_screen_create();
     ESP_LOGI(TAG, "client UI returned to initialization state");
@@ -2683,10 +3028,20 @@ static void ui_render_active_page(void)
 {
     s_ui.page_status = NULL;
     s_ui.page_runtime = NULL;
+    s_ui.plot_chart = NULL;
+    s_ui.plot_pressure_series = NULL;
+    s_ui.plot_flow_series = NULL;
+    for (size_t i = 0; i < UI_PLOT_X_LABEL_COUNT; i++) {
+        s_ui.plot_x_axis_labels[i] = NULL;
+    }
+    for (size_t i = 0; i < UI_PLOT_Y_LABEL_COUNT; i++) {
+        s_ui.plot_pressure_y_axis_labels[i] = NULL;
+        s_ui.plot_flow_y_axis_labels[i] = NULL;
+    }
 
     switch (s_ui.active_page) {
-    case UI_PAGE_HOME:
-        s_ui.content = s_ui.tab_pages[UI_PAGE_HOME];
+    case UI_PAGE_PLOT:
+        s_ui.content = s_ui.tab_pages[UI_PAGE_PLOT];
         lv_obj_clean(s_ui.content);
         s_ui.home_active_profile = NULL;
         s_ui.home_target_label = NULL;
@@ -2715,12 +3070,12 @@ static void ui_render_active_page(void)
         ui_build_page_settings();
         break;
     default:
-        s_ui.active_page = UI_PAGE_HOME;
-        s_ui.content = s_ui.tab_pages[UI_PAGE_HOME];
+        s_ui.active_page = UI_PAGE_BREW;
+        s_ui.content = s_ui.tab_pages[UI_PAGE_BREW];
         lv_obj_clean(s_ui.content);
-        s_ui.home_active_profile = NULL;
-        s_ui.home_target_label = NULL;
-        ui_build_page_home();
+        s_ui.brew_toggle_btn = NULL;
+        s_ui.steam_toggle_btn = NULL;
+        ui_build_page_brew();
         break;
     }
 
@@ -2768,7 +3123,7 @@ static void ui_heartbeat_timer_cb(lv_timer_t *timer)
  * @brief Build root layout and initialize workflow UI.
  *
  * @details Creates the top tab region for the main interface and the bottom
- * clock bar, then renders the default dashboard tab.
+ * clock bar, then renders the default brew tab.
  */
 static void ui_build_main_screen(void)
 {
@@ -2801,9 +3156,9 @@ static void ui_build_main_screen(void)
     lv_obj_set_style_pad_hor(tab_bar, 8, LV_PART_MAIN);
     lv_obj_set_style_pad_ver(tab_bar, 8, LV_PART_MAIN);
 
-    s_ui.tab_pages[UI_PAGE_HOME] = lv_tabview_add_tab(s_ui.tabview, "Home");
     s_ui.tab_pages[UI_PAGE_BREW] = lv_tabview_add_tab(s_ui.tabview, "Brew");
     s_ui.tab_pages[UI_PAGE_PROFILES] = lv_tabview_add_tab(s_ui.tabview, "Profiles");
+    s_ui.tab_pages[UI_PAGE_PLOT] = lv_tabview_add_tab(s_ui.tabview, "Plot");
     s_ui.tab_pages[UI_PAGE_SETTINGS] = lv_tabview_add_tab(s_ui.tabview, "Settings");
 
     for (int i = 0; i < UI_PAGE_COUNT; i++) {
@@ -2833,10 +3188,13 @@ static void ui_build_main_screen(void)
 
     if (ui_get_constants()->profile_count > 0) {
         ui_apply_profile_defaults(1);
+        if (s_ui.startup_mode == UI_INIT_MODE_OFFLINE) {
+            ui_send_profile_selection_command(true);
+        }
     }
-    s_ui.active_page = UI_PAGE_HOME;
+    s_ui.active_page = UI_PAGE_BREW;
     ui_render_active_page();
-    lv_tabview_set_active(s_ui.tabview, UI_PAGE_HOME, LV_ANIM_OFF);
+    lv_tabview_set_active(s_ui.tabview, UI_PAGE_BREW, LV_ANIM_OFF);
     ui_update_clock_bar();
 
     if (!s_ui.heartbeat_timer) {
@@ -2885,6 +3243,16 @@ void ui_screen_create(void)
     s_ui.sim_data_series = NULL;
     s_ui.connection_info_show_scan_results = false;
     s_ui.sim_data_toggle_syncing = false;
+    s_ui.plot_chart = NULL;
+    s_ui.plot_pressure_series = NULL;
+    s_ui.plot_flow_series = NULL;
+    for (size_t i = 0; i < UI_PLOT_X_LABEL_COUNT; i++) {
+        s_ui.plot_x_axis_labels[i] = NULL;
+    }
+    for (size_t i = 0; i < UI_PLOT_Y_LABEL_COUNT; i++) {
+        s_ui.plot_pressure_y_axis_labels[i] = NULL;
+        s_ui.plot_flow_y_axis_labels[i] = NULL;
+    }
     s_ui.clock_set_day_roller = NULL;
     s_ui.clock_set_month_roller = NULL;
     s_ui.clock_set_year_roller = NULL;
@@ -2913,7 +3281,11 @@ void ui_screen_create(void)
     s_ui.sim_data_last_seq_gap_log_us = 0;
     s_ui.sim_data_last_chart_refresh_us = 0;
     s_ui.sim_data_last_status_refresh_us = 0;
+    s_ui.plot_stream_started = false;
+    s_ui.plot_pressure_y_axis_limit = 0;
+    s_ui.plot_flow_y_axis_limit = 0;
     s_ui.init_mode_selection = UI_INIT_MODE_NONE;
+    s_ui.startup_mode = UI_INIT_MODE_NONE;
     s_ui.init_mode_countdown_seconds = UI_INIT_MODE_DEFAULT_COUNTDOWN_SEC;
     s_ui.init_failure_confirm_requested = false;
     if (s_ui.init_mode_countdown_timer != NULL) {
@@ -3069,6 +3441,8 @@ void ui_screen_set_init_failed(bool failed)
  */
 void ui_screen_begin_initialization(ui_init_mode_t mode)
 {
+    s_ui.startup_mode = mode;
+
     if (s_ui.init_mode_countdown_timer != NULL) {
         lv_timer_del(s_ui.init_mode_countdown_timer);
         s_ui.init_mode_countdown_timer = NULL;

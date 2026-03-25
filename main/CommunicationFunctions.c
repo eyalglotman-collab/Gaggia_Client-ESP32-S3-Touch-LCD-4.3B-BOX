@@ -51,6 +51,7 @@
 #define COMMUNICATION_API_LOCK_TIMEOUT_MS   (5U)
 #define COMMUNICATION_DATA_EVENT_SIMULATION_ON_TEXT  "DataSimulationOn"
 #define COMMUNICATION_DATA_EVENT_SIMULATION_OFF_TEXT "DataSimulationOFF"
+#define COMMUNICATION_DATA_EVENT_START_BREW_TEXT     "StartBrew"
 #define COMMUNICATION_FRAME_SOF0             (0xA5U)
 #define COMMUNICATION_FRAME_SOF1             (0x5AU)
 #define COMMUNICATION_FRAME_HEADER_BYTES     (15U)
@@ -2667,10 +2668,6 @@ esp_err_t communication_functions_request_data_event(communication_data_event_t 
 {
     const char *event_payload = NULL;
 
-    if (!s_comm.initialized || s_comm.mutex == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
     switch (event_id) {
     case COMMUNICATION_DATA_EVENT_SIMULATION_ON:
         event_payload = COMMUNICATION_DATA_EVENT_SIMULATION_ON_TEXT;
@@ -2678,7 +2675,22 @@ esp_err_t communication_functions_request_data_event(communication_data_event_t 
     case COMMUNICATION_DATA_EVENT_SIMULATION_OFF:
         event_payload = COMMUNICATION_DATA_EVENT_SIMULATION_OFF_TEXT;
         break;
+    case COMMUNICATION_DATA_EVENT_START_BREW:
+        event_payload = COMMUNICATION_DATA_EVENT_START_BREW_TEXT;
+        break;
     default:
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return communication_functions_queue_data_text_command(event_payload);
+}
+
+esp_err_t communication_functions_queue_data_text_command(const char *payload_text)
+{
+    if (!s_comm.initialized || s_comm.mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (payload_text == NULL || payload_text[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -2687,7 +2699,7 @@ esp_err_t communication_functions_request_data_event(communication_data_event_t 
         return ESP_ERR_TIMEOUT;
     }
 
-    esp_err_t ret = communication_queue_data_command_locked(event_payload);
+    esp_err_t ret = communication_queue_data_command_locked(payload_text);
     communication_publish_snapshot_locked();
     xSemaphoreGive(s_comm.mutex);
     return ret;

@@ -56,6 +56,7 @@ typedef enum {
 typedef enum {
     COMMUNICATION_DATA_EVENT_SIMULATION_ON = 0,
     COMMUNICATION_DATA_EVENT_SIMULATION_OFF,
+    COMMUNICATION_DATA_EVENT_START_BREW,
 } communication_data_event_t;
 
 /**
@@ -203,6 +204,22 @@ void communication_functions_set_auto_reconnect_enabled(bool enabled);
  *      - ESP_ERR_INVALID_STATE: Communication module is not initialized
  */
 esp_err_t communication_functions_request_data_event(communication_data_event_t event_id);
+
+/**
+ * @brief Queue one raw DATA text command for simulator runtime handling.
+ *
+ * @details Stores one pending DATA payload string that is transmitted by the
+ * communication task once keepalive is active. This is used for commands that
+ * require runtime parameters (for example profile selection metadata).
+ *
+ * @param[in] payload_text DATA payload text to queue.
+ *
+ * @return
+ *      - ESP_OK: Command queued successfully
+ *      - ESP_ERR_INVALID_ARG: `payload_text` is NULL or empty
+ *      - ESP_ERR_INVALID_STATE: Communication module is not initialized
+ */
+esp_err_t communication_functions_queue_data_text_command(const char *payload_text);
 
 /**
  * @brief Read the latest communication snapshot.

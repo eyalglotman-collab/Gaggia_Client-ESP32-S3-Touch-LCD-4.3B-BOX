@@ -136,55 +136,13 @@ For any build/flash request, execute this gated sequence and report each gate co
 
 ### Build and Flash (MANDATORY METHOD)
 ```bash
-cmd.exe /c C:/Espressif/Eyal_Projects_ESP32_S3/Eyal_espresso_client/scripts/idfw.cmd build
-cmd.exe /c C:/Espressif/Eyal_Projects_ESP32_S3/Eyal_espresso_client/scripts/idfw.cmd -p <PORT> flash
+cmd.exe /c C:/Espressif/Eyal_Projects_ESP32_S3/Eyal_espresso_client/scripts/idfw.cmd -p <PORT> build flash
 ```
-- Always run `build` first, then `flash` sequentially.
-- This is the required method for all sessions (including Codex/WSL).
-- Do not use `scripts/flash_hidden.ps1` for standard flashing, validation, or debugging because it can hide `idf.py`/toolchain errors.
-- Prefer visible-output flashing through `scripts/idfw.ps1` or `scripts/idfw.cmd` in the active terminal.
-- Preferred visible command:
-```bash
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_client\scripts\idfw.ps1 build -p <PORT> flash
-```
-
-### Claude Code Build Verification (non-interactive shell limitation)
-When running inside Claude Code's bash shell, Windows console programs (`idf.py`, `ninja`) write output
-to the Windows console buffer rather than the pipe, so no build output is visible and output capture
-via `2>&1` or PowerShell redirects does not work. If the binary timestamp does not update after running
-the build command, the build did not reach ninja.
-
-**Confirmed working method from Claude Code's shell** (clears MSYSTEM, uses -NoNewWindow to pipe output):
-
-Build:
-```bash
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process cmd.exe -ArgumentList '/c set MSYSTEM=& C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_client\scripts\idfw.cmd build' -Wait -NoNewWindow -PassThru"
-```
-
-Flash:
-```bash
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process cmd.exe -ArgumentList '/c set MSYSTEM=& C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_client\scripts\idfw.cmd -p <PORT> flash' -Wait -NoNewWindow -PassThru"
-```
-
-If these fail, ask Eyal to run `idfw.cmd build` or `idfw.cmd -p <PORT> flash` from a real CMD or VS Code integrated terminal and report back.
-
-Otherwise verify the build result using these checks instead of looking at idf.py output:
-
-1. Check the binary exists and has a recent timestamp:
-```bash
-ls -la .idfbuild/Eyal_espresso_client.bin
-```
-
-2. Confirm no source changes since the last known-good build:
-```bash
-git diff <last-good-commit> HEAD -- main/
-```
-If the diff is empty, the existing binary in `.idfbuild/` is valid and up to date.
-
-3. Play the build success sound after confirming a valid binary:
-```bash
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_client\scripts\play_build_success_sound.ps1
-```
+- This is the ONLY approved flash method for all sessions (including Codex/WSL).
+- Do not use `scripts/flash_hidden.ps1`.
+- Do not use `scripts/idfw.ps1`.
+- Do not use direct `idf.py` commands.
+- Do not use PowerShell `Start-Process` wrappers for flashing.
 
 ### Session Startup — Client + Server Workflow
 1. Start the server with `launch_simulator_ui.ps1` from the server repository.
