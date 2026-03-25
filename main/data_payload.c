@@ -214,6 +214,8 @@ esp_err_t data_payload_init(void)
 
 data_fifo_result_t data_downlink_push(const data_downlink_packet_t *pkt)
 {
+    bool dropped_oldest = false;
+
     if (pkt == NULL) {
         return DATA_FIFO_EMPTY;
     }
@@ -221,14 +223,15 @@ data_fifo_result_t data_downlink_push(const data_downlink_packet_t *pkt)
         return DATA_FIFO_EMPTY;
     }
 
-    /* Delay instead of dropping: wait until one slot is available. */
-    while (true) {
-        xSemaphoreTake(s_dl.mutex, portMAX_DELAY);
-        if (s_dl.count < s_dl.capacity) {
-            break;
-        }
-        xSemaphoreGive(s_dl.mutex);
-        vTaskDelay(pdMS_TO_TICKS(1));
+    xSemaphoreTake(s_dl.mutex, portMAX_DELAY);
+
+    if (s_dl.count >= s_dl.capacity) {
+        /* Keep comm task timing deterministic under burst load by dropping
+         * the oldest packet and preserving the newest downlink sample.
+         */
+        s_dl.tail = (s_dl.tail + 1U) % s_dl.capacity;
+        s_dl.count--;
+        dropped_oldest = true;
     }
 
     memcpy(&s_dl.buf[s_dl.head], pkt, sizeof(*pkt));
@@ -236,7 +239,7 @@ data_fifo_result_t data_downlink_push(const data_downlink_packet_t *pkt)
     s_dl.count++;
 
     xSemaphoreGive(s_dl.mutex);
-    return DATA_FIFO_OK;
+    return dropped_oldest ? DATA_FIFO_FULL : DATA_FIFO_OK;
 }
 
 data_fifo_result_t data_downlink_pop(data_downlink_packet_t *out_pkt)

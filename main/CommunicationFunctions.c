@@ -897,27 +897,48 @@ static void communication_poll_received_frames_locked(void)
         }
 
         if (message_type == COMMUNICATION_MESSAGE_DATA) {
-            if (s_comm.snapshot.state != COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE &&
-                s_comm.snapshot.state != COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_CLIENT_SEND) {
-                communication_record_top_layer_failure_locked("TopLayer DATA received before KeepAlive state");
-                return;
-            }
-            s_comm.snapshot.send_data_enabled = true;
-            s_comm.data_frames_rx_count++;
-            s_comm.snapshot.data_frames_rx_count = s_comm.data_frames_rx_count;
+            bool in_keepalive_phase =
+                (s_comm.snapshot.state == COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE) ||
+                (s_comm.snapshot.state == COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_CLIENT_SEND);
+            bool connect_success_payload =
+                (s_comm.snapshot.state == COMMUNICATION_STATE_TOP_LAYER_CONNECT) &&
+                communication_payload_is_connect_success(payload_text);
+            bool binary_downlink_payload =
+                (payload_len == sizeof(data_downlink_packet_t)) &&
+                ((uint8_t)s_comm.rx_buffer[COMMUNICATION_FRAME_HEADER_BYTES] == DATA_PAYLOAD_MAGIC_DOWNLINK);
 
-            /* Binary downlink data packet — route to FIFO for app consumption. */
-            if (payload_len == sizeof(data_downlink_packet_t) &&
-                (uint8_t)payload_text[0] == DATA_PAYLOAD_MAGIC_DOWNLINK) {
-                data_downlink_push((const data_downlink_packet_t *)(const void *)
-                                   &s_comm.rx_buffer[COMMUNICATION_FRAME_HEADER_BYTES]);
-            } else {
-                /* Text control frame: update last_received_text as before. */
-                s_comm.snapshot.last_received_text_event_count++;
-                snprintf(s_comm.snapshot.last_received_text,
-                         sizeof(s_comm.snapshot.last_received_text),
-                         "%s",
-                         (payload_text[0] != '\0') ? payload_text : "Empty peer payload");
+            if (!in_keepalive_phase && !connect_success_payload) {
+                /* Ignore asynchronous pre-keepalive DATA frames instead of
+                 * tearing down the session; this keeps connect/keepalive timing
+                 * stable when bridge traffic overlaps state transitions.
+                 */
+                if (!binary_downlink_payload) {
+                    s_comm.snapshot.last_received_text_event_count++;
+                    snprintf(s_comm.snapshot.last_received_text,
+                             sizeof(s_comm.snapshot.last_received_text),
+                             "%s",
+                             (payload_text[0] != '\0') ? payload_text : "Empty peer payload");
+                }
+                ESP_LOGW(TAG,
+                         "TopLayer DATA received before KeepAlive state ignored: state=%s",
+                         communication_functions_state_to_string(s_comm.snapshot.state));
+            } else if (in_keepalive_phase) {
+                s_comm.snapshot.send_data_enabled = true;
+                s_comm.data_frames_rx_count++;
+                s_comm.snapshot.data_frames_rx_count = s_comm.data_frames_rx_count;
+
+                /* Binary downlink data packet — route to FIFO for app consumption. */
+                if (binary_downlink_payload) {
+                    data_downlink_push((const data_downlink_packet_t *)(const void *)
+                                       &s_comm.rx_buffer[COMMUNICATION_FRAME_HEADER_BYTES]);
+                } else {
+                    /* Text control frame: update last_received_text as before. */
+                    s_comm.snapshot.last_received_text_event_count++;
+                    snprintf(s_comm.snapshot.last_received_text,
+                             sizeof(s_comm.snapshot.last_received_text),
+                             "%s",
+                             (payload_text[0] != '\0') ? payload_text : "Empty peer payload");
+                }
             }
         }
 

@@ -141,6 +141,12 @@ cmd.exe /c C:/Espressif/Eyal_Projects_ESP32_S3/Eyal_espresso_client/scripts/idfw
 ```
 - Always run `build` first, then `flash` sequentially.
 - This is the required method for all sessions (including Codex/WSL).
+- Do not use `scripts/flash_hidden.ps1` for standard flashing, validation, or debugging because it can hide `idf.py`/toolchain errors.
+- Prefer visible-output flashing through `scripts/idfw.ps1` or `scripts/idfw.cmd` in the active terminal.
+- Preferred visible command:
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_client\scripts\idfw.ps1 build -p <PORT> flash
+```
 
 ### Claude Code Build Verification (non-interactive shell limitation)
 When running inside Claude Code's bash shell, Windows console programs (`idf.py`, `ninja`) write output

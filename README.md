@@ -101,6 +101,17 @@ cmd.exe /c C:/Espressif/Eyal_Projects_ESP32_S3/Eyal_espresso_client/scripts/idfw
 You must run build and flash sequentially, with `build` first and `flash` second.
 For Codex/WSL sessions, this absolute-path `cmd.exe` method is the required build and flash path.
 
+### Flash Output Visibility Rule (Mandatory)
+
+- Do not use `scripts/flash_hidden.ps1` for normal flashing, validation, or troubleshooting.
+- `flash_hidden.ps1` redirects output and can hide actionable `idf.py`/toolchain errors.
+- Use `scripts/idfw.ps1` or `scripts/idfw.cmd` so build/flash errors are visible in the active terminal.
+- Preferred visible command form:
+
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_client\scripts\idfw.ps1 build -p <PORT> flash
+```
+
 ## Rule-Gated Execution Sequence (Mandatory)
 
 For every build/flash task, Codex/Claude must use this exact gated sequence and explicitly report each gate:
