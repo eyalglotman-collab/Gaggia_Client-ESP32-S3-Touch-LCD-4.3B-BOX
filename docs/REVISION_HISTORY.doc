@@ -4,9 +4,10 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.4.0\par
+0.4.1\par
 \par
 \b Latest Version Feature List\b0\par
+- README approval-bootstrap guidance now requires scoped executable approvals for known workspace tools under `C:/Espressif/Eyal_Projects_ESP32_S3/...` paths and explicitly forbids blanket arbitrary `.exe` approvals.\par
 - Minor version release checkpoint: promoted client version line to 0.4.0 for the synchronized dual-project release.\par
 - Simulate Data graph now updates per packet with labeled X/Y axes, packet/sample timing display, stream idle auto-sync, and stop-action FIFO+plot reset behavior.\par
 - Downlink Simulate Data FIFO now prefers delayed processing over packet drops, with larger queue depth and live backlog telemetry (`RX_FIFO_PacketBacklogNPackets`).\par
@@ -58,6 +59,11 @@
 - Reset now fast-paths directly to `connect` when low-layer Wi-Fi is still healthy, reducing reconnect latency after reset retries.\par
 \par
 \b X=0, Y=4\b0\par
+\b 2026-03-25 14:00:00\b0\par
+- Version: 0.4.1\par
+- Summary: Hardened executable-approval documentation scope for safer Codex session bootstrap rules.\par
+- Notes: Updated `README.md` to require scoped approval of known workspace tools under `C:/Espressif/Eyal_Projects_ESP32_S3/...` paths and to explicitly disallow blanket approval for arbitrary `.exe` binaries.\par
+\par
 \b 2026-03-23 15:20:00\b0\par
 - Version: 0.4.0\par
 - Summary: Minor-version promotion checkpoint for the client project.\par
