@@ -15,6 +15,7 @@
 #include "esp_timer.h"
 #include "lvgl.h"
 #include "CommunicationFunctions.h"
+#include "ProtocolLCD_Controller.h"
 #include "data_payload.h"
 #include "ui_screen.h"
 #include "hardware_init.h"
@@ -92,8 +93,17 @@ typedef struct {
     lv_obj_t *content;
     lv_obj_t *brew_toggle_btn;
     lv_obj_t *steam_toggle_btn;
+    lv_obj_t *brew_profile_dropdown;
     lv_obj_t *home_active_profile;
     lv_obj_t *home_target_label;
+    lv_obj_t *brew_temperature_value_label;
+    lv_obj_t *brew_water_level_label;
+    lv_obj_t *brew_water_level_bar;
+    lv_obj_t *brew_weight_value_label;
+    lv_obj_t *brew_weight_scale_bar;
+    lv_obj_t *brew_warmup_led;
+    lv_obj_t *brew_steam_led;
+    lv_obj_t *brew_uptime_label;
     lv_obj_t *settings_target_slider;
     lv_obj_t *settings_target_value;
     lv_obj_t *settings_preinf_slider;
@@ -108,10 +118,18 @@ typedef struct {
     uint32_t init_mode_countdown_seconds;
     bool brewing;
     bool steaming;
+    bool brew_profile_dropdown_syncing;
     int active_profile;
     int target_temp_c;
     int preinf_s;
     int shot_s;
+    float brew_live_temperature_c;
+    float brew_live_water_level_pct;
+    float brew_live_weight_g;
+    float brew_shot_target_preview_g;
+    bool brew_warmup_on;
+    bool brew_steam_indicator_on;
+    float brew_uptime_minutes;
     bool sim_data_enabled;
     uint32_t sim_data_packets_received;
     uint32_t sim_data_last_seq;
@@ -190,8 +208,17 @@ static ui_state_t s_ui = {
     .content = NULL,
     .brew_toggle_btn = NULL,
     .steam_toggle_btn = NULL,
+    .brew_profile_dropdown = NULL,
     .home_active_profile = NULL,
     .home_target_label = NULL,
+    .brew_temperature_value_label = NULL,
+    .brew_water_level_label = NULL,
+    .brew_water_level_bar = NULL,
+    .brew_weight_value_label = NULL,
+    .brew_weight_scale_bar = NULL,
+    .brew_warmup_led = NULL,
+    .brew_steam_led = NULL,
+    .brew_uptime_label = NULL,
     .settings_target_slider = NULL,
     .settings_target_value = NULL,
     .settings_preinf_slider = NULL,
@@ -206,10 +233,18 @@ static ui_state_t s_ui = {
     .init_mode_countdown_seconds = 0,
     .brewing = false,
     .steaming = false,
+    .brew_profile_dropdown_syncing = false,
     .active_profile = 1,
     .target_temp_c = 93,
     .preinf_s = 4,
     .shot_s = 0,
+    .brew_live_temperature_c = 93.0f,
+    .brew_live_water_level_pct = 92.0f,
+    .brew_live_weight_g = 0.0f,
+    .brew_shot_target_preview_g = 36.0f,
+    .brew_warmup_on = true,
+    .brew_steam_indicator_on = false,
+    .brew_uptime_minutes = 0.0f,
     .sim_data_enabled = false,
     .sim_data_packets_received = 0,
     .sim_data_last_seq = 0,
@@ -283,7 +318,18 @@ static void ui_plot_sim_data_packet(const data_downlink_packet_t *packet, uint32
 static void ui_clear_plot_data(void);
 static void ui_update_plot_axis_labels(float pressure_max, float flow_max);
 static void ui_plot_realtime_packet(const data_downlink_packet_t *packet);
+static void ui_ingest_home_metrics_from_packet(const data_downlink_packet_t *packet, uint32_t packet_interval_us);
+static float ui_estimate_shot_target_preview_g(int profile_index, float brew_time_s);
+static void ui_profile_dropdown_event_cb(lv_event_t *e);
+static void ui_sync_brew_profile_dropdown(void);
+static void ui_update_brew_widgets(void);
 static void ui_send_profile_selection_command(bool offline_startup);
+static esp_err_t ui_lcd_protocol_send_command_cb(const char *payload_text, void *user_ctx);
+static void ui_lcd_protocol_profile_catalog_hook(const lcd_controller_profile_catalog_t *catalog,
+                                                 void *user_ctx);
+static void ui_lcd_protocol_brew_state_hook(const lcd_controller_brew_home_state_t *state,
+                                            void *user_ctx);
+static void ui_refresh_profile_dropdown_from_protocol(const lcd_controller_profile_catalog_t *catalog);
 static void ui_close_sim_data_overlay(void);
 static void ui_update_init_mode_prompt_text(void);
 static lv_obj_t *ui_create_toggle_button(lv_obj_t *parent,
@@ -496,9 +542,26 @@ static void ui_update_header_runtime(void)
     }
 
     int pressure_tenths = s_ui.brewing ? (85 + (s_ui.shot_s % 20)) : 2;
-    char line[96];
-    snprintf(line, sizeof(line), "Shot %02ds  |  Pressure %d.%d bar",
-             s_ui.shot_s, pressure_tenths / 10, pressure_tenths % 10);
+    char line[160];
+    if (s_ui.active_page == UI_PAGE_BREW) {
+        snprintf(
+            line,
+            sizeof(line),
+            "Shot %02ds  |  Pressure %d.%d Bar  |  Temperature %.1fC (Target %d C)",
+            s_ui.shot_s,
+            pressure_tenths / 10,
+            pressure_tenths % 10,
+            s_ui.brew_live_temperature_c,
+            s_ui.target_temp_c);
+    } else {
+        snprintf(
+            line,
+            sizeof(line),
+            "Shot %02ds  |  Pressure %d.%d Bar",
+            s_ui.shot_s,
+            pressure_tenths / 10,
+            pressure_tenths % 10);
+    }
     lv_label_set_text(s_ui.page_runtime, line);
 }
 
@@ -547,16 +610,268 @@ static void ui_update_clock_bar(void)
 static void ui_update_home_labels(void)
 {
     if (s_ui.home_active_profile) {
-        const system_constants_profile_t *profile = ui_get_profile_constants(s_ui.active_profile);
-        char txt[80];
-        snprintf(txt, sizeof(txt), "Active Profile: %s", profile->name);
-        lv_label_set_text(s_ui.home_active_profile, txt);
+        lv_label_set_text(s_ui.home_active_profile, "Profile:");
+        if (s_ui.brew_profile_dropdown) {
+            lv_obj_align_to(
+                s_ui.brew_profile_dropdown,
+                s_ui.home_active_profile,
+                LV_ALIGN_OUT_RIGHT_MID,
+                16,
+                0);
+        }
     }
 
-    if (s_ui.home_target_label) {
+    ui_sync_brew_profile_dropdown();
+    ui_update_brew_widgets();
+}
+
+/**
+ * @brief Estimate profile shot-target mass for preview text.
+ *
+ * @details Uses profile flow target and expected brew duration to present a
+ * practical grams preview near the profile selection controls.
+ */
+static float ui_estimate_shot_target_preview_g(int profile_index, float brew_time_s)
+{
+    const system_constants_profile_t *profile = ui_get_profile_constants(profile_index);
+    float flow_ml_sec = (float)profile->target_flow_tenths / 10.0f;
+    float duration_s = (brew_time_s > 0.0f) ? brew_time_s : 30.0f;
+    float estimate_g = flow_ml_sec * duration_s;
+
+    if (estimate_g < 0.0f) {
+        estimate_g = 0.0f;
+    }
+    if (estimate_g > 200.0f) {
+        estimate_g = 200.0f;
+    }
+
+    return estimate_g;
+}
+
+/**
+ * @brief Synchronize profile dropdown selection with active profile state.
+ */
+static void ui_sync_brew_profile_dropdown(void)
+{
+    lcd_controller_profile_catalog_t protocol_catalog = {0};
+    if (s_ui.brew_profile_dropdown == NULL) {
+        return;
+    }
+
+    uint16_t selected = lv_dropdown_get_selected(s_ui.brew_profile_dropdown);
+    uint16_t target = 0U;
+    bool target_found = false;
+
+    if (lcd_controller_protocol_get_profile_catalog(&protocol_catalog) == ESP_OK &&
+        protocol_catalog.count > 0U) {
+        for (uint8_t index = 0U; index < protocol_catalog.count; index++) {
+            if ((int)protocol_catalog.entries[index].profile_id == s_ui.active_profile) {
+                target = (uint16_t)index;
+                target_found = true;
+                break;
+            }
+        }
+        if (!target_found) {
+            target = 0U;
+        }
+    } else {
+        target = (s_ui.active_profile > 0) ? (uint16_t)(s_ui.active_profile - 1) : 0U;
+    }
+
+    if (selected == target) {
+        return;
+    }
+
+    s_ui.brew_profile_dropdown_syncing = true;
+    lv_dropdown_set_selected(s_ui.brew_profile_dropdown, target);
+    s_ui.brew_profile_dropdown_syncing = false;
+}
+
+/**
+ * @brief Forward one protocol command through the communication transport.
+ *
+ * @param[in] payload_text Protocol command text.
+ * @param[in] user_ctx Unused hook context.
+ *
+ * @return Command queue result from `communication_functions_queue_data_text_command`.
+ */
+static esp_err_t ui_lcd_protocol_send_command_cb(const char *payload_text, void *user_ctx)
+{
+    (void)user_ctx;
+    return communication_functions_queue_data_text_command(payload_text);
+}
+
+/**
+ * @brief Refresh Brew dropdown options from protocol-provided profile catalog.
+ *
+ * @param[in] catalog Parsed profile catalog snapshot.
+ */
+static void ui_refresh_profile_dropdown_from_protocol(const lcd_controller_profile_catalog_t *catalog)
+{
+    char dropdown_options[320] = {0};
+    size_t used = 0U;
+    uint16_t selected_index = 0U;
+    bool selected_found = false;
+
+    if (catalog == NULL || s_ui.brew_profile_dropdown == NULL || catalog->count == 0U) {
+        return;
+    }
+
+    for (uint8_t index = 0U; index < catalog->count && index < LCD_CONTROLLER_MAX_PROFILES; index++) {
+        const char *name = catalog->entries[index].profile_name;
+        int written = 0;
+
+        if (name[0] == '\0') {
+            continue;
+        }
+
+        written = snprintf(dropdown_options + used,
+                           sizeof(dropdown_options) - used,
+                           "%s%s",
+                           name,
+                           (index + 1U < catalog->count) ? "\n" : "");
+        if (written < 0) {
+            break;
+        }
+
+        used += (size_t)written;
+        if (used >= sizeof(dropdown_options)) {
+            used = sizeof(dropdown_options) - 1U;
+            break;
+        }
+
+        if ((int)catalog->entries[index].profile_id == s_ui.active_profile) {
+            selected_index = (uint16_t)index;
+            selected_found = true;
+        }
+    }
+
+    if (used == 0U) {
+        return;
+    }
+
+    s_ui.brew_profile_dropdown_syncing = true;
+    lv_dropdown_set_options(s_ui.brew_profile_dropdown, dropdown_options);
+
+    if (!selected_found && catalog->entries[0].profile_id > 0U) {
+        selected_index = 0U;
+        s_ui.active_profile = (int)catalog->entries[0].profile_id;
+        if (s_ui.active_profile >= 1 && s_ui.active_profile <= ui_get_constants()->profile_count) {
+            ui_apply_profile_defaults(s_ui.active_profile);
+        }
+    }
+
+    lv_dropdown_set_selected(s_ui.brew_profile_dropdown, selected_index);
+    s_ui.brew_profile_dropdown_syncing = false;
+
+    ui_update_home_labels();
+}
+
+/**
+ * @brief Apply simulator-provided profile catalog updates to Brew controls.
+ *
+ * @param[in] catalog Parsed profile catalog snapshot.
+ * @param[in] user_ctx Unused hook context.
+ */
+static void ui_lcd_protocol_profile_catalog_hook(const lcd_controller_profile_catalog_t *catalog,
+                                                 void *user_ctx)
+{
+    (void)user_ctx;
+    ui_refresh_profile_dropdown_from_protocol(catalog);
+}
+
+/**
+ * @brief Consume Brew-state publish notifications from protocol layer.
+ *
+ * @details Reserved for future UI actions that react to protocol-side state
+ * publish callbacks.
+ *
+ * @param[in] state Brew/Home state snapshot.
+ * @param[in] user_ctx Unused hook context.
+ */
+static void ui_lcd_protocol_brew_state_hook(const lcd_controller_brew_home_state_t *state,
+                                            void *user_ctx)
+{
+    (void)state;
+    (void)user_ctx;
+}
+
+/**
+ * @brief Refresh Brew page widgets when they are currently rendered.
+ */
+static void ui_update_brew_widgets(void)
+{
+    if (s_ui.brew_temperature_value_label) {
+        char txt[64];
+        snprintf(
+            txt,
+            sizeof(txt),
+            "%.1f C (Target %d C)",
+            s_ui.brew_live_temperature_c,
+            s_ui.target_temp_c);
+        lv_label_set_text(s_ui.brew_temperature_value_label, txt);
+    }
+
+    if (s_ui.brew_water_level_label) {
         char txt[48];
-        snprintf(txt, sizeof(txt), "Target Temp: %d C", s_ui.target_temp_c);
-        lv_label_set_text(s_ui.home_target_label, txt);
+        snprintf(txt, sizeof(txt), "Water Level: %.1f%%", s_ui.brew_live_water_level_pct);
+        lv_label_set_text(s_ui.brew_water_level_label, txt);
+    }
+
+    if (s_ui.brew_water_level_bar) {
+        int level_x10 = (int)lroundf(s_ui.brew_live_water_level_pct * 10.0f);
+        if (level_x10 < 0) {
+            level_x10 = 0;
+        }
+        if (level_x10 > 1000) {
+            level_x10 = 1000;
+        }
+        lv_bar_set_value(s_ui.brew_water_level_bar, level_x10, LV_ANIM_OFF);
+    }
+
+    if (s_ui.brew_weight_value_label) {
+        char txt[96];
+        snprintf(
+            txt,
+            sizeof(txt),
+            "Weight Scale: %.1f g  |  Shot target: %.1f g",
+            s_ui.brew_live_weight_g,
+            s_ui.brew_shot_target_preview_g);
+        lv_label_set_text(s_ui.brew_weight_value_label, txt);
+    }
+
+    if (s_ui.brew_weight_scale_bar) {
+        int weight_x10 = (int)lroundf(s_ui.brew_live_weight_g * 10.0f);
+        if (weight_x10 < 0) {
+            weight_x10 = 0;
+        }
+        if (weight_x10 > 1000) {
+            weight_x10 = 1000;
+        }
+        lv_bar_set_value(s_ui.brew_weight_scale_bar, weight_x10, LV_ANIM_OFF);
+    }
+
+    if (s_ui.brew_warmup_led) {
+        if (s_ui.brew_warmup_on) {
+            lv_led_on(s_ui.brew_warmup_led);
+        } else {
+            lv_led_off(s_ui.brew_warmup_led);
+        }
+    }
+
+    if (s_ui.brew_steam_led) {
+        bool steam_on = s_ui.brew_steam_indicator_on || s_ui.steaming;
+        if (steam_on) {
+            lv_led_on(s_ui.brew_steam_led);
+        } else {
+            lv_led_off(s_ui.brew_steam_led);
+        }
+    }
+
+    if (s_ui.brew_uptime_label) {
+        char txt[56];
+        snprintf(txt, sizeof(txt), "Uptime: %.1f min", s_ui.brew_uptime_minutes);
+        lv_label_set_text(s_ui.brew_uptime_label, txt);
     }
 }
 
@@ -643,9 +958,14 @@ static const system_constants_profile_t *ui_get_profile_constants(int profile_in
 static void ui_apply_profile_defaults(int profile_index)
 {
     const system_constants_profile_t *profile = ui_get_profile_constants(profile_index);
+    float brew_time_s = 30.0f;
+    if (s_ui.sim_data_work_packet.i[3] > 0) {
+        brew_time_s = (float)s_ui.sim_data_work_packet.i[3] / 1000.0f;
+    }
     s_ui.active_profile = profile_index;
     s_ui.target_temp_c = profile->target_temperature_c;
     s_ui.preinf_s = profile->preinfusion_seconds;
+    s_ui.brew_shot_target_preview_g = ui_estimate_shot_target_preview_g(profile_index, brew_time_s);
 }
 
 /**
@@ -1208,6 +1528,118 @@ static void ui_plot_realtime_packet(const data_downlink_packet_t *packet)
 }
 
 /**
+ * @brief Ingest Home/Brew metrics from the latest downlink packet.
+ *
+ * @details Packet integer slots map as:
+ * - i[1]: profile id
+ * - i[2]: brew elapsed ms
+ * - i[3]: brew duration ms
+ * - i[6]: target temperature milli-C
+ * - i[7]: water level percent x10
+ * - i[8]: weight grams x100
+ * - i[9]: warmup boolean
+ * - i[10]: steam boolean
+ * - i[11]: uptime minutes x10
+ * - i[12]: shot target grams x100
+ */
+static void ui_ingest_home_metrics_from_packet(const data_downlink_packet_t *packet, uint32_t packet_interval_us)
+{
+    const uint32_t sample_count = UI_PLOT_SAMPLES_PER_CHANNEL;
+    float fallback_weight_delta = 0.0f;
+    bool extended_layout_present = false;
+
+    if (packet == NULL) {
+        return;
+    }
+
+    extended_layout_present = (packet->i[7] != 0) ||
+                              (packet->i[8] != 0) ||
+                              (packet->i[11] != 0) ||
+                              (packet->i[12] != 0) ||
+                              (packet->i[9] == 1) ||
+                              (packet->i[10] == 1);
+
+    if (packet->i[1] >= 1 && packet->i[1] <= ui_get_constants()->profile_count) {
+        s_ui.active_profile = packet->i[1];
+    }
+    if (packet->i[6] > 0) {
+        s_ui.target_temp_c = (int)lroundf((float)packet->i[6] / 1000.0f);
+    }
+
+    if ((2U * sample_count) < DATA_SIZE_FLOATS) {
+        s_ui.brew_live_temperature_c = packet->f[(2U * sample_count) + (sample_count - 1U)];
+    }
+
+    if (extended_layout_present) {
+        s_ui.brew_live_water_level_pct = (float)packet->i[7] / 10.0f;
+    }
+
+    if (extended_layout_present) {
+        s_ui.brew_live_weight_g = (float)packet->i[8] / 100.0f;
+    } else {
+        float flow_sum = 0.0f;
+        for (uint32_t sample_index = 0; sample_index < sample_count; sample_index++) {
+            flow_sum += packet->f[sample_count + sample_index];
+        }
+        fallback_weight_delta = (flow_sum / (float)sample_count) * ((float)packet_interval_us / 1000000.0f);
+        if (fallback_weight_delta > 0.0f && s_ui.brewing) {
+            s_ui.brew_live_weight_g += fallback_weight_delta;
+        }
+    }
+
+    if (extended_layout_present && (packet->i[9] == 0 || packet->i[9] == 1)) {
+        s_ui.brew_warmup_on = (packet->i[9] == 1);
+    } else {
+        s_ui.brew_warmup_on = s_ui.brew_live_temperature_c < ((float)s_ui.target_temp_c - 0.6f);
+    }
+
+    if (extended_layout_present && (packet->i[10] == 0 || packet->i[10] == 1)) {
+        s_ui.brew_steam_indicator_on = (packet->i[10] == 1);
+    }
+
+    if (extended_layout_present && packet->i[11] >= 0) {
+        s_ui.brew_uptime_minutes = (float)packet->i[11] / 10.0f;
+    }
+
+    if (extended_layout_present) {
+        s_ui.brew_shot_target_preview_g = (float)packet->i[12] / 100.0f;
+    } else {
+        float brew_time_s = (packet->i[3] > 0) ? ((float)packet->i[3] / 1000.0f) : 30.0f;
+        s_ui.brew_shot_target_preview_g = ui_estimate_shot_target_preview_g(s_ui.active_profile, brew_time_s);
+    }
+
+    if (s_ui.brew_live_water_level_pct <= 0.0f) {
+        s_ui.brew_live_water_level_pct = 100.0f - (s_ui.brew_live_weight_g * 0.45f);
+    }
+    if (s_ui.brew_live_water_level_pct < 0.0f) {
+        s_ui.brew_live_water_level_pct = 0.0f;
+    }
+    if (s_ui.brew_live_water_level_pct > 100.0f) {
+        s_ui.brew_live_water_level_pct = 100.0f;
+    }
+
+    lcd_controller_brew_home_state_t brew_state = {
+        .profile_id = (s_ui.active_profile > 0) ? (uint8_t)s_ui.active_profile : 1U,
+        .brew_elapsed_ms = (uint32_t)((packet->i[2] >= 0) ? packet->i[2] : 0),
+        .brew_duration_ms = (uint32_t)((packet->i[3] >= 0) ? packet->i[3] : 0),
+        .target_temperature_c = (float)s_ui.target_temp_c,
+        .target_pressure_bar = (float)packet->i[4] / 1000.0f,
+        .target_flow_ml_s = (float)packet->i[5] / 1000.0f,
+        .live_temperature_c = s_ui.brew_live_temperature_c,
+        .live_water_level_pct = s_ui.brew_live_water_level_pct,
+        .live_weight_g = s_ui.brew_live_weight_g,
+        .shot_target_preview_g = s_ui.brew_shot_target_preview_g,
+        .warmup_on = s_ui.brew_warmup_on,
+        .steam_on = s_ui.brew_steam_indicator_on,
+        .uptime_minutes = s_ui.brew_uptime_minutes,
+    };
+    (void)lcd_controller_protocol_publish_brew_home_state(&brew_state);
+
+    ui_update_home_labels();
+    ui_update_header_status();
+}
+
+/**
  * @brief Queue ProfileSelection payload for simulator-side profile binding.
  *
  * @details The simulator currently supports one active brew profile, but this
@@ -1410,6 +1842,7 @@ static void ui_sync_sim_data_toggle_from_peer_event(void)
             }
         }
         ui_update_header_status();
+        ui_update_brew_widgets();
     }
     if (s_ui.sim_data_toggle_btn != NULL) {
         s_ui.sim_data_toggle_syncing = true;
@@ -1711,6 +2144,7 @@ static void ui_process_sim_data_fifo(void)
     s_ui.sim_data_last_packet_rx_us = now_us;
     s_ui.sim_data_packet_interval_us = packet_interval_us;
     s_ui.sim_data_sample_period_us = packet_interval_us / UI_PLOT_SAMPLES_PER_CHANNEL;
+    ui_ingest_home_metrics_from_packet(packet, packet_interval_us);
 
     if (s_ui.sim_data_overlay != NULL &&
         ui_sim_data_refresh_due(now_us,
@@ -1760,6 +2194,7 @@ static void ui_sync_sim_data_toggle_from_stream_activity(void)
         s_ui.sim_data_toggle_syncing = false;
     }
     ui_update_header_status();
+    ui_update_brew_widgets();
     ui_update_sim_data_status_label();
 }
 
@@ -2398,7 +2833,9 @@ static void ui_brew_toggle_event_cb(lv_event_t *e)
     if (s_ui.brewing) {
         char payload_text[96];
         s_ui.shot_s = 0;
+        s_ui.brew_live_weight_g = 0.0f;
         s_ui.steaming = false;
+        s_ui.brew_steam_indicator_on = false;
         if (s_ui.steam_toggle_btn) {
             lv_obj_clear_state(s_ui.steam_toggle_btn, LV_STATE_CHECKED);
         }
@@ -2424,6 +2861,7 @@ static void ui_brew_toggle_event_cb(lv_event_t *e)
         ESP_LOGI(TAG, "brew OFF");
     }
     ui_update_header_status();
+    ui_update_brew_widgets();
 }
 
 /**
@@ -2437,6 +2875,7 @@ static void ui_steam_toggle_event_cb(lv_event_t *e)
 {
     lv_obj_t *obj = lv_event_get_target(e);
     s_ui.steaming = lv_obj_has_state(obj, LV_STATE_CHECKED);
+    s_ui.brew_steam_indicator_on = s_ui.steaming;
     if (s_ui.steaming) {
         s_ui.brewing = false;
         s_ui.sim_data_enabled = false;
@@ -2449,6 +2888,7 @@ static void ui_steam_toggle_event_cb(lv_event_t *e)
         ESP_LOGI(TAG, "steam OFF");
     }
     ui_update_header_status();
+    ui_update_brew_widgets();
 }
 
 /**
@@ -2472,6 +2912,40 @@ static void ui_profile_btn_event_cb(lv_event_t *e)
         ui_render_active_page();
     }
     ESP_LOGI(TAG, "profile %d selected", s_ui.active_profile);
+}
+
+/**
+ * @brief Handle Brew-page dropdown profile selection changes.
+ *
+ * @details Dropdown options are zero-based while profile indices in the data
+ * model are one-based, so this callback remaps and applies the selection.
+ */
+static void ui_profile_dropdown_event_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    uint16_t selected = lv_dropdown_get_selected(obj);
+    int profile = (int)selected + 1;
+    lcd_controller_profile_catalog_t protocol_catalog = {0};
+
+    if (lcd_controller_protocol_get_profile_catalog(&protocol_catalog) == ESP_OK &&
+        selected < protocol_catalog.count &&
+        protocol_catalog.entries[selected].profile_id > 0U) {
+        profile = (int)protocol_catalog.entries[selected].profile_id;
+    }
+
+    if (s_ui.brew_profile_dropdown_syncing) {
+        return;
+    }
+    if (profile < 1 || profile > ui_get_constants()->profile_count) {
+        return;
+    }
+
+    ui_apply_profile_defaults(profile);
+    s_ui.brew_shot_target_preview_g = ui_estimate_shot_target_preview_g(s_ui.active_profile, 30.0f);
+    ui_update_home_labels();
+    ui_update_header_status();
+    ui_send_profile_selection_command(s_ui.startup_mode == UI_INIT_MODE_OFFLINE);
+    ESP_LOGI(TAG, "profile %d selected from Profile Select dropdown", s_ui.active_profile);
 }
 
 /**
@@ -2606,14 +3080,160 @@ static void ui_build_page_home(void)
  */
 static void ui_build_page_brew(void)
 {
-    ui_build_page_title(s_ui.content, "Brew");
-    ui_build_page_live_summary(s_ui.content);
+    const system_constants_data_t *constants = ui_get_constants();
+    char dropdown_options[512] = {0};
+    size_t used = 0;
 
-    lv_obj_t *row1 = lv_label_create(s_ui.content);
-    lv_label_set_text(row1, "Pump / Brew");
-    lv_obj_set_style_text_font(row1, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(row1, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(row1, LV_ALIGN_TOP_LEFT, 20, 104);
+    lv_obj_t *brew_title = ui_build_page_title(s_ui.content, "Brew");
+    lv_obj_set_style_text_font(brew_title, &lv_font_montserrat_30, 0);
+    ui_build_page_live_summary(s_ui.content);
+    if (s_ui.page_status != NULL) {
+        lv_obj_add_flag(s_ui.page_status, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_ui.page_runtime != NULL) {
+        lv_obj_set_style_text_font(s_ui.page_runtime, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(s_ui.page_runtime, lv_color_hex(UI_COLOR_TEXT), 0);
+        lv_obj_align(s_ui.page_runtime, LV_ALIGN_TOP_LEFT, 182, 10);
+    }
+
+    s_ui.home_active_profile = lv_label_create(s_ui.content);
+    lv_obj_set_style_text_font(s_ui.home_active_profile, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(s_ui.home_active_profile, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(s_ui.home_active_profile, LV_ALIGN_TOP_LEFT, 20, 94);
+
+    s_ui.brew_profile_dropdown = lv_dropdown_create(s_ui.content);
+    lv_obj_set_size(s_ui.brew_profile_dropdown, 200, 44);
+    lv_obj_align_to(
+        s_ui.brew_profile_dropdown,
+        s_ui.home_active_profile,
+        LV_ALIGN_OUT_RIGHT_MID,
+        16,
+        0);
+    lv_obj_set_style_radius(s_ui.brew_profile_dropdown, 16, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_ui.brew_profile_dropdown, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_ui.brew_profile_dropdown, lv_color_hex(UI_COLOR_ACCENT), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ui.brew_profile_dropdown, lv_color_hex(UI_COLOR_PANEL), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ui.brew_profile_dropdown, lv_color_hex(UI_COLOR_CARD_ALT), LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(s_ui.brew_profile_dropdown, lv_color_hex(UI_COLOR_CARD_ALT), LV_PART_MAIN | LV_STATE_FOCUSED);
+    lv_obj_set_style_text_color(s_ui.brew_profile_dropdown, lv_color_hex(UI_COLOR_TEXT), LV_PART_MAIN);
+    lv_obj_set_style_text_font(s_ui.brew_profile_dropdown, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_set_style_pad_left(s_ui.brew_profile_dropdown, 12, LV_PART_MAIN);
+    lv_obj_set_style_pad_right(s_ui.brew_profile_dropdown, 12, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ui.brew_profile_dropdown, lv_color_hex(UI_COLOR_ACCENT_ALT), LV_PART_INDICATOR);
+    lv_obj_set_style_text_color(s_ui.brew_profile_dropdown, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR);
+    lv_obj_add_event_cb(s_ui.brew_profile_dropdown, ui_profile_dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *profile_list = lv_dropdown_get_list(s_ui.brew_profile_dropdown);
+    if (profile_list != NULL) {
+        lv_obj_set_style_radius(profile_list, 12, LV_PART_MAIN);
+        lv_obj_set_style_border_width(profile_list, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(profile_list, lv_color_hex(UI_COLOR_ACCENT), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(profile_list, lv_color_hex(UI_COLOR_CARD), LV_PART_MAIN);
+        lv_obj_set_style_text_color(profile_list, lv_color_hex(UI_COLOR_TEXT), LV_PART_MAIN);
+        lv_obj_set_style_text_font(profile_list, &lv_font_montserrat_16, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(profile_list, lv_color_hex(UI_COLOR_ACCENT_ALT), LV_PART_SELECTED);
+        lv_obj_set_style_text_color(profile_list, lv_color_hex(0xFFFFFF), LV_PART_SELECTED);
+    }
+
+    if (constants->profile_count > 0) {
+        for (int i = 0; i < constants->profile_count && used + 1U < sizeof(dropdown_options); i++) {
+            int written = snprintf(
+                dropdown_options + used,
+                sizeof(dropdown_options) - used,
+                "%s%s",
+                constants->profiles[i].name,
+                (i + 1 < constants->profile_count) ? "\n" : "");
+            if (written < 0) {
+                break;
+            }
+            used += (size_t)written;
+            if (used >= sizeof(dropdown_options)) {
+                used = sizeof(dropdown_options) - 1U;
+                break;
+            }
+        }
+        lv_dropdown_set_options(s_ui.brew_profile_dropdown, dropdown_options);
+    } else {
+        lv_dropdown_set_options(s_ui.brew_profile_dropdown, "Profile 1");
+    }
+
+    lcd_controller_profile_catalog_t protocol_catalog = {0};
+    if (lcd_controller_protocol_get_profile_catalog(&protocol_catalog) == ESP_OK &&
+        protocol_catalog.count > 0U) {
+        ui_refresh_profile_dropdown_from_protocol(&protocol_catalog);
+    }
+    ui_sync_brew_profile_dropdown();
+
+    lv_obj_t *temp_title = lv_label_create(s_ui.content);
+    lv_label_set_text(temp_title, "Temperature");
+    lv_obj_set_style_text_font(temp_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(temp_title, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(temp_title, LV_ALIGN_TOP_LEFT, 182, 40);
+    lv_obj_add_flag(temp_title, LV_OBJ_FLAG_HIDDEN);
+
+    s_ui.brew_temperature_value_label = lv_label_create(s_ui.content);
+    lv_obj_set_style_text_font(s_ui.brew_temperature_value_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(s_ui.brew_temperature_value_label, lv_color_hex(UI_COLOR_ACCENT), 0);
+    lv_obj_align(s_ui.brew_temperature_value_label, LV_ALIGN_TOP_LEFT, 182, 60);
+    lv_obj_add_flag(s_ui.brew_temperature_value_label, LV_OBJ_FLAG_HIDDEN);
+
+    s_ui.brew_water_level_label = lv_label_create(s_ui.content);
+    lv_obj_set_style_text_font(s_ui.brew_water_level_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_ui.brew_water_level_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(s_ui.brew_water_level_label, LV_ALIGN_TOP_LEFT, 20, 150);
+
+    s_ui.brew_water_level_bar = lv_bar_create(s_ui.content);
+    lv_obj_set_size(s_ui.brew_water_level_bar, 460, 14);
+    lv_obj_align(s_ui.brew_water_level_bar, LV_ALIGN_TOP_LEFT, 20, 174);
+    lv_bar_set_range(s_ui.brew_water_level_bar, 0, 1000);
+    lv_obj_set_style_bg_color(s_ui.brew_water_level_bar, lv_color_hex(UI_COLOR_PANEL_ALT), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_ui.brew_water_level_bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ui.brew_water_level_bar, lv_color_hex(UI_COLOR_SUCCESS), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(s_ui.brew_water_level_bar, LV_OPA_COVER, LV_PART_INDICATOR);
+
+    s_ui.brew_weight_value_label = lv_label_create(s_ui.content);
+    lv_obj_set_style_text_font(s_ui.brew_weight_value_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_ui.brew_weight_value_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(s_ui.brew_weight_value_label, LV_ALIGN_TOP_LEFT, 20, 202);
+
+    s_ui.brew_weight_scale_bar = lv_bar_create(s_ui.content);
+    lv_obj_set_size(s_ui.brew_weight_scale_bar, 460, 14);
+    lv_obj_align(s_ui.brew_weight_scale_bar, LV_ALIGN_TOP_LEFT, 20, 226);
+    lv_bar_set_range(s_ui.brew_weight_scale_bar, 0, 1000);
+    lv_obj_set_style_bg_color(s_ui.brew_weight_scale_bar, lv_color_hex(UI_COLOR_PANEL_ALT), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_ui.brew_weight_scale_bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ui.brew_weight_scale_bar, lv_color_hex(UI_COLOR_ACCENT), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(s_ui.brew_weight_scale_bar, LV_OPA_COVER, LV_PART_INDICATOR);
+
+    s_ui.brew_warmup_led = lv_led_create(s_ui.content);
+    lv_obj_align(s_ui.brew_warmup_led, LV_ALIGN_TOP_LEFT, 20, 254);
+    lv_led_set_color(s_ui.brew_warmup_led, lv_color_hex(0xF59E0B));
+
+    lv_obj_t *warmup_label = lv_label_create(s_ui.content);
+    lv_label_set_text(warmup_label, "Warmup ON");
+    lv_obj_set_style_text_font(warmup_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(warmup_label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+    lv_obj_align(warmup_label, LV_ALIGN_TOP_LEFT, 46, 254);
+
+    s_ui.brew_steam_led = lv_led_create(s_ui.content);
+    lv_obj_align(s_ui.brew_steam_led, LV_ALIGN_TOP_LEFT, 188, 254);
+    lv_led_set_color(s_ui.brew_steam_led, lv_color_hex(UI_COLOR_ACCENT));
+
+    lv_obj_t *steam_label = lv_label_create(s_ui.content);
+    lv_label_set_text(steam_label, "Steam ON");
+    lv_obj_set_style_text_font(steam_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(steam_label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+    lv_obj_align(steam_label, LV_ALIGN_TOP_LEFT, 214, 254);
+
+    s_ui.brew_uptime_label = lv_label_create(s_ui.content);
+    lv_obj_set_style_text_font(s_ui.brew_uptime_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_ui.brew_uptime_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(s_ui.brew_uptime_label, LV_ALIGN_TOP_LEFT, 330, 252);
+
+    lv_obj_t *mode_row = lv_label_create(s_ui.content);
+    lv_label_set_text(mode_row, "Pump / Brew  |  Steam Mode");
+    lv_obj_set_style_text_font(mode_row, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(mode_row, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(mode_row, LV_ALIGN_TOP_LEFT, 20, 232);
 
     s_ui.brew_toggle_btn = ui_create_toggle_button(s_ui.content,
                                                    "Brew",
@@ -2621,12 +3241,7 @@ static void ui_build_page_brew(void)
                                                    500,
                                                    92,
                                                    ui_brew_toggle_event_cb);
-
-    lv_obj_t *row2 = lv_label_create(s_ui.content);
-    lv_label_set_text(row2, "Steam Mode");
-    lv_obj_set_style_text_font(row2, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(row2, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(row2, LV_ALIGN_TOP_LEFT, 20, 186);
+    lv_obj_align(s_ui.brew_toggle_btn, LV_ALIGN_TOP_RIGHT, -30, 92);
 
     s_ui.steam_toggle_btn = ui_create_toggle_button(s_ui.content,
                                                     "Steam",
@@ -2634,12 +3249,9 @@ static void ui_build_page_brew(void)
                                                     500,
                                                     174,
                                                     ui_steam_toggle_event_cb);
+    lv_obj_align(s_ui.steam_toggle_btn, LV_ALIGN_TOP_RIGHT, -30, 174);
 
-    lv_obj_t *note = lv_label_create(s_ui.content);
-    lv_label_set_text(note, "Workflow: preinfusion -> extraction -> finish");
-    lv_obj_set_style_text_font(note, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(note, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
-    lv_obj_align(note, LV_ALIGN_TOP_LEFT, 20, 278);
+    ui_update_home_labels();
 }
 
 /**
@@ -3038,13 +3650,22 @@ static void ui_render_active_page(void)
         s_ui.plot_pressure_y_axis_labels[i] = NULL;
         s_ui.plot_flow_y_axis_labels[i] = NULL;
     }
+    s_ui.brew_profile_dropdown = NULL;
+    s_ui.home_active_profile = NULL;
+    s_ui.home_target_label = NULL;
+    s_ui.brew_temperature_value_label = NULL;
+    s_ui.brew_water_level_label = NULL;
+    s_ui.brew_water_level_bar = NULL;
+    s_ui.brew_weight_value_label = NULL;
+    s_ui.brew_weight_scale_bar = NULL;
+    s_ui.brew_warmup_led = NULL;
+    s_ui.brew_steam_led = NULL;
+    s_ui.brew_uptime_label = NULL;
 
     switch (s_ui.active_page) {
     case UI_PAGE_PLOT:
         s_ui.content = s_ui.tab_pages[UI_PAGE_PLOT];
         lv_obj_clean(s_ui.content);
-        s_ui.home_active_profile = NULL;
-        s_ui.home_target_label = NULL;
         ui_build_page_home();
         break;
     case UI_PAGE_BREW:
@@ -3108,12 +3729,20 @@ static void ui_tabview_event_cb(lv_event_t *e)
  */
 static void ui_heartbeat_timer_cb(lv_timer_t *timer)
 {
+    communication_snapshot_t comm_snapshot = {0};
+
     (void)timer;
     if (s_ui.brewing) {
         s_ui.shot_s++;
     }
+    if (communication_functions_get_snapshot(&comm_snapshot) == ESP_OK) {
+        s_ui.brew_uptime_minutes = (float)comm_snapshot.session_uptime_ms / 60000.0f;
+        (void)lcd_controller_protocol_process_peer_text_event(comm_snapshot.last_received_text_event_count,
+                                                              comm_snapshot.last_received_text);
+    }
     ui_update_header_status();
     ui_update_header_runtime();
+    ui_update_brew_widgets();
     ui_update_clock_bar();
     ui_update_connection_fault_indicator();
     ui_update_connection_info_overlay_contents();
@@ -3204,6 +3833,16 @@ static void ui_build_main_screen(void)
         s_ui.sim_data_poll_timer = lv_timer_create(ui_sim_data_poll_timer_cb, UI_SIM_DATA_POLL_PERIOD_MS, NULL);
     }
 
+    if (lcd_controller_protocol_init(ui_lcd_protocol_send_command_cb, NULL) == ESP_OK) {
+        lcd_controller_protocol_set_profile_catalog_hook(ui_lcd_protocol_profile_catalog_hook, NULL);
+        lcd_controller_protocol_set_brew_state_hook(ui_lcd_protocol_brew_state_hook, NULL);
+        if (lcd_controller_protocol_initialize_hooks() != ESP_OK) {
+            ESP_LOGW(TAG, "LCD protocol bootstrap command queue failed.");
+        }
+    } else {
+        ESP_LOGW(TAG, "LCD protocol init failed; Brew communication hooks are disabled.");
+    }
+
     ESP_LOGI(TAG, "UI screen created successfully");
 }
 
@@ -3264,6 +3903,25 @@ void ui_screen_create(void)
     s_ui.clock_label = NULL;
     s_ui.brew_toggle_btn = NULL;
     s_ui.steam_toggle_btn = NULL;
+    s_ui.brew_profile_dropdown = NULL;
+    s_ui.home_active_profile = NULL;
+    s_ui.home_target_label = NULL;
+    s_ui.brew_temperature_value_label = NULL;
+    s_ui.brew_water_level_label = NULL;
+    s_ui.brew_water_level_bar = NULL;
+    s_ui.brew_weight_value_label = NULL;
+    s_ui.brew_weight_scale_bar = NULL;
+    s_ui.brew_warmup_led = NULL;
+    s_ui.brew_steam_led = NULL;
+    s_ui.brew_uptime_label = NULL;
+    s_ui.brew_profile_dropdown_syncing = false;
+    s_ui.brew_live_temperature_c = 93.0f;
+    s_ui.brew_live_water_level_pct = 92.0f;
+    s_ui.brew_live_weight_g = 0.0f;
+    s_ui.brew_shot_target_preview_g = 36.0f;
+    s_ui.brew_warmup_on = true;
+    s_ui.brew_steam_indicator_on = false;
+    s_ui.brew_uptime_minutes = 0.0f;
     s_ui.sim_data_enabled = false;
     s_ui.sim_data_packets_received = 0;
     s_ui.sim_data_last_seq = 0;
