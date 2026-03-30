@@ -43,7 +43,7 @@ extern "C" {
 #define LVGL_PORT_TASK_STACK_SIZE           (12288)
 #define LVGL_PORT_TASK_PRIORITY             (3)
 #define LVGL_PORT_TASK_CORE                 (-1)
-#define LVGL_PORT_BACKLIGHT_IDLE_TIMEOUT_SEC (30U)
+#define LVGL_PORT_BACKLIGHT_IDLE_TIMEOUT_SEC (60U)
 #define LVGL_PORT_BACKLIGHT_IDLE_TICK_MS     (1000U)
 /**
  *

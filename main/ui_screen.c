@@ -21,6 +21,7 @@
 #include "hardware_init.h"
 #include "peripherals_manager.h"
 #include "system_constants.h"
+#include "assets/coffee_ready_img.h"
 
 static const char *TAG = "ui_screen";
 
@@ -102,8 +103,12 @@ typedef struct {
     lv_obj_t *brew_weight_value_label;
     lv_obj_t *brew_weight_scale_bar;
     lv_obj_t *brew_warmup_led;
+    lv_obj_t *brew_warmup_label;
     lv_obj_t *brew_steam_led;
+    lv_obj_t *brew_steam_label;
     lv_obj_t *brew_uptime_label;
+    lv_obj_t *coffee_preparation_success_msgbox;
+    lv_obj_t *coffee_preparation_success_ok_btn;
     lv_obj_t *settings_target_slider;
     lv_obj_t *settings_target_value;
     lv_obj_t *settings_preinf_slider;
@@ -123,12 +128,19 @@ typedef struct {
     int target_temp_c;
     int preinf_s;
     int shot_s;
+    float brew_live_pressure_bar;
     float brew_live_temperature_c;
     float brew_live_water_level_pct;
     float brew_live_weight_g;
     float brew_shot_target_preview_g;
     bool brew_warmup_on;
     bool brew_steam_indicator_on;
+    bool brew_server_shot_valid;
+    bool brew_server_pressure_valid;
+    bool brew_server_water_valid;
+    bool brew_server_weight_valid;
+    bool brew_server_warmup_valid;
+    bool brew_server_temperature_valid;
     float brew_uptime_minutes;
     bool sim_data_enabled;
     uint32_t sim_data_packets_received;
@@ -217,8 +229,12 @@ static ui_state_t s_ui = {
     .brew_weight_value_label = NULL,
     .brew_weight_scale_bar = NULL,
     .brew_warmup_led = NULL,
+    .brew_warmup_label = NULL,
     .brew_steam_led = NULL,
+    .brew_steam_label = NULL,
     .brew_uptime_label = NULL,
+    .coffee_preparation_success_msgbox = NULL,
+    .coffee_preparation_success_ok_btn = NULL,
     .settings_target_slider = NULL,
     .settings_target_value = NULL,
     .settings_preinf_slider = NULL,
@@ -238,12 +254,19 @@ static ui_state_t s_ui = {
     .target_temp_c = 93,
     .preinf_s = 4,
     .shot_s = 0,
+    .brew_live_pressure_bar = 0.2f,
     .brew_live_temperature_c = 93.0f,
     .brew_live_water_level_pct = 92.0f,
     .brew_live_weight_g = 0.0f,
     .brew_shot_target_preview_g = 36.0f,
     .brew_warmup_on = true,
     .brew_steam_indicator_on = false,
+    .brew_server_shot_valid = false,
+    .brew_server_pressure_valid = false,
+    .brew_server_water_valid = false,
+    .brew_server_weight_valid = false,
+    .brew_server_warmup_valid = false,
+    .brew_server_temperature_valid = false,
     .brew_uptime_minutes = 0.0f,
     .sim_data_enabled = false,
     .sim_data_packets_received = 0,
@@ -287,7 +310,7 @@ static ui_state_t s_ui = {
 #define UI_SIM_DATA_STATUS_REFRESH_PERIOD_MS (250U)
 #define UI_SIM_DATA_MAX_DRAIN_PER_TICK (8U)
 #define UI_SIM_DATA_CHART_SCALE_FACTOR (100.0f)
-#define UI_SIM_DATA_DEFAULT_PACKET_INTERVAL_US (100000U)
+#define UI_SIM_DATA_DEFAULT_PACKET_INTERVAL_US (1000000U)
 #define UI_SIM_DATA_STREAM_IDLE_TIMEOUT_US (1500000U)
 #define UI_SIM_DATA_X_LABEL_COUNT (6U)
 #define UI_SIM_DATA_Y_LABEL_COUNT (5U)
@@ -297,6 +320,11 @@ static ui_state_t s_ui = {
 #define UI_PLOT_X_LABEL_STEP_MS (500U)
 #define UI_PLOT_FLOAT_SCALE_FACTOR (100.0f)
 #define UI_PLOT_SAMPLES_PER_CHANNEL (10U)
+#define UI_BREW_VALID_SHOT_TIMER_MASK (1U << 0)
+#define UI_BREW_VALID_LIVE_PRESSURE_MASK (1U << 1)
+#define UI_BREW_VALID_WATER_LEVEL_MASK (1U << 2)
+#define UI_BREW_VALID_WEIGHT_MASK (1U << 3)
+#define UI_BREW_VALID_WARMUP_MASK (1U << 4)
 
 static const system_constants_data_t *ui_get_constants(void);
 static const system_constants_profile_t *ui_get_profile_constants(int profile_index);
@@ -541,26 +569,45 @@ static void ui_update_header_runtime(void)
         return;
     }
 
-    int pressure_tenths = s_ui.brewing ? (85 + (s_ui.shot_s % 20)) : 2;
+    char shot_text[24];
+    char pressure_text[32];
+    char temp_text[64];
     char line[160];
+    if (s_ui.brew_server_shot_valid) {
+        snprintf(shot_text, sizeof(shot_text), "%02ds", s_ui.shot_s);
+    } else {
+        snprintf(shot_text, sizeof(shot_text), "N/A");
+    }
+    if (s_ui.brew_server_pressure_valid) {
+        snprintf(pressure_text, sizeof(pressure_text), "%.1f Bar", s_ui.brew_live_pressure_bar);
+    } else {
+        snprintf(pressure_text, sizeof(pressure_text), "N/A");
+    }
+    if (s_ui.brew_server_temperature_valid) {
+        snprintf(temp_text,
+                 sizeof(temp_text),
+                 "%.1fC (Target %d C)",
+                 s_ui.brew_live_temperature_c,
+                 s_ui.target_temp_c);
+    } else {
+        snprintf(temp_text, sizeof(temp_text), "N/A (Target %d C)", s_ui.target_temp_c);
+    }
+
     if (s_ui.active_page == UI_PAGE_BREW) {
         snprintf(
             line,
             sizeof(line),
-            "Shot %02ds  |  Pressure %d.%d Bar  |  Temperature %.1fC (Target %d C)",
-            s_ui.shot_s,
-            pressure_tenths / 10,
-            pressure_tenths % 10,
-            s_ui.brew_live_temperature_c,
-            s_ui.target_temp_c);
+            "Shot %s  |  Pressure %s  |  Temperature %s",
+            shot_text,
+            pressure_text,
+            temp_text);
     } else {
         snprintf(
             line,
             sizeof(line),
-            "Shot %02ds  |  Pressure %d.%d Bar",
-            s_ui.shot_s,
-            pressure_tenths / 10,
-            pressure_tenths % 10);
+            "Shot %s  |  Pressure %s",
+            shot_text,
+            pressure_text);
     }
     lv_label_set_text(s_ui.page_runtime, line);
 }
@@ -796,66 +843,210 @@ static void ui_lcd_protocol_brew_state_hook(const lcd_controller_brew_home_state
     (void)user_ctx;
 }
 
+static void ui_hide_coffee_preparation_success_msgbox(void)
+{
+    if (s_ui.coffee_preparation_success_msgbox != NULL) {
+        lv_obj_del(s_ui.coffee_preparation_success_msgbox);
+        s_ui.coffee_preparation_success_msgbox = NULL;
+        s_ui.coffee_preparation_success_ok_btn = NULL;
+    }
+}
+
+static void ui_coffee_preparation_success_ok_event_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_hide_coffee_preparation_success_msgbox();
+}
+
+/* Coffee_preparation_success_msgbox */
+static void ui_show_coffee_preparation_success_msgbox(void)
+{
+    lv_obj_t *title = NULL;
+    lv_obj_t *img = NULL;
+    lv_obj_t *ok_label = NULL;
+
+    if (s_ui.root == NULL) {
+        return;
+    }
+
+    if (s_ui.coffee_preparation_success_msgbox != NULL) {
+        lv_obj_move_foreground(s_ui.coffee_preparation_success_msgbox);
+        lv_obj_clear_flag(s_ui.coffee_preparation_success_msgbox, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    s_ui.coffee_preparation_success_msgbox = lv_obj_create(s_ui.root);
+    lv_obj_set_size(s_ui.coffee_preparation_success_msgbox, 700, 350);
+    lv_obj_align(s_ui.coffee_preparation_success_msgbox, LV_ALIGN_TOP_MID, 0, 18);
+    lv_obj_set_style_radius(s_ui.coffee_preparation_success_msgbox, 20, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_ui.coffee_preparation_success_msgbox, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_ui.coffee_preparation_success_msgbox, lv_color_hex(0x93C5FD), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ui.coffee_preparation_success_msgbox, lv_color_hex(UI_COLOR_PANEL), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_ui.coffee_preparation_success_msgbox, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(s_ui.coffee_preparation_success_msgbox, 24, LV_PART_MAIN);
+    lv_obj_set_style_shadow_color(s_ui.coffee_preparation_success_msgbox, lv_color_hex(0x020617), LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_ui.coffee_preparation_success_msgbox, 14, LV_PART_MAIN);
+    lv_obj_clear_flag(s_ui.coffee_preparation_success_msgbox, LV_OBJ_FLAG_SCROLLABLE);
+
+    title = lv_label_create(s_ui.coffee_preparation_success_msgbox);
+    lv_label_set_text(title, "Coffee Ready!");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_30, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
+
+    img = lv_image_create(s_ui.coffee_preparation_success_msgbox);
+    lv_image_set_src(img, &coffee_ready_espresso_img);
+    lv_obj_align(img, LV_ALIGN_TOP_MID, 0, 64);
+
+    s_ui.coffee_preparation_success_ok_btn = lv_btn_create(s_ui.coffee_preparation_success_msgbox);
+    lv_obj_set_size(s_ui.coffee_preparation_success_ok_btn, 130, 52);
+    lv_obj_align(s_ui.coffee_preparation_success_ok_btn, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_set_style_radius(s_ui.coffee_preparation_success_ok_btn, 14, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_ui.coffee_preparation_success_ok_btn, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ui.coffee_preparation_success_ok_btn, lv_color_hex(UI_COLOR_ACCENT_ALT), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ui.coffee_preparation_success_ok_btn, lv_color_hex(UI_COLOR_ACCENT), LV_PART_MAIN | LV_STATE_PRESSED);
+
+    ok_label = lv_label_create(s_ui.coffee_preparation_success_ok_btn);
+    lv_label_set_text(ok_label, "OK");
+    lv_obj_set_style_text_font(ok_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(ok_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(ok_label);
+
+    lv_obj_add_event_cb(
+        s_ui.coffee_preparation_success_ok_btn,
+        ui_coffee_preparation_success_ok_event_cb,
+        LV_EVENT_CLICKED,
+        NULL);
+
+    lv_obj_move_foreground(s_ui.coffee_preparation_success_msgbox);
+}
+
 /**
  * @brief Refresh Brew page widgets when they are currently rendered.
  */
 static void ui_update_brew_widgets(void)
 {
+    bool shot_progress_valid = false;
+    float shot_progress_pct = 0.0f;
+    int shot_target_x10 = 0;
+    int shot_weight_x10 = 0;
+
+    if (s_ui.brew_shot_target_preview_g > 0.0f) {
+        shot_target_x10 = (int)lroundf(s_ui.brew_shot_target_preview_g * 10.0f);
+        if (shot_target_x10 < 1) {
+            shot_target_x10 = 1;
+        }
+        if (shot_target_x10 > 30000) {
+            shot_target_x10 = 30000;
+        }
+    }
+
+    if (s_ui.brew_server_weight_valid && shot_target_x10 > 0) {
+        shot_weight_x10 = (int)lroundf(s_ui.brew_live_weight_g * 10.0f);
+        if (shot_weight_x10 < 0) {
+            shot_weight_x10 = 0;
+        }
+        if (shot_weight_x10 > shot_target_x10) {
+            shot_weight_x10 = shot_target_x10;
+        }
+        shot_progress_valid = true;
+        shot_progress_pct = ((float)shot_weight_x10 / (float)shot_target_x10) * 100.0f;
+        if (shot_progress_pct < 0.0f) {
+            shot_progress_pct = 0.0f;
+        }
+        if (shot_progress_pct > 100.0f) {
+            shot_progress_pct = 100.0f;
+        }
+    }
+
     if (s_ui.brew_temperature_value_label) {
         char txt[64];
-        snprintf(
-            txt,
-            sizeof(txt),
-            "%.1f C (Target %d C)",
-            s_ui.brew_live_temperature_c,
-            s_ui.target_temp_c);
+        if (s_ui.brew_server_temperature_valid) {
+            snprintf(
+                txt,
+                sizeof(txt),
+                "%.1f C (Target %d C)",
+                s_ui.brew_live_temperature_c,
+                s_ui.target_temp_c);
+        } else {
+            snprintf(txt, sizeof(txt), "N/A (Target %d C)", s_ui.target_temp_c);
+        }
         lv_label_set_text(s_ui.brew_temperature_value_label, txt);
     }
 
     if (s_ui.brew_water_level_label) {
-        char txt[48];
-        snprintf(txt, sizeof(txt), "Water Level: %.1f%%", s_ui.brew_live_water_level_pct);
+        char txt[64];
+        if (s_ui.brew_server_water_valid) {
+            snprintf(txt, sizeof(txt), "Water Level: %.1f%% (0-100%%)", s_ui.brew_live_water_level_pct);
+        } else {
+            snprintf(txt, sizeof(txt), "Water Level: N/A (0-100%%)");
+        }
         lv_label_set_text(s_ui.brew_water_level_label, txt);
     }
 
     if (s_ui.brew_water_level_bar) {
-        int level_x10 = (int)lroundf(s_ui.brew_live_water_level_pct * 10.0f);
-        if (level_x10 < 0) {
-            level_x10 = 0;
+        int water_x10 = 0;
+        if (s_ui.brew_server_water_valid) {
+            water_x10 = (int)lroundf(s_ui.brew_live_water_level_pct * 10.0f);
+            if (water_x10 < 0) {
+                water_x10 = 0;
+            }
+            if (water_x10 > 1000) {
+                water_x10 = 1000;
+            }
         }
-        if (level_x10 > 1000) {
-            level_x10 = 1000;
-        }
-        lv_bar_set_value(s_ui.brew_water_level_bar, level_x10, LV_ANIM_OFF);
+        lv_bar_set_range(s_ui.brew_water_level_bar, 0, 1000);
+        lv_bar_set_value(s_ui.brew_water_level_bar, water_x10, LV_ANIM_OFF);
     }
 
     if (s_ui.brew_weight_value_label) {
         char txt[96];
-        snprintf(
-            txt,
-            sizeof(txt),
-            "Weight Scale: %.1f g  |  Shot target: %.1f g",
-            s_ui.brew_live_weight_g,
-            s_ui.brew_shot_target_preview_g);
+        if (shot_progress_valid) {
+            snprintf(
+                txt,
+                sizeof(txt),
+                "Shot Progress: %.1f g (%.1f%%)  |  Shot Target %.1f g",
+                s_ui.brew_live_weight_g,
+                shot_progress_pct,
+                s_ui.brew_shot_target_preview_g);
+        } else if (shot_target_x10 > 0) {
+            snprintf(
+                txt,
+                sizeof(txt),
+                "Shot Progress: N/A  |  Shot Target %.1f g",
+                s_ui.brew_shot_target_preview_g);
+        } else {
+            snprintf(txt, sizeof(txt), "Shot Progress: N/A  |  Shot Target N/A");
+        }
         lv_label_set_text(s_ui.brew_weight_value_label, txt);
     }
 
     if (s_ui.brew_weight_scale_bar) {
-        int weight_x10 = (int)lroundf(s_ui.brew_live_weight_g * 10.0f);
-        if (weight_x10 < 0) {
-            weight_x10 = 0;
+        if (shot_target_x10 > 0) {
+            lv_bar_set_range(s_ui.brew_weight_scale_bar, 0, shot_target_x10);
+            lv_bar_set_value(
+                s_ui.brew_weight_scale_bar,
+                shot_progress_valid ? shot_weight_x10 : 0,
+                LV_ANIM_OFF);
+        } else {
+            lv_bar_set_range(s_ui.brew_weight_scale_bar, 0, 1000);
+            lv_bar_set_value(s_ui.brew_weight_scale_bar, 0, LV_ANIM_OFF);
         }
-        if (weight_x10 > 1000) {
-            weight_x10 = 1000;
-        }
-        lv_bar_set_value(s_ui.brew_weight_scale_bar, weight_x10, LV_ANIM_OFF);
     }
 
     if (s_ui.brew_warmup_led) {
-        if (s_ui.brew_warmup_on) {
+        if (s_ui.brew_server_warmup_valid && s_ui.brew_warmup_on) {
             lv_led_on(s_ui.brew_warmup_led);
         } else {
             lv_led_off(s_ui.brew_warmup_led);
+        }
+    }
+
+    if (s_ui.brew_warmup_label) {
+        if (!s_ui.brew_server_warmup_valid) {
+            lv_label_set_text(s_ui.brew_warmup_label, "Warmup N/A");
+        } else {
+            lv_label_set_text(s_ui.brew_warmup_label, s_ui.brew_warmup_on ? "Warmup ON" : "Warmup OFF");
         }
     }
 
@@ -868,9 +1059,14 @@ static void ui_update_brew_widgets(void)
         }
     }
 
+    if (s_ui.brew_steam_label) {
+        bool steam_on = s_ui.brew_steam_indicator_on || s_ui.steaming;
+        lv_label_set_text(s_ui.brew_steam_label, steam_on ? "Steam ON" : "Steam OFF");
+    }
+
     if (s_ui.brew_uptime_label) {
-        char txt[56];
-        snprintf(txt, sizeof(txt), "Uptime: %.1f min", s_ui.brew_uptime_minutes);
+        char txt[64];
+        snprintf(txt, sizeof(txt), "LCD Uptime: %.1f min", s_ui.brew_uptime_minutes);
         lv_label_set_text(s_ui.brew_uptime_label, txt);
     }
 }
@@ -1539,25 +1735,24 @@ static void ui_plot_realtime_packet(const data_downlink_packet_t *packet)
  * - i[8]: weight grams x100
  * - i[9]: warmup boolean
  * - i[10]: steam boolean
- * - i[11]: uptime minutes x10
  * - i[12]: shot target grams x100
+ * - i[13]: live pressure milli-bar
+ * - i[14]: validity bit-mask
  */
 static void ui_ingest_home_metrics_from_packet(const data_downlink_packet_t *packet, uint32_t packet_interval_us)
 {
     const uint32_t sample_count = UI_PLOT_SAMPLES_PER_CHANNEL;
-    float fallback_weight_delta = 0.0f;
-    bool extended_layout_present = false;
+    uint32_t valid_mask = 0U;
+
+    (void)packet_interval_us;
 
     if (packet == NULL) {
         return;
     }
 
-    extended_layout_present = (packet->i[7] != 0) ||
-                              (packet->i[8] != 0) ||
-                              (packet->i[11] != 0) ||
-                              (packet->i[12] != 0) ||
-                              (packet->i[9] == 1) ||
-                              (packet->i[10] == 1);
+    if (packet->i[LCD_CONTROLLER_BREW_SLOT_VALIDITY_MASK] >= 0) {
+        valid_mask = (uint32_t)packet->i[LCD_CONTROLLER_BREW_SLOT_VALIDITY_MASK];
+    }
 
     if (packet->i[1] >= 1 && packet->i[1] <= ui_get_constants()->profile_count) {
         s_ui.active_profile = packet->i[1];
@@ -1568,54 +1763,66 @@ static void ui_ingest_home_metrics_from_packet(const data_downlink_packet_t *pac
 
     if ((2U * sample_count) < DATA_SIZE_FLOATS) {
         s_ui.brew_live_temperature_c = packet->f[(2U * sample_count) + (sample_count - 1U)];
+        s_ui.brew_server_temperature_valid = true;
+    } else {
+        s_ui.brew_server_temperature_valid = false;
     }
 
-    if (extended_layout_present) {
+    if ((valid_mask & UI_BREW_VALID_SHOT_TIMER_MASK) != 0U && packet->i[2] >= 0) {
+        s_ui.shot_s = (int)((uint32_t)packet->i[2] / 1000U);
+        s_ui.brew_server_shot_valid = true;
+    } else {
+        s_ui.brew_server_shot_valid = false;
+    }
+
+    if ((valid_mask & UI_BREW_VALID_LIVE_PRESSURE_MASK) != 0U &&
+        packet->i[LCD_CONTROLLER_BREW_SLOT_LIVE_PRESSURE_MBAR] >= 0) {
+        s_ui.brew_live_pressure_bar =
+            (float)packet->i[LCD_CONTROLLER_BREW_SLOT_LIVE_PRESSURE_MBAR] / 1000.0f;
+        s_ui.brew_server_pressure_valid = true;
+    } else {
+        s_ui.brew_server_pressure_valid = false;
+    }
+
+    if ((valid_mask & UI_BREW_VALID_WATER_LEVEL_MASK) != 0U) {
         s_ui.brew_live_water_level_pct = (float)packet->i[7] / 10.0f;
+        if (s_ui.brew_live_water_level_pct < 0.0f) {
+            s_ui.brew_live_water_level_pct = 0.0f;
+        }
+        if (s_ui.brew_live_water_level_pct > 100.0f) {
+            s_ui.brew_live_water_level_pct = 100.0f;
+        }
+        s_ui.brew_server_water_valid = true;
+    } else {
+        s_ui.brew_server_water_valid = false;
     }
 
-    if (extended_layout_present) {
+    if ((valid_mask & UI_BREW_VALID_WEIGHT_MASK) != 0U) {
         s_ui.brew_live_weight_g = (float)packet->i[8] / 100.0f;
+        if (s_ui.brew_live_weight_g < 0.0f) {
+            s_ui.brew_live_weight_g = 0.0f;
+        }
+        if (s_ui.brew_live_weight_g > 200.0f) {
+            s_ui.brew_live_weight_g = 200.0f;
+        }
+        s_ui.brew_server_weight_valid = true;
     } else {
-        float flow_sum = 0.0f;
-        for (uint32_t sample_index = 0; sample_index < sample_count; sample_index++) {
-            flow_sum += packet->f[sample_count + sample_index];
-        }
-        fallback_weight_delta = (flow_sum / (float)sample_count) * ((float)packet_interval_us / 1000000.0f);
-        if (fallback_weight_delta > 0.0f && s_ui.brewing) {
-            s_ui.brew_live_weight_g += fallback_weight_delta;
-        }
+        s_ui.brew_server_weight_valid = false;
     }
 
-    if (extended_layout_present && (packet->i[9] == 0 || packet->i[9] == 1)) {
+    if ((valid_mask & UI_BREW_VALID_WARMUP_MASK) != 0U && (packet->i[9] == 0 || packet->i[9] == 1)) {
         s_ui.brew_warmup_on = (packet->i[9] == 1);
+        s_ui.brew_server_warmup_valid = true;
     } else {
-        s_ui.brew_warmup_on = s_ui.brew_live_temperature_c < ((float)s_ui.target_temp_c - 0.6f);
+        s_ui.brew_server_warmup_valid = false;
     }
 
-    if (extended_layout_present && (packet->i[10] == 0 || packet->i[10] == 1)) {
+    if (packet->i[10] == 0 || packet->i[10] == 1) {
         s_ui.brew_steam_indicator_on = (packet->i[10] == 1);
     }
 
-    if (extended_layout_present && packet->i[11] >= 0) {
-        s_ui.brew_uptime_minutes = (float)packet->i[11] / 10.0f;
-    }
-
-    if (extended_layout_present) {
+    if (packet->i[12] >= 0) {
         s_ui.brew_shot_target_preview_g = (float)packet->i[12] / 100.0f;
-    } else {
-        float brew_time_s = (packet->i[3] > 0) ? ((float)packet->i[3] / 1000.0f) : 30.0f;
-        s_ui.brew_shot_target_preview_g = ui_estimate_shot_target_preview_g(s_ui.active_profile, brew_time_s);
-    }
-
-    if (s_ui.brew_live_water_level_pct <= 0.0f) {
-        s_ui.brew_live_water_level_pct = 100.0f - (s_ui.brew_live_weight_g * 0.45f);
-    }
-    if (s_ui.brew_live_water_level_pct < 0.0f) {
-        s_ui.brew_live_water_level_pct = 0.0f;
-    }
-    if (s_ui.brew_live_water_level_pct > 100.0f) {
-        s_ui.brew_live_water_level_pct = 100.0f;
     }
 
     lcd_controller_brew_home_state_t brew_state = {
@@ -1625,6 +1832,7 @@ static void ui_ingest_home_metrics_from_packet(const data_downlink_packet_t *pac
         .target_temperature_c = (float)s_ui.target_temp_c,
         .target_pressure_bar = (float)packet->i[4] / 1000.0f,
         .target_flow_ml_s = (float)packet->i[5] / 1000.0f,
+        .live_pressure_bar = s_ui.brew_live_pressure_bar,
         .live_temperature_c = s_ui.brew_live_temperature_c,
         .live_water_level_pct = s_ui.brew_live_water_level_pct,
         .live_weight_g = s_ui.brew_live_weight_g,
@@ -1689,6 +1897,13 @@ static void ui_reset_sim_data_stream_state(void)
     s_ui.sim_data_last_seq_gap_log_us = 0;
     s_ui.sim_data_last_chart_refresh_us = 0;
     s_ui.sim_data_last_status_refresh_us = 0;
+    s_ui.shot_s = 0;
+    s_ui.brew_server_shot_valid = false;
+    s_ui.brew_server_pressure_valid = false;
+    /* Keep last water-level reading visible after shot completion. */
+    s_ui.brew_server_weight_valid = false;
+    s_ui.brew_server_warmup_valid = false;
+    s_ui.brew_server_temperature_valid = false;
     ui_update_sim_data_axis_labels(UI_SIM_DATA_DEFAULT_PACKET_INTERVAL_US, 200);
 }
 
@@ -1773,6 +1988,7 @@ static bool ui_try_parse_sim_data_event_from_text(const char *payload_text, bool
 
     if (strstr(normalized, "datasimulationoff") != NULL ||
         strstr(normalized, "brewcomplete") != NULL ||
+        strstr(normalized, "shot_done_success") != NULL ||
         strstr(normalized, "stopbrew") != NULL) {
         *out_enabled = false;
         return true;
@@ -1799,6 +2015,7 @@ static void ui_sync_sim_data_toggle_from_peer_event(void)
     communication_snapshot_t comm_snapshot = {0};
     bool enabled = false;
     bool brew_event = false;
+    bool shot_done_event = false;
     char normalized[160] = {0};
     size_t index = 0;
 
@@ -1821,12 +2038,15 @@ static void ui_sync_sim_data_toggle_from_peer_event(void)
         normalized[index] = (char)tolower((unsigned char)comm_snapshot.last_received_text[index]);
     }
     normalized[index] = '\0';
+    shot_done_event = (strstr(normalized, "shot_done_success") != NULL);
     brew_event = (strstr(normalized, "startbrew") != NULL) ||
                  (strstr(normalized, "brewcomplete") != NULL) ||
+                 shot_done_event ||
                  (strstr(normalized, "stopbrew") != NULL);
 
     s_ui.sim_data_enabled = enabled;
     if (enabled && brew_event) {
+        ui_hide_coffee_preparation_success_msgbox();
         ui_clear_plot_data();
     }
     if (!enabled) {
@@ -1843,6 +2063,9 @@ static void ui_sync_sim_data_toggle_from_peer_event(void)
         }
         ui_update_header_status();
         ui_update_brew_widgets();
+    }
+    if (shot_done_event) {
+        ui_show_coffee_preparation_success_msgbox();
     }
     if (s_ui.sim_data_toggle_btn != NULL) {
         s_ui.sim_data_toggle_syncing = true;
@@ -2090,7 +2313,16 @@ static void ui_process_sim_data_fifo(void)
     bool first_gap_valid = false;
 
     if (!s_ui.sim_data_enabled) {
-        ui_clear_sim_data_fifo();
+        while (drained_packets < UI_SIM_DATA_MAX_DRAIN_PER_TICK &&
+               data_downlink_pop(packet) == DATA_FIFO_OK) {
+            drained_packets++;
+            have_packet = true;
+        }
+        if (have_packet) {
+            ui_ingest_home_metrics_from_packet(packet, UI_SIM_DATA_DEFAULT_PACKET_INTERVAL_US);
+            ui_update_header_status();
+            ui_update_brew_widgets();
+        }
         return;
     }
 
@@ -2145,6 +2377,8 @@ static void ui_process_sim_data_fifo(void)
     s_ui.sim_data_packet_interval_us = packet_interval_us;
     s_ui.sim_data_sample_period_us = packet_interval_us / UI_PLOT_SAMPLES_PER_CHANNEL;
     ui_ingest_home_metrics_from_packet(packet, packet_interval_us);
+    ui_update_header_status();
+    ui_update_brew_widgets();
 
     if (s_ui.sim_data_overlay != NULL &&
         ui_sim_data_refresh_due(now_us,
@@ -2833,12 +3067,19 @@ static void ui_brew_toggle_event_cb(lv_event_t *e)
     if (s_ui.brewing) {
         char payload_text[96];
         s_ui.shot_s = 0;
+        s_ui.brew_server_shot_valid = false;
+        s_ui.brew_server_pressure_valid = false;
+        s_ui.brew_server_water_valid = false;
+        s_ui.brew_server_weight_valid = false;
+        s_ui.brew_server_warmup_valid = false;
+        s_ui.brew_server_temperature_valid = false;
         s_ui.brew_live_weight_g = 0.0f;
         s_ui.steaming = false;
         s_ui.brew_steam_indicator_on = false;
         if (s_ui.steam_toggle_btn) {
             lv_obj_clear_state(s_ui.steam_toggle_btn, LV_STATE_CHECKED);
         }
+        ui_hide_coffee_preparation_success_msgbox();
         ui_clear_plot_data();
         s_ui.sim_data_enabled = true;
         snprintf(
@@ -2858,6 +3099,12 @@ static void ui_brew_toggle_event_cb(lv_event_t *e)
     } else {
         (void)communication_functions_queue_data_text_command("StopBrew");
         s_ui.sim_data_enabled = false;
+        s_ui.brew_server_shot_valid = false;
+        s_ui.brew_server_pressure_valid = false;
+        s_ui.brew_server_water_valid = false;
+        s_ui.brew_server_weight_valid = false;
+        s_ui.brew_server_warmup_valid = false;
+        s_ui.brew_server_temperature_valid = false;
         ESP_LOGI(TAG, "brew OFF");
     }
     ui_update_header_status();
@@ -3084,8 +3331,11 @@ static void ui_build_page_brew(void)
     char dropdown_options[512] = {0};
     size_t used = 0;
 
-    lv_obj_t *brew_title = ui_build_page_title(s_ui.content, "Brew");
-    lv_obj_set_style_text_font(brew_title, &lv_font_montserrat_30, 0);
+    lv_obj_t *brew_title = ui_build_page_title(s_ui.content, "BREW");
+    lv_obj_set_style_text_font(brew_title, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_letter_space(brew_title, 5, 0);
+    lv_obj_set_style_text_color(brew_title, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_text_color(brew_title, lv_color_hex(0xBFDBFE), LV_STATE_PRESSED);
     ui_build_page_live_summary(s_ui.content);
     if (s_ui.page_status != NULL) {
         lv_obj_add_flag(s_ui.page_status, LV_OBJ_FLAG_HIDDEN);
@@ -3093,7 +3343,7 @@ static void ui_build_page_brew(void)
     if (s_ui.page_runtime != NULL) {
         lv_obj_set_style_text_font(s_ui.page_runtime, &lv_font_montserrat_16, 0);
         lv_obj_set_style_text_color(s_ui.page_runtime, lv_color_hex(UI_COLOR_TEXT), 0);
-        lv_obj_align(s_ui.page_runtime, LV_ALIGN_TOP_LEFT, 182, 10);
+        lv_obj_align_to(s_ui.page_runtime, brew_title, LV_ALIGN_OUT_RIGHT_BOTTOM, 20, 0);
     }
 
     s_ui.home_active_profile = lv_label_create(s_ui.content);
@@ -3176,64 +3426,64 @@ static void ui_build_page_brew(void)
     lv_obj_align(s_ui.brew_temperature_value_label, LV_ALIGN_TOP_LEFT, 182, 60);
     lv_obj_add_flag(s_ui.brew_temperature_value_label, LV_OBJ_FLAG_HIDDEN);
 
-    s_ui.brew_water_level_label = lv_label_create(s_ui.content);
-    lv_obj_set_style_text_font(s_ui.brew_water_level_label, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(s_ui.brew_water_level_label, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(s_ui.brew_water_level_label, LV_ALIGN_TOP_LEFT, 20, 150);
-
-    s_ui.brew_water_level_bar = lv_bar_create(s_ui.content);
-    lv_obj_set_size(s_ui.brew_water_level_bar, 460, 14);
-    lv_obj_align(s_ui.brew_water_level_bar, LV_ALIGN_TOP_LEFT, 20, 174);
-    lv_bar_set_range(s_ui.brew_water_level_bar, 0, 1000);
-    lv_obj_set_style_bg_color(s_ui.brew_water_level_bar, lv_color_hex(UI_COLOR_PANEL_ALT), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_ui.brew_water_level_bar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_ui.brew_water_level_bar, lv_color_hex(UI_COLOR_SUCCESS), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(s_ui.brew_water_level_bar, LV_OPA_COVER, LV_PART_INDICATOR);
-
     s_ui.brew_weight_value_label = lv_label_create(s_ui.content);
-    lv_obj_set_style_text_font(s_ui.brew_weight_value_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_ui.brew_weight_value_label, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(s_ui.brew_weight_value_label, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(s_ui.brew_weight_value_label, LV_ALIGN_TOP_LEFT, 20, 202);
+    lv_obj_align(s_ui.brew_weight_value_label, LV_ALIGN_TOP_LEFT, 20, 154);
 
     s_ui.brew_weight_scale_bar = lv_bar_create(s_ui.content);
-    lv_obj_set_size(s_ui.brew_weight_scale_bar, 460, 14);
-    lv_obj_align(s_ui.brew_weight_scale_bar, LV_ALIGN_TOP_LEFT, 20, 226);
+    lv_obj_set_size(s_ui.brew_weight_scale_bar, 460, 28);
+    lv_obj_align(s_ui.brew_weight_scale_bar, LV_ALIGN_TOP_LEFT, 20, 186);
     lv_bar_set_range(s_ui.brew_weight_scale_bar, 0, 1000);
     lv_obj_set_style_bg_color(s_ui.brew_weight_scale_bar, lv_color_hex(UI_COLOR_PANEL_ALT), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s_ui.brew_weight_scale_bar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_ui.brew_weight_scale_bar, lv_color_hex(UI_COLOR_ACCENT), LV_PART_INDICATOR);
+    lv_obj_set_style_border_width(s_ui.brew_weight_scale_bar, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_ui.brew_weight_scale_bar, lv_color_hex(0x93C5FD), LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_ui.brew_weight_scale_bar, 2, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ui.brew_weight_scale_bar, lv_color_hex(0x60A5FA), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(s_ui.brew_weight_scale_bar, LV_OPA_COVER, LV_PART_INDICATOR);
 
+    s_ui.brew_water_level_label = lv_label_create(s_ui.content);
+    lv_obj_set_style_text_font(s_ui.brew_water_level_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(s_ui.brew_water_level_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(s_ui.brew_water_level_label, LV_ALIGN_TOP_LEFT, 20, 222);
+
+    s_ui.brew_water_level_bar = lv_bar_create(s_ui.content);
+    lv_obj_set_size(s_ui.brew_water_level_bar, 460, 28);
+    lv_obj_align(s_ui.brew_water_level_bar, LV_ALIGN_TOP_LEFT, 20, 254);
+    lv_bar_set_range(s_ui.brew_water_level_bar, 0, 1000);
+    lv_obj_set_style_bg_color(s_ui.brew_water_level_bar, lv_color_hex(UI_COLOR_PANEL_ALT), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_ui.brew_water_level_bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_ui.brew_water_level_bar, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_ui.brew_water_level_bar, lv_color_hex(0x93C5FD), LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_ui.brew_water_level_bar, 2, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ui.brew_water_level_bar, lv_color_hex(0x60A5FA), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(s_ui.brew_water_level_bar, LV_OPA_COVER, LV_PART_INDICATOR);
+
     s_ui.brew_warmup_led = lv_led_create(s_ui.content);
-    lv_obj_align(s_ui.brew_warmup_led, LV_ALIGN_TOP_LEFT, 20, 254);
+    lv_obj_align(s_ui.brew_warmup_led, LV_ALIGN_BOTTOM_LEFT, 20, -10);
     lv_led_set_color(s_ui.brew_warmup_led, lv_color_hex(0xF59E0B));
 
-    lv_obj_t *warmup_label = lv_label_create(s_ui.content);
-    lv_label_set_text(warmup_label, "Warmup ON");
-    lv_obj_set_style_text_font(warmup_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(warmup_label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
-    lv_obj_align(warmup_label, LV_ALIGN_TOP_LEFT, 46, 254);
+    s_ui.brew_warmup_label = lv_label_create(s_ui.content);
+    lv_label_set_text(s_ui.brew_warmup_label, "Warmup N/A");
+    lv_obj_set_style_text_font(s_ui.brew_warmup_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_ui.brew_warmup_label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+    lv_obj_align_to(s_ui.brew_warmup_label, s_ui.brew_warmup_led, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
 
     s_ui.brew_steam_led = lv_led_create(s_ui.content);
-    lv_obj_align(s_ui.brew_steam_led, LV_ALIGN_TOP_LEFT, 188, 254);
+    lv_obj_align_to(s_ui.brew_steam_led, s_ui.brew_warmup_label, LV_ALIGN_OUT_RIGHT_MID, 28, 0);
     lv_led_set_color(s_ui.brew_steam_led, lv_color_hex(UI_COLOR_ACCENT));
 
-    lv_obj_t *steam_label = lv_label_create(s_ui.content);
-    lv_label_set_text(steam_label, "Steam ON");
-    lv_obj_set_style_text_font(steam_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(steam_label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
-    lv_obj_align(steam_label, LV_ALIGN_TOP_LEFT, 214, 254);
+    s_ui.brew_steam_label = lv_label_create(s_ui.content);
+    lv_label_set_text(s_ui.brew_steam_label, "Steam OFF");
+    lv_obj_set_style_text_font(s_ui.brew_steam_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_ui.brew_steam_label, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+    lv_obj_align_to(s_ui.brew_steam_label, s_ui.brew_steam_led, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
 
     s_ui.brew_uptime_label = lv_label_create(s_ui.content);
     lv_obj_set_style_text_font(s_ui.brew_uptime_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(s_ui.brew_uptime_label, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(s_ui.brew_uptime_label, LV_ALIGN_TOP_LEFT, 330, 252);
-
-    lv_obj_t *mode_row = lv_label_create(s_ui.content);
-    lv_label_set_text(mode_row, "Pump / Brew  |  Steam Mode");
-    lv_obj_set_style_text_font(mode_row, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(mode_row, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(mode_row, LV_ALIGN_TOP_LEFT, 20, 232);
+    lv_obj_align(s_ui.brew_uptime_label, LV_ALIGN_BOTTOM_RIGHT, -30, -14);
 
     s_ui.brew_toggle_btn = ui_create_toggle_button(s_ui.content,
                                                    "Brew",
@@ -3659,8 +3909,12 @@ static void ui_render_active_page(void)
     s_ui.brew_weight_value_label = NULL;
     s_ui.brew_weight_scale_bar = NULL;
     s_ui.brew_warmup_led = NULL;
+    s_ui.brew_warmup_label = NULL;
     s_ui.brew_steam_led = NULL;
+    s_ui.brew_steam_label = NULL;
     s_ui.brew_uptime_label = NULL;
+    s_ui.coffee_preparation_success_msgbox = NULL;
+    s_ui.coffee_preparation_success_ok_btn = NULL;
 
     switch (s_ui.active_page) {
     case UI_PAGE_PLOT:
@@ -3722,21 +3976,22 @@ static void ui_tabview_event_cb(lv_event_t *e)
 /**
  * @brief Periodic UI heartbeat updater.
  *
- * @details Advances the shot timer during brew mode and refreshes active-page
- * status text plus the persistent bottom clock bar.
+ * @details Refreshes local uptime (time since client power-on), active-page
+ * status text, and the persistent bottom clock bar.
  *
  * @param[in] timer LVGL timer handle.
  */
 static void ui_heartbeat_timer_cb(lv_timer_t *timer)
 {
     communication_snapshot_t comm_snapshot = {0};
+    int64_t uptime_us = esp_timer_get_time();
 
     (void)timer;
-    if (s_ui.brewing) {
-        s_ui.shot_s++;
+    if (uptime_us < 0) {
+        uptime_us = 0;
     }
+    s_ui.brew_uptime_minutes = (float)uptime_us / 60000000.0f;
     if (communication_functions_get_snapshot(&comm_snapshot) == ESP_OK) {
-        s_ui.brew_uptime_minutes = (float)comm_snapshot.session_uptime_ms / 60000.0f;
         (void)lcd_controller_protocol_process_peer_text_event(comm_snapshot.last_received_text_event_count,
                                                               comm_snapshot.last_received_text);
     }
@@ -3912,15 +4167,25 @@ void ui_screen_create(void)
     s_ui.brew_weight_value_label = NULL;
     s_ui.brew_weight_scale_bar = NULL;
     s_ui.brew_warmup_led = NULL;
+    s_ui.brew_warmup_label = NULL;
     s_ui.brew_steam_led = NULL;
+    s_ui.brew_steam_label = NULL;
     s_ui.brew_uptime_label = NULL;
     s_ui.brew_profile_dropdown_syncing = false;
+    s_ui.shot_s = 0;
+    s_ui.brew_live_pressure_bar = 0.2f;
     s_ui.brew_live_temperature_c = 93.0f;
     s_ui.brew_live_water_level_pct = 92.0f;
     s_ui.brew_live_weight_g = 0.0f;
     s_ui.brew_shot_target_preview_g = 36.0f;
     s_ui.brew_warmup_on = true;
     s_ui.brew_steam_indicator_on = false;
+    s_ui.brew_server_shot_valid = false;
+    s_ui.brew_server_pressure_valid = false;
+    s_ui.brew_server_water_valid = false;
+    s_ui.brew_server_weight_valid = false;
+    s_ui.brew_server_warmup_valid = false;
+    s_ui.brew_server_temperature_valid = false;
     s_ui.brew_uptime_minutes = 0.0f;
     s_ui.sim_data_enabled = false;
     s_ui.sim_data_packets_received = 0;
