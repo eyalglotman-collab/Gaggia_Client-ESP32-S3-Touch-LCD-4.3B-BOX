@@ -41,8 +41,21 @@ typedef enum {
     LCD_CONTROLLER_BREW_SLOT_STEAM_BOOL = 10,
     LCD_CONTROLLER_BREW_SLOT_UPTIME_MIN_X10 = 11,
     LCD_CONTROLLER_BREW_SLOT_SHOT_TARGET_G_X100 = 12,
+    LCD_CONTROLLER_BREW_SLOT_LIVE_PRESSURE_MBAR = 13,
+    LCD_CONTROLLER_BREW_SLOT_VALIDITY_MASK = 14,
     LCD_CONTROLLER_BREW_SLOT_COUNT = 20,
 } lcd_controller_brew_slot_t;
+
+/**
+ * @brief Validity-mask bits for simulator-authored Brew/Home fields.
+ */
+typedef enum {
+    LCD_CONTROLLER_BREW_VALID_SHOT_TIMER = (1U << 0),
+    LCD_CONTROLLER_BREW_VALID_LIVE_PRESSURE = (1U << 1),
+    LCD_CONTROLLER_BREW_VALID_WATER_LEVEL = (1U << 2),
+    LCD_CONTROLLER_BREW_VALID_WEIGHT = (1U << 3),
+    LCD_CONTROLLER_BREW_VALID_WARMUP = (1U << 4),
+} lcd_controller_brew_validity_mask_t;
 
 /**
  * @brief Lightweight profile summary exchanged for Brew screen controls.
@@ -74,6 +87,7 @@ typedef struct {
     float target_temperature_c;
     float target_pressure_bar;
     float target_flow_ml_s;
+    float live_pressure_bar;
     float live_temperature_c;
     float live_water_level_pct;
     float live_weight_g;

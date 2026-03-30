@@ -125,6 +125,8 @@ For any build/flash request, execute this gated sequence and report each gate co
 - Tabs: Home, Brew, Profiles, Settings
 - Overlays: initialization splash, failure-confirm, persistent error, connection info, clock set, system constants
 - Heartbeat-driven runtime refresh path
+- UI title typography rule: use the Brew title style across all page titles.
+- Reference title style: uppercase cinematic treatment with `lv_font_montserrat_48` and added letter spacing.
 
 ### Repository Layout
 - `main/` — firmware source

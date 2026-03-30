@@ -80,6 +80,11 @@ The UI also includes:
 - A system constants overlay
 - A heartbeat-driven runtime refresh path
 
+### UI Title Typography Rule
+
+- Use the Brew page title style for all page titles so typography remains consistent across pages.
+- Reference style: uppercase cinematic treatment with `lv_font_montserrat_48` and added letter spacing for emphasis.
+
 ## Repository Layout
 
 - `main/`: firmware source code
