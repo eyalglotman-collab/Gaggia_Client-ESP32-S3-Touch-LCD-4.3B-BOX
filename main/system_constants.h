@@ -7,6 +7,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
 
@@ -49,6 +50,14 @@ typedef struct {
     int pressure_max_tenths;
     int flow_min_tenths;
     int flow_max_tenths;
+    float live_shot_pressure_max_bar;
+    float live_shot_weight_max_g;
+    float live_shot_flow_max_ml_s;
+    float live_shot_temperature_max_c;
+    bool live_shot_autoscale_pressure;
+    bool live_shot_autoscale_weight;
+    bool live_shot_autoscale_flow;
+    bool live_shot_autoscale_temperature;
     system_constants_profile_t profiles[SYSTEM_CONSTANTS_MAX_PROFILES];
 } system_constants_data_t;
 
@@ -94,6 +103,52 @@ const char *system_constants_get_xml_text(void);
  * @return Embedded XML text length in bytes.
  */
 size_t system_constants_get_xml_length(void);
+
+/**
+ * @brief Update in-memory Live Shot manual range limits.
+ *
+ * @details Applies range-clamped values to the active constants snapshot.
+ * Values can later be persisted with `system_constants_save_live_shot_ranges`.
+ *
+ * @param[in] pressure_max_bar Pressure axis maximum in bar.
+ * @param[in] weight_max_g Weight axis maximum in grams.
+ * @param[in] flow_max_ml_s Flow axis maximum in ml/sec.
+ * @param[in] temperature_max_c Temperature axis maximum in degC.
+ *
+ * @return ESP_OK on success or ESP_ERR_INVALID_ARG when any input is non-finite.
+ */
+esp_err_t system_constants_set_live_shot_ranges(float pressure_max_bar,
+                                                float weight_max_g,
+                                                float flow_max_ml_s,
+                                                float temperature_max_c);
+
+/**
+ * @brief Update in-memory Live Shot autoscale enable flags.
+ *
+ * @param[in] autoscale_pressure Enable pressure autoscale when true.
+ * @param[in] autoscale_weight Enable weight autoscale when true.
+ * @param[in] autoscale_flow Enable flow autoscale when true.
+ * @param[in] autoscale_temperature Enable temperature autoscale when true.
+ *
+ * @return ESP_OK on success.
+ */
+esp_err_t system_constants_set_live_shot_autoscale(bool autoscale_pressure,
+                                                   bool autoscale_weight,
+                                                   bool autoscale_flow,
+                                                   bool autoscale_temperature);
+
+/**
+ * @brief Persist current Live Shot plot settings to SD card.
+ *
+ * @details Writes `/sdcard/SystemConstantsOverrides.ini` so range settings and
+ * autoscale flags survive reboot and are reloaded by `system_constants_load`.
+ *
+ * @return
+ *      - ESP_OK on success
+ *      - ESP_ERR_INVALID_STATE when SD is unavailable
+ *      - ESP_ERR_INVALID_RESPONSE when file write fails
+ */
+esp_err_t system_constants_save_live_shot_ranges(void);
 
 #ifdef __cplusplus
 }

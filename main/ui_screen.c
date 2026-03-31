@@ -8,6 +8,7 @@
 #include <inttypes.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
@@ -25,14 +26,14 @@
 
 static const char *TAG = "ui_screen";
 
-#define UI_PLOT_POINT_COUNT      (1000U)
+#define UI_PLOT_POINT_COUNT      (1200U)
+#define UI_PLOT_WINDOW_POINT_COUNT (201U)
 #define UI_PLOT_X_LABEL_COUNT    (21U)
-#define UI_PLOT_Y_LABEL_COUNT    (10U)
+#define UI_PLOT_Y_LABEL_COUNT    (6U)
 
 typedef enum {
     UI_PAGE_BREW = 0,
-    UI_PAGE_PROFILES,
-    UI_PAGE_PLOT,
+    UI_PAGE_LIVE_SHOT,
     UI_PAGE_SETTINGS,
     UI_PAGE_COUNT
 } ui_page_t;
@@ -79,18 +80,60 @@ typedef struct {
     bool sim_data_toggle_syncing;
     lv_obj_t *plot_chart;
     lv_chart_series_t *plot_pressure_series;
+    lv_chart_series_t *plot_weight_series;
     lv_chart_series_t *plot_flow_series;
+    lv_chart_series_t *plot_temperature_series;
     int32_t plot_pressure_chart_y_values[UI_PLOT_POINT_COUNT];
+    int32_t plot_weight_chart_y_values[UI_PLOT_POINT_COUNT];
     int32_t plot_flow_chart_y_values[UI_PLOT_POINT_COUNT];
+    int32_t plot_temperature_chart_y_values[UI_PLOT_POINT_COUNT];
     lv_obj_t *plot_x_axis_labels[UI_PLOT_X_LABEL_COUNT];
     lv_obj_t *plot_pressure_y_axis_labels[UI_PLOT_Y_LABEL_COUNT];
+    lv_obj_t *plot_weight_y_axis_labels[UI_PLOT_Y_LABEL_COUNT];
     lv_obj_t *plot_flow_y_axis_labels[UI_PLOT_Y_LABEL_COUNT];
+    lv_obj_t *plot_temperature_y_axis_labels[UI_PLOT_Y_LABEL_COUNT];
     char plot_x_axis_label_text[UI_PLOT_X_LABEL_COUNT][24];
     char plot_pressure_y_axis_label_text[UI_PLOT_Y_LABEL_COUNT][24];
+    char plot_weight_y_axis_label_text[UI_PLOT_Y_LABEL_COUNT][24];
     char plot_flow_y_axis_label_text[UI_PLOT_Y_LABEL_COUNT][24];
-    int32_t plot_pressure_y_axis_limit;
-    int32_t plot_flow_y_axis_limit;
+    char plot_temperature_y_axis_label_text[UI_PLOT_Y_LABEL_COUNT][24];
     bool plot_stream_started;
+    lv_obj_t *plot_show_pressure_checkbox;
+    lv_obj_t *plot_show_weight_checkbox;
+    lv_obj_t *plot_show_flow_checkbox;
+    lv_obj_t *plot_show_temperature_checkbox;
+    lv_obj_t *plot_autoscale_pressure_checkbox;
+    lv_obj_t *plot_autoscale_weight_checkbox;
+    lv_obj_t *plot_autoscale_flow_checkbox;
+    lv_obj_t *plot_autoscale_temperature_checkbox;
+    bool plot_show_pressure;
+    bool plot_show_weight;
+    bool plot_show_flow;
+    bool plot_show_temperature;
+    bool plot_autoscale_pressure;
+    bool plot_autoscale_weight;
+    bool plot_autoscale_flow;
+    bool plot_autoscale_temperature;
+    lv_obj_t *plot_range_overlay;
+    lv_obj_t *plot_range_pressure_value_label;
+    lv_obj_t *plot_range_weight_value_label;
+    lv_obj_t *plot_range_flow_value_label;
+    lv_obj_t *plot_range_temperature_value_label;
+    lv_obj_t *plot_range_pressure_roller;
+    lv_obj_t *plot_range_weight_roller;
+    lv_obj_t *plot_range_flow_roller;
+    lv_obj_t *plot_range_temperature_roller;
+    float plot_manual_pressure_max_bar;
+    float plot_manual_weight_max_g;
+    float plot_manual_flow_max_ml_s;
+    float plot_manual_temperature_max_c;
+    float plot_history_time_sec[UI_PLOT_POINT_COUNT];
+    float plot_history_pressure_bar[UI_PLOT_POINT_COUNT];
+    float plot_history_weight_g[UI_PLOT_POINT_COUNT];
+    float plot_history_flow_ml_s[UI_PLOT_POINT_COUNT];
+    float plot_history_temperature_c[UI_PLOT_POINT_COUNT];
+    uint32_t plot_history_count;
+    bool plot_history_frozen;
     lv_obj_t *content;
     lv_obj_t *brew_toggle_btn;
     lv_obj_t *steam_toggle_btn;
@@ -205,18 +248,60 @@ static ui_state_t s_ui = {
     .sim_data_toggle_syncing = false,
     .plot_chart = NULL,
     .plot_pressure_series = NULL,
+    .plot_weight_series = NULL,
     .plot_flow_series = NULL,
+    .plot_temperature_series = NULL,
     .plot_pressure_chart_y_values = {0},
+    .plot_weight_chart_y_values = {0},
     .plot_flow_chart_y_values = {0},
+    .plot_temperature_chart_y_values = {0},
     .plot_x_axis_labels = {NULL},
     .plot_pressure_y_axis_labels = {NULL},
+    .plot_weight_y_axis_labels = {NULL},
     .plot_flow_y_axis_labels = {NULL},
+    .plot_temperature_y_axis_labels = {NULL},
     .plot_x_axis_label_text = {{0}},
     .plot_pressure_y_axis_label_text = {{0}},
+    .plot_weight_y_axis_label_text = {{0}},
     .plot_flow_y_axis_label_text = {{0}},
-    .plot_pressure_y_axis_limit = 0,
-    .plot_flow_y_axis_limit = 0,
+    .plot_temperature_y_axis_label_text = {{0}},
     .plot_stream_started = false,
+    .plot_show_pressure_checkbox = NULL,
+    .plot_show_weight_checkbox = NULL,
+    .plot_show_flow_checkbox = NULL,
+    .plot_show_temperature_checkbox = NULL,
+    .plot_autoscale_pressure_checkbox = NULL,
+    .plot_autoscale_weight_checkbox = NULL,
+    .plot_autoscale_flow_checkbox = NULL,
+    .plot_autoscale_temperature_checkbox = NULL,
+    .plot_show_pressure = true,
+    .plot_show_weight = true,
+    .plot_show_flow = true,
+    .plot_show_temperature = true,
+    .plot_autoscale_pressure = true,
+    .plot_autoscale_weight = true,
+    .plot_autoscale_flow = true,
+    .plot_autoscale_temperature = true,
+    .plot_range_overlay = NULL,
+    .plot_range_pressure_value_label = NULL,
+    .plot_range_weight_value_label = NULL,
+    .plot_range_flow_value_label = NULL,
+    .plot_range_temperature_value_label = NULL,
+    .plot_range_pressure_roller = NULL,
+    .plot_range_weight_roller = NULL,
+    .plot_range_flow_roller = NULL,
+    .plot_range_temperature_roller = NULL,
+    .plot_manual_pressure_max_bar = 12.0f,
+    .plot_manual_weight_max_g = 60.0f,
+    .plot_manual_flow_max_ml_s = 5.0f,
+    .plot_manual_temperature_max_c = 105.0f,
+    .plot_history_time_sec = {0},
+    .plot_history_pressure_bar = {0},
+    .plot_history_weight_g = {0},
+    .plot_history_flow_ml_s = {0},
+    .plot_history_temperature_c = {0},
+    .plot_history_count = 0U,
+    .plot_history_frozen = false,
     .content = NULL,
     .brew_toggle_btn = NULL,
     .steam_toggle_btn = NULL,
@@ -316,15 +401,34 @@ static ui_state_t s_ui = {
 #define UI_SIM_DATA_Y_LABEL_COUNT (5U)
 #define UI_SIM_DATA_AXIS_REFRESH_PERIOD_US (500000LL)
 #define UI_SIM_DATA_GAP_LOG_PERIOD_US (1000000LL)
-#define UI_PLOT_WINDOW_SECONDS (10U)
-#define UI_PLOT_X_LABEL_STEP_MS (500U)
+#define UI_PLOT_WINDOW_SECONDS (20U)
+#define UI_PLOT_X_LABEL_STEP_SECONDS (1.0f)
+#define UI_PLOT_NORMALIZED_MAX (10000)
 #define UI_PLOT_FLOAT_SCALE_FACTOR (100.0f)
 #define UI_PLOT_SAMPLES_PER_CHANNEL (10U)
+#define UI_PLOT_CHANNEL_OFFSET_PRESSURE (0U)
+#define UI_PLOT_CHANNEL_OFFSET_FLOW (UI_PLOT_SAMPLES_PER_CHANNEL)
+#define UI_PLOT_CHANNEL_OFFSET_TEMPERATURE (2U * UI_PLOT_SAMPLES_PER_CHANNEL)
+#define UI_PLOT_CHANNEL_OFFSET_WEIGHT (3U * UI_PLOT_SAMPLES_PER_CHANNEL)
 #define UI_BREW_VALID_SHOT_TIMER_MASK (1U << 0)
 #define UI_BREW_VALID_LIVE_PRESSURE_MASK (1U << 1)
 #define UI_BREW_VALID_WATER_LEVEL_MASK (1U << 2)
 #define UI_BREW_VALID_WEIGHT_MASK (1U << 3)
 #define UI_BREW_VALID_WARMUP_MASK (1U << 4)
+
+typedef enum {
+    UI_PLOT_CHECKBOX_AUTOSCALE_PRESSURE = 0,
+    UI_PLOT_CHECKBOX_AUTOSCALE_WEIGHT,
+    UI_PLOT_CHECKBOX_AUTOSCALE_FLOW,
+    UI_PLOT_CHECKBOX_AUTOSCALE_TEMPERATURE
+} ui_plot_checkbox_id_t;
+
+typedef enum {
+    UI_PLOT_RANGE_ROLLER_PRESSURE = 0,
+    UI_PLOT_RANGE_ROLLER_WEIGHT,
+    UI_PLOT_RANGE_ROLLER_FLOW,
+    UI_PLOT_RANGE_ROLLER_TEMPERATURE
+} ui_plot_range_roller_id_t;
 
 static const system_constants_data_t *ui_get_constants(void);
 static const system_constants_profile_t *ui_get_profile_constants(int profile_index);
@@ -344,8 +448,25 @@ static bool ui_sim_data_refresh_due(int64_t now_us, int64_t last_refresh_us, uin
 static void ui_process_sim_data_fifo(void);
 static void ui_plot_sim_data_packet(const data_downlink_packet_t *packet, uint32_t packet_interval_us);
 static void ui_clear_plot_data(void);
-static void ui_update_plot_axis_labels(float pressure_max, float flow_max);
-static void ui_plot_realtime_packet(const data_downlink_packet_t *packet);
+static void ui_update_plot_axis_labels(float pressure_max,
+                                       float weight_max,
+                                       float flow_max,
+                                       float temperature_max,
+                                       float x_axis_span_s,
+                                       bool rolling_window);
+static void ui_render_live_shot_plot(void);
+static void ui_plot_realtime_packet(const data_downlink_packet_t *packet, uint32_t packet_interval_us);
+static void ui_close_plot_range_overlay(void);
+static void ui_open_plot_range_overlay(void);
+static void ui_plot_range_update_labels(void);
+static void ui_plot_range_set_roller_options_tenths(lv_obj_t *roller,
+                                                     int min_tenths,
+                                                     int max_tenths,
+                                                     int selected_tenths);
+static void ui_plot_checkbox_event_cb(lv_event_t *e);
+static void ui_plot_set_range_button_event_cb(lv_event_t *e);
+static void ui_plot_range_roller_event_cb(lv_event_t *e);
+static void ui_plot_range_done_event_cb(lv_event_t *e);
 static void ui_ingest_home_metrics_from_packet(const data_downlink_packet_t *packet, uint32_t packet_interval_us);
 static float ui_estimate_shot_target_preview_g(int profile_index, float brew_time_s);
 static void ui_profile_dropdown_event_cb(lv_event_t *e);
@@ -569,6 +690,7 @@ static void ui_update_header_runtime(void)
         return;
     }
 
+    const system_constants_profile_t *profile_constants = ui_get_profile_constants(s_ui.active_profile);
     char shot_text[24];
     char pressure_text[32];
     char temp_text[64];
@@ -586,11 +708,11 @@ static void ui_update_header_runtime(void)
     if (s_ui.brew_server_temperature_valid) {
         snprintf(temp_text,
                  sizeof(temp_text),
-                 "%.1fC (Target %d C)",
+                 "%.1f C (Target %.1f C)",
                  s_ui.brew_live_temperature_c,
-                 s_ui.target_temp_c);
+                 (double)s_ui.target_temp_c);
     } else {
-        snprintf(temp_text, sizeof(temp_text), "N/A (Target %d C)", s_ui.target_temp_c);
+        snprintf(temp_text, sizeof(temp_text), "N/A (Target %.1f C)", (double)s_ui.target_temp_c);
     }
 
     if (s_ui.active_page == UI_PAGE_BREW) {
@@ -600,6 +722,13 @@ static void ui_update_header_runtime(void)
             "Shot %s  |  Pressure %s  |  Temperature %s",
             shot_text,
             pressure_text,
+            temp_text);
+    } else if (s_ui.active_page == UI_PAGE_LIVE_SHOT) {
+        snprintf(
+            line,
+            sizeof(line),
+            "Profile: %s  |  Temperature %s",
+            (profile_constants != NULL) ? profile_constants->name : "N/A",
             temp_text);
     } else {
         snprintf(
@@ -1562,32 +1691,112 @@ static void ui_clear_sim_data_plot(void)
 }
 
 /**
- * @brief Clear the RealTime Plot rolling buffers.
+ * @brief Clamp one plot axis value to a positive finite range.
+ */
+static float ui_plot_clamp_positive(float value, float min_value, float max_value, float fallback)
+{
+    if (!isfinite(value)) {
+        return fallback;
+    }
+    if (value < min_value) {
+        return min_value;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
+/**
+ * @brief Append one sample into Live Shot history buffers.
+ */
+static void ui_plot_append_history_sample(float time_s,
+                                          float pressure_bar,
+                                          float weight_g,
+                                          float flow_ml_s,
+                                          float temperature_c)
+{
+    if (s_ui.plot_history_count < UI_PLOT_POINT_COUNT) {
+        uint32_t idx = s_ui.plot_history_count;
+        s_ui.plot_history_time_sec[idx] = time_s;
+        s_ui.plot_history_pressure_bar[idx] = pressure_bar;
+        s_ui.plot_history_weight_g[idx] = weight_g;
+        s_ui.plot_history_flow_ml_s[idx] = flow_ml_s;
+        s_ui.plot_history_temperature_c[idx] = temperature_c;
+        s_ui.plot_history_count++;
+        return;
+    }
+
+    memmove(&s_ui.plot_history_time_sec[0],
+            &s_ui.plot_history_time_sec[1],
+            (UI_PLOT_POINT_COUNT - 1U) * sizeof(s_ui.plot_history_time_sec[0]));
+    memmove(&s_ui.plot_history_pressure_bar[0],
+            &s_ui.plot_history_pressure_bar[1],
+            (UI_PLOT_POINT_COUNT - 1U) * sizeof(s_ui.plot_history_pressure_bar[0]));
+    memmove(&s_ui.plot_history_weight_g[0],
+            &s_ui.plot_history_weight_g[1],
+            (UI_PLOT_POINT_COUNT - 1U) * sizeof(s_ui.plot_history_weight_g[0]));
+    memmove(&s_ui.plot_history_flow_ml_s[0],
+            &s_ui.plot_history_flow_ml_s[1],
+            (UI_PLOT_POINT_COUNT - 1U) * sizeof(s_ui.plot_history_flow_ml_s[0]));
+    memmove(&s_ui.plot_history_temperature_c[0],
+            &s_ui.plot_history_temperature_c[1],
+            (UI_PLOT_POINT_COUNT - 1U) * sizeof(s_ui.plot_history_temperature_c[0]));
+
+    s_ui.plot_history_time_sec[UI_PLOT_POINT_COUNT - 1U] = time_s;
+    s_ui.plot_history_pressure_bar[UI_PLOT_POINT_COUNT - 1U] = pressure_bar;
+    s_ui.plot_history_weight_g[UI_PLOT_POINT_COUNT - 1U] = weight_g;
+    s_ui.plot_history_flow_ml_s[UI_PLOT_POINT_COUNT - 1U] = flow_ml_s;
+    s_ui.plot_history_temperature_c[UI_PLOT_POINT_COUNT - 1U] = temperature_c;
+}
+
+/**
+ * @brief Clear the Live Shot plot buffers and session history.
  *
- * @details Resets both pressure and flow traces to zero so a new StartBrew
- * session starts from an empty timeline.
+ * @details Resets all four plot traces so a new StartBrew session starts from
+ * an empty timeline.
  */
 static void ui_clear_plot_data(void)
 {
     for (uint32_t index = 0; index < UI_PLOT_POINT_COUNT; index++) {
-        s_ui.plot_pressure_chart_y_values[index] = 0;
-        s_ui.plot_flow_chart_y_values[index] = 0;
+        s_ui.plot_pressure_chart_y_values[index] = LV_CHART_POINT_NONE;
+        s_ui.plot_weight_chart_y_values[index] = LV_CHART_POINT_NONE;
+        s_ui.plot_flow_chart_y_values[index] = LV_CHART_POINT_NONE;
+        s_ui.plot_temperature_chart_y_values[index] = LV_CHART_POINT_NONE;
+        s_ui.plot_history_time_sec[index] = 0.0f;
+        s_ui.plot_history_pressure_bar[index] = 0.0f;
+        s_ui.plot_history_weight_g[index] = 0.0f;
+        s_ui.plot_history_flow_ml_s[index] = 0.0f;
+        s_ui.plot_history_temperature_c[index] = 0.0f;
     }
+    s_ui.plot_history_count = 0U;
+    s_ui.plot_history_frozen = false;
     s_ui.plot_stream_started = false;
-    s_ui.plot_pressure_y_axis_limit = 0;
-    s_ui.plot_flow_y_axis_limit = 0;
     if (s_ui.plot_chart != NULL) {
+        lv_chart_set_point_count(s_ui.plot_chart, UI_PLOT_WINDOW_POINT_COUNT);
         lv_chart_refresh(s_ui.plot_chart);
     }
+    ui_update_plot_axis_labels(
+        s_ui.plot_manual_pressure_max_bar,
+        s_ui.plot_manual_weight_max_g,
+        s_ui.plot_manual_flow_max_ml_s,
+        s_ui.plot_manual_temperature_max_c,
+        (float)UI_PLOT_WINDOW_SECONDS,
+        true);
 }
 
 /**
- * @brief Update RealTime Plot custom X and dual right-side Y labels.
+ * @brief Update Live Shot custom X and right-side Y labels.
  *
- * @details The X axis is fixed to 10 seconds with 0.5-second spacing. Two
- * color-coded Y scales are rendered on the right side for pressure and flow.
+ * @details Renders a fixed 20-second axis while brewing and a full-shot axis
+ * when playback is frozen after brew completion.
  */
-static void ui_update_plot_axis_labels(float pressure_max, float flow_max)
+static void ui_update_plot_axis_labels(float pressure_max,
+                                       float weight_max,
+                                       float flow_max,
+                                       float temperature_max,
+                                       float x_axis_span_s,
+                                       bool rolling_window)
 {
     lv_coord_t chart_x = 0;
     lv_coord_t chart_y = 0;
@@ -1605,122 +1814,689 @@ static void ui_update_plot_axis_labels(float pressure_max, float flow_max)
 
     for (uint32_t index = 0; index < UI_PLOT_X_LABEL_COUNT; index++) {
         lv_obj_t *label = s_ui.plot_x_axis_labels[index];
-        float seconds_value = (float)(UI_PLOT_WINDOW_SECONDS * 1000U - (index * UI_PLOT_X_LABEL_STEP_MS)) / 1000.0f;
+        float t_norm = (float)index / (float)(UI_PLOT_X_LABEL_COUNT - 1U);
+        float seconds_value = x_axis_span_s * t_norm;
         lv_coord_t pos_x = chart_x + (lv_coord_t)(((chart_w - 1) * (int32_t)index) / (int32_t)(UI_PLOT_X_LABEL_COUNT - 1U));
         if (label == NULL) {
             continue;
         }
-        snprintf(
-            s_ui.plot_x_axis_label_text[index],
-            sizeof(s_ui.plot_x_axis_label_text[index]),
-            "%.1fs",
-            seconds_value);
+        (void)rolling_window;
+        snprintf(s_ui.plot_x_axis_label_text[index],
+                 sizeof(s_ui.plot_x_axis_label_text[index]),
+                 "%.0fs",
+                 (double)seconds_value);
         lv_label_set_text_static(label, s_ui.plot_x_axis_label_text[index]);
         lv_obj_update_layout(label);
         pos_x -= lv_obj_get_width(label) / 2;
-        lv_obj_set_pos(label, pos_x, chart_y + chart_h + 2);
+        lv_obj_set_pos(label, pos_x, chart_y + chart_h - lv_obj_get_height(label) - 3);
     }
 
     for (uint32_t index = 0; index < UI_PLOT_Y_LABEL_COUNT; index++) {
         lv_coord_t pos_y = chart_y + (lv_coord_t)(((chart_h - 1) * (int32_t)index) / (int32_t)(UI_PLOT_Y_LABEL_COUNT - 1U));
         float normalized = 1.0f - ((float)index / (float)(UI_PLOT_Y_LABEL_COUNT - 1U));
         lv_obj_t *pressure_label = s_ui.plot_pressure_y_axis_labels[index];
+        lv_obj_t *weight_label = s_ui.plot_weight_y_axis_labels[index];
         lv_obj_t *flow_label = s_ui.plot_flow_y_axis_labels[index];
+        lv_obj_t *temperature_label = s_ui.plot_temperature_y_axis_labels[index];
 
         if (pressure_label != NULL) {
             snprintf(
                 s_ui.plot_pressure_y_axis_label_text[index],
                 sizeof(s_ui.plot_pressure_y_axis_label_text[index]),
-                "%.2f",
+                "%.1f",
                 pressure_max * normalized);
             lv_label_set_text_static(pressure_label, s_ui.plot_pressure_y_axis_label_text[index]);
             lv_obj_update_layout(pressure_label);
-            lv_obj_set_pos(pressure_label, chart_x + chart_w + 8, pos_y - (lv_obj_get_height(pressure_label) / 2));
+            lv_obj_set_pos(pressure_label, chart_x + chart_w + 6, pos_y - (lv_obj_get_height(pressure_label) / 2));
+        }
+
+        if (weight_label != NULL) {
+            snprintf(
+                s_ui.plot_weight_y_axis_label_text[index],
+                sizeof(s_ui.plot_weight_y_axis_label_text[index]),
+                "%.1f",
+                weight_max * normalized);
+            lv_label_set_text_static(weight_label, s_ui.plot_weight_y_axis_label_text[index]);
+            lv_obj_update_layout(weight_label);
+            lv_obj_set_pos(weight_label, chart_x + chart_w + 42, pos_y - (lv_obj_get_height(weight_label) / 2));
         }
 
         if (flow_label != NULL) {
             snprintf(
                 s_ui.plot_flow_y_axis_label_text[index],
                 sizeof(s_ui.plot_flow_y_axis_label_text[index]),
-                "%.2f",
+                "%.1f",
                 flow_max * normalized);
             lv_label_set_text_static(flow_label, s_ui.plot_flow_y_axis_label_text[index]);
             lv_obj_update_layout(flow_label);
-            lv_obj_set_pos(flow_label, chart_x + chart_w + 64, pos_y - (lv_obj_get_height(flow_label) / 2));
+            lv_obj_set_pos(flow_label, chart_x + chart_w + 78, pos_y - (lv_obj_get_height(flow_label) / 2));
+        }
+
+        if (temperature_label != NULL) {
+            snprintf(
+                s_ui.plot_temperature_y_axis_label_text[index],
+                sizeof(s_ui.plot_temperature_y_axis_label_text[index]),
+                "%.1f",
+                temperature_max * normalized);
+            lv_label_set_text_static(temperature_label, s_ui.plot_temperature_y_axis_label_text[index]);
+            lv_obj_update_layout(temperature_label);
+            lv_obj_set_pos(temperature_label, chart_x + chart_w + 114, pos_y - (lv_obj_get_height(temperature_label) / 2));
         }
     }
 }
 
 /**
- * @brief Append one packet of pressure/flow samples to the RealTime Plot.
- *
- * @details Uses packet float layout:
- * - f[0..9]: pressure samples in bar
- * - f[10..19]: flow samples in ml/sec
- * - f[20..29]: temperature samples (currently not plotted)
+ * @brief Render Live Shot chart from history using current view + axis settings.
  */
-static void ui_plot_realtime_packet(const data_downlink_packet_t *packet)
+static void ui_render_live_shot_plot(void)
+{
+    uint32_t display_start = 0U;
+    uint32_t display_count = 0U;
+    uint32_t point_count = UI_PLOT_WINDOW_POINT_COUNT;
+    bool rolling_window = false;
+    float x_axis_span_s = (float)UI_PLOT_WINDOW_SECONDS;
+    float x_axis_start_s = 0.0f;
+    float x_axis_end_s = 0.0f;
+    float pressure_max = 0.0f;
+    float weight_max = 0.0f;
+    float flow_max = 0.0f;
+    float temperature_max = 0.0f;
+
+    if (s_ui.plot_chart == NULL ||
+        s_ui.plot_pressure_series == NULL ||
+        s_ui.plot_weight_series == NULL ||
+        s_ui.plot_flow_series == NULL ||
+        s_ui.plot_temperature_series == NULL) {
+        return;
+    }
+
+    for (uint32_t index = 0; index < UI_PLOT_POINT_COUNT; index++) {
+        s_ui.plot_pressure_chart_y_values[index] = LV_CHART_POINT_NONE;
+        s_ui.plot_weight_chart_y_values[index] = LV_CHART_POINT_NONE;
+        s_ui.plot_flow_chart_y_values[index] = LV_CHART_POINT_NONE;
+        s_ui.plot_temperature_chart_y_values[index] = LV_CHART_POINT_NONE;
+    }
+
+    if (s_ui.plot_history_count == 0U) {
+        lv_chart_set_point_count(s_ui.plot_chart, UI_PLOT_WINDOW_POINT_COUNT);
+        lv_chart_refresh(s_ui.plot_chart);
+        ui_update_plot_axis_labels(
+            s_ui.plot_manual_pressure_max_bar,
+            s_ui.plot_manual_weight_max_g,
+            s_ui.plot_manual_flow_max_ml_s,
+            s_ui.plot_manual_temperature_max_c,
+            (float)UI_PLOT_WINDOW_SECONDS,
+            true);
+        return;
+    }
+
+    rolling_window = (s_ui.brewing && !s_ui.plot_history_frozen);
+    if (rolling_window) {
+        float end_time = s_ui.plot_history_time_sec[s_ui.plot_history_count - 1U];
+        float window_start = (end_time > (float)UI_PLOT_WINDOW_SECONDS)
+                                 ? (end_time - (float)UI_PLOT_WINDOW_SECONDS)
+                                 : 0.0f;
+        while (display_start < s_ui.plot_history_count &&
+               s_ui.plot_history_time_sec[display_start] < window_start) {
+            display_start++;
+        }
+        x_axis_span_s = (float)UI_PLOT_WINDOW_SECONDS;
+        x_axis_start_s = window_start;
+        x_axis_end_s = window_start + x_axis_span_s;
+        point_count = UI_PLOT_WINDOW_POINT_COUNT;
+    } else {
+        display_start = 0U;
+        x_axis_start_s = s_ui.plot_history_time_sec[0];
+        x_axis_end_s = s_ui.plot_history_time_sec[s_ui.plot_history_count - 1U];
+        x_axis_span_s = x_axis_end_s - x_axis_start_s;
+        if (x_axis_span_s < 1.0f) {
+            x_axis_span_s = 1.0f;
+            x_axis_end_s = x_axis_start_s + x_axis_span_s;
+        }
+        point_count = UI_PLOT_POINT_COUNT;
+    }
+
+    display_count = s_ui.plot_history_count - display_start;
+    if (display_count == 0U) {
+        display_count = 1U;
+    }
+    if (display_count > point_count) {
+        display_count = point_count;
+    }
+
+    lv_chart_set_point_count(s_ui.plot_chart, point_count);
+
+    for (uint32_t index = 0; index < (s_ui.plot_history_count - display_start); index++) {
+        uint32_t src_idx = display_start + index;
+        float sample_time_s = s_ui.plot_history_time_sec[src_idx];
+        float pressure_value = s_ui.plot_history_pressure_bar[src_idx];
+        float weight_value = s_ui.plot_history_weight_g[src_idx];
+        float flow_value = s_ui.plot_history_flow_ml_s[src_idx];
+        float temperature_value = s_ui.plot_history_temperature_c[src_idx];
+
+        if (sample_time_s < x_axis_start_s || sample_time_s > x_axis_end_s + 0.0001f) {
+            continue;
+        }
+        if (pressure_value > pressure_max) {
+            pressure_max = pressure_value;
+        }
+        if (weight_value > weight_max) {
+            weight_max = weight_value;
+        }
+        if (flow_value > flow_max) {
+            flow_max = flow_value;
+        }
+        if (temperature_value > temperature_max) {
+            temperature_max = temperature_value;
+        }
+    }
+
+    pressure_max = s_ui.plot_autoscale_pressure
+                       ? ui_plot_clamp_positive(pressure_max * 1.1f, 1.0f, 20.0f, 12.0f)
+                       : s_ui.plot_manual_pressure_max_bar;
+    weight_max = s_ui.plot_autoscale_weight
+                     ? ui_plot_clamp_positive(weight_max * 1.1f, 10.0f, 100.0f, 60.0f)
+                     : s_ui.plot_manual_weight_max_g;
+    flow_max = s_ui.plot_autoscale_flow
+                   ? ui_plot_clamp_positive(flow_max * 1.1f, 1.0f, 30.0f, 5.0f)
+                   : s_ui.plot_manual_flow_max_ml_s;
+    temperature_max = s_ui.plot_autoscale_temperature
+                          ? ui_plot_clamp_positive(temperature_max * 1.05f, 30.0f, 105.0f, 105.0f)
+                          : s_ui.plot_manual_temperature_max_c;
+
+    for (uint32_t index = 0; index < (s_ui.plot_history_count - display_start); index++) {
+        uint32_t src_idx = display_start + index;
+        float sample_time_s = s_ui.plot_history_time_sec[src_idx];
+        float relative_s = 0.0f;
+        uint32_t bin_idx = 0U;
+        float pressure_value = s_ui.plot_history_pressure_bar[src_idx];
+        float weight_value = s_ui.plot_history_weight_g[src_idx];
+        float flow_value = s_ui.plot_history_flow_ml_s[src_idx];
+        float temperature_value = s_ui.plot_history_temperature_c[src_idx];
+        if (sample_time_s < x_axis_start_s || sample_time_s > x_axis_end_s + 0.0001f) {
+            continue;
+        }
+        relative_s = sample_time_s - x_axis_start_s;
+        if (relative_s < 0.0f) {
+            relative_s = 0.0f;
+        }
+        if (relative_s > x_axis_span_s) {
+            relative_s = x_axis_span_s;
+        }
+        bin_idx = (uint32_t)lroundf((relative_s / x_axis_span_s) * (float)(point_count - 1U));
+        if (bin_idx >= point_count) {
+            bin_idx = point_count - 1U;
+        }
+        int32_t pressure_scaled = (int32_t)lroundf((pressure_value / pressure_max) * (float)UI_PLOT_NORMALIZED_MAX);
+        int32_t weight_scaled = (int32_t)lroundf((weight_value / weight_max) * (float)UI_PLOT_NORMALIZED_MAX);
+        int32_t flow_scaled = (int32_t)lroundf((flow_value / flow_max) * (float)UI_PLOT_NORMALIZED_MAX);
+        int32_t temperature_scaled = (int32_t)lroundf((temperature_value / temperature_max) * (float)UI_PLOT_NORMALIZED_MAX);
+
+        s_ui.plot_pressure_chart_y_values[bin_idx] = pressure_scaled;
+        s_ui.plot_weight_chart_y_values[bin_idx] = weight_scaled;
+        s_ui.plot_flow_chart_y_values[bin_idx] = flow_scaled;
+        s_ui.plot_temperature_chart_y_values[bin_idx] = temperature_scaled;
+    }
+
+    /* Fill sparse time bins with last known value so traces remain continuous
+     * when sample timestamps quantize to the same point index. */
+    int32_t last_pressure = LV_CHART_POINT_NONE;
+    int32_t last_weight = LV_CHART_POINT_NONE;
+    int32_t last_flow = LV_CHART_POINT_NONE;
+    int32_t last_temperature = LV_CHART_POINT_NONE;
+    for (uint32_t index = 0; index < point_count; index++) {
+        if (s_ui.plot_pressure_chart_y_values[index] == LV_CHART_POINT_NONE) {
+            if (last_pressure != LV_CHART_POINT_NONE) {
+                s_ui.plot_pressure_chart_y_values[index] = last_pressure;
+            }
+        } else {
+            last_pressure = s_ui.plot_pressure_chart_y_values[index];
+        }
+
+        if (s_ui.plot_weight_chart_y_values[index] == LV_CHART_POINT_NONE) {
+            if (last_weight != LV_CHART_POINT_NONE) {
+                s_ui.plot_weight_chart_y_values[index] = last_weight;
+            }
+        } else {
+            last_weight = s_ui.plot_weight_chart_y_values[index];
+        }
+
+        if (s_ui.plot_flow_chart_y_values[index] == LV_CHART_POINT_NONE) {
+            if (last_flow != LV_CHART_POINT_NONE) {
+                s_ui.plot_flow_chart_y_values[index] = last_flow;
+            }
+        } else {
+            last_flow = s_ui.plot_flow_chart_y_values[index];
+        }
+
+        if (s_ui.plot_temperature_chart_y_values[index] == LV_CHART_POINT_NONE) {
+            if (last_temperature != LV_CHART_POINT_NONE) {
+                s_ui.plot_temperature_chart_y_values[index] = last_temperature;
+            }
+        } else {
+            last_temperature = s_ui.plot_temperature_chart_y_values[index];
+        }
+    }
+
+    lv_chart_set_range(s_ui.plot_chart, LV_CHART_AXIS_PRIMARY_Y, 0, UI_PLOT_NORMALIZED_MAX);
+    ui_update_plot_axis_labels(
+        pressure_max,
+        weight_max,
+        flow_max,
+        temperature_max,
+        x_axis_span_s,
+        rolling_window);
+    lv_chart_refresh(s_ui.plot_chart);
+}
+
+/**
+ * @brief Append one packet sample to Live Shot history and refresh the chart.
+ *
+ * @details Uses the latest sample in each channel to keep a deterministic
+ * 10 Hz history timeline that can be shown as rolling live-window or static
+ * full-shot playback.
+ */
+static void ui_plot_realtime_packet(const data_downlink_packet_t *packet, uint32_t packet_interval_us)
 {
     const uint32_t sample_count = UI_PLOT_SAMPLES_PER_CHANNEL;
-    int32_t pressure_max_scaled = 0;
-    int32_t flow_max_scaled = 0;
+    float pressure_value = 0.0f;
+    float flow_value = 0.0f;
+    float temperature_value = 0.0f;
+    float weight_value = 0.0f;
+    float elapsed_s = 0.0f;
+    float fallback_dt_s = 0.1f;
 
     if (packet == NULL ||
         s_ui.plot_chart == NULL ||
         s_ui.plot_pressure_series == NULL ||
+        s_ui.plot_weight_series == NULL ||
         s_ui.plot_flow_series == NULL ||
-        sample_count >= UI_PLOT_POINT_COUNT) {
+        s_ui.plot_temperature_series == NULL ||
+        sample_count == 0U) {
         return;
     }
 
-    memmove(
-        &s_ui.plot_pressure_chart_y_values[0],
-        &s_ui.plot_pressure_chart_y_values[sample_count],
-        (UI_PLOT_POINT_COUNT - sample_count) * sizeof(s_ui.plot_pressure_chart_y_values[0]));
-    memmove(
-        &s_ui.plot_flow_chart_y_values[0],
-        &s_ui.plot_flow_chart_y_values[sample_count],
-        (UI_PLOT_POINT_COUNT - sample_count) * sizeof(s_ui.plot_flow_chart_y_values[0]));
-
-    for (uint32_t sample_index = 0; sample_index < sample_count; sample_index++) {
-        uint32_t dst_index = (UI_PLOT_POINT_COUNT - sample_count) + sample_index;
-        float pressure_value = packet->f[sample_index];
-        float flow_value = packet->f[sample_count + sample_index];
-        s_ui.plot_pressure_chart_y_values[dst_index] = (int32_t)lroundf(pressure_value * UI_PLOT_FLOAT_SCALE_FACTOR);
-        s_ui.plot_flow_chart_y_values[dst_index] = (int32_t)lroundf(flow_value * UI_PLOT_FLOAT_SCALE_FACTOR);
+    if (!s_ui.brewing || s_ui.plot_history_frozen) {
+        return;
     }
 
-    for (uint32_t index = 0; index < UI_PLOT_POINT_COUNT; index++) {
-        int32_t pressure_scaled = s_ui.plot_pressure_chart_y_values[index];
-        int32_t flow_scaled = s_ui.plot_flow_chart_y_values[index];
-        if (pressure_scaled > pressure_max_scaled) {
-            pressure_max_scaled = pressure_scaled;
+    if ((UI_PLOT_CHANNEL_OFFSET_TEMPERATURE + sample_count) <= DATA_SIZE_FLOATS) {
+        pressure_value = packet->f[UI_PLOT_CHANNEL_OFFSET_PRESSURE + sample_count - 1U];
+        flow_value = packet->f[UI_PLOT_CHANNEL_OFFSET_FLOW + sample_count - 1U];
+        temperature_value = packet->f[UI_PLOT_CHANNEL_OFFSET_TEMPERATURE + sample_count - 1U];
+    }
+    if ((UI_PLOT_CHANNEL_OFFSET_WEIGHT + sample_count) <= DATA_SIZE_FLOATS) {
+        weight_value = packet->f[UI_PLOT_CHANNEL_OFFSET_WEIGHT + sample_count - 1U];
+    } else if (packet->i[LCD_CONTROLLER_BREW_SLOT_WEIGHT_X100] >= 0) {
+        weight_value = (float)packet->i[LCD_CONTROLLER_BREW_SLOT_WEIGHT_X100] / 100.0f;
+    } else {
+        weight_value = s_ui.brew_live_weight_g;
+    }
+
+    if (packet->i[LCD_CONTROLLER_BREW_SLOT_BREW_ELAPSED_MS] >= 0) {
+        elapsed_s = (float)packet->i[LCD_CONTROLLER_BREW_SLOT_BREW_ELAPSED_MS] / 1000.0f;
+    } else if (s_ui.plot_history_count > 0U) {
+        elapsed_s = s_ui.plot_history_time_sec[s_ui.plot_history_count - 1U];
+    }
+
+    if (packet_interval_us > 0U) {
+        fallback_dt_s = (float)packet_interval_us / 1000000.0f;
+    }
+    if (s_ui.plot_history_count > 0U) {
+        float min_next_time = s_ui.plot_history_time_sec[s_ui.plot_history_count - 1U] + fallback_dt_s;
+        if (elapsed_s < min_next_time) {
+            elapsed_s = min_next_time;
         }
-        if (flow_scaled > flow_max_scaled) {
-            flow_max_scaled = flow_scaled;
-        }
     }
 
-    if (pressure_max_scaled < (int32_t)lroundf(1.0f * UI_PLOT_FLOAT_SCALE_FACTOR)) {
-        pressure_max_scaled = (int32_t)lroundf(1.0f * UI_PLOT_FLOAT_SCALE_FACTOR);
-    }
-    if (flow_max_scaled < (int32_t)lroundf(0.5f * UI_PLOT_FLOAT_SCALE_FACTOR)) {
-        flow_max_scaled = (int32_t)lroundf(0.5f * UI_PLOT_FLOAT_SCALE_FACTOR);
-    }
-
-    pressure_max_scaled = (pressure_max_scaled * 11) / 10;
-    flow_max_scaled = (flow_max_scaled * 11) / 10;
-
-    lv_chart_set_range(s_ui.plot_chart, LV_CHART_AXIS_PRIMARY_Y, 0, (lv_coord_t)pressure_max_scaled);
-    lv_chart_set_range(s_ui.plot_chart, LV_CHART_AXIS_SECONDARY_Y, 0, (lv_coord_t)flow_max_scaled);
-
+    ui_plot_append_history_sample(
+        elapsed_s,
+        ui_plot_clamp_positive(pressure_value, 0.0f, 25.0f, 0.0f),
+        ui_plot_clamp_positive(weight_value, 0.0f, 200.0f, 0.0f),
+        ui_plot_clamp_positive(flow_value, 0.0f, 40.0f, 0.0f),
+        ui_plot_clamp_positive(temperature_value, 0.0f, 120.0f, 0.0f));
     s_ui.plot_stream_started = true;
-    s_ui.plot_pressure_y_axis_limit = pressure_max_scaled;
-    s_ui.plot_flow_y_axis_limit = flow_max_scaled;
-    ui_update_plot_axis_labels(
-        (float)pressure_max_scaled / UI_PLOT_FLOAT_SCALE_FACTOR,
-        (float)flow_max_scaled / UI_PLOT_FLOAT_SCALE_FACTOR);
-    lv_chart_refresh(s_ui.plot_chart);
+    ui_render_live_shot_plot();
+}
+
+/**
+ * @brief Tear down the Live Shot range overlay and clear widget handles.
+ */
+static void ui_close_plot_range_overlay(void)
+{
+    if (s_ui.plot_range_overlay != NULL) {
+        lv_obj_del(s_ui.plot_range_overlay);
+    }
+
+    s_ui.plot_range_overlay = NULL;
+    s_ui.plot_range_pressure_value_label = NULL;
+    s_ui.plot_range_weight_value_label = NULL;
+    s_ui.plot_range_flow_value_label = NULL;
+    s_ui.plot_range_temperature_value_label = NULL;
+    s_ui.plot_range_pressure_roller = NULL;
+    s_ui.plot_range_weight_roller = NULL;
+    s_ui.plot_range_flow_roller = NULL;
+    s_ui.plot_range_temperature_roller = NULL;
+}
+
+/**
+ * @brief Refresh all value labels shown in the Live Shot range overlay.
+ */
+static void ui_plot_range_update_labels(void)
+{
+    if (s_ui.plot_range_pressure_value_label != NULL) {
+        lv_label_set_text_fmt(
+            s_ui.plot_range_pressure_value_label,
+            "Pressure Maximal Value | %.1f Bar",
+            (double)s_ui.plot_manual_pressure_max_bar);
+    }
+    if (s_ui.plot_range_weight_value_label != NULL) {
+        lv_label_set_text_fmt(
+            s_ui.plot_range_weight_value_label,
+            "Weight Maximal Value | %.1f Gr",
+            (double)s_ui.plot_manual_weight_max_g);
+    }
+    if (s_ui.plot_range_flow_value_label != NULL) {
+        lv_label_set_text_fmt(
+            s_ui.plot_range_flow_value_label,
+            "Flow | %.1f ml/Sec",
+            (double)s_ui.plot_manual_flow_max_ml_s);
+    }
+    if (s_ui.plot_range_temperature_value_label != NULL) {
+        lv_label_set_text_fmt(
+            s_ui.plot_range_temperature_value_label,
+            "Temperature | %.1f C",
+            (double)s_ui.plot_manual_temperature_max_c);
+    }
+}
+
+/**
+ * @brief Populate a roller with fixed one-decimal options.
+ */
+static void ui_plot_range_set_roller_options_tenths(lv_obj_t *roller,
+                                                     int min_tenths,
+                                                     int max_tenths,
+                                                     int selected_tenths)
+{
+    size_t option_count = 0U;
+    size_t buffer_size = 0U;
+    char *options = NULL;
+    size_t used = 0U;
+
+    if (roller == NULL || max_tenths < min_tenths) {
+        return;
+    }
+
+    if (selected_tenths < min_tenths) {
+        selected_tenths = min_tenths;
+    }
+    if (selected_tenths > max_tenths) {
+        selected_tenths = max_tenths;
+    }
+
+    option_count = (size_t)(max_tenths - min_tenths + 1);
+    buffer_size = option_count * 10U + 1U;
+    options = (char *)malloc(buffer_size);
+    if (options == NULL) {
+        return;
+    }
+
+    options[0] = '\0';
+    for (int value = min_tenths; value <= max_tenths; value++) {
+        int written = snprintf(options + used,
+                               buffer_size - used,
+                               (value == min_tenths) ? "%d.%d" : "\n%d.%d",
+                               value / 10,
+                               abs(value % 10));
+        if (written <= 0 || (size_t)written >= (buffer_size - used)) {
+            break;
+        }
+        used += (size_t)written;
+    }
+
+    lv_roller_set_options(roller, options, LV_ROLLER_MODE_NORMAL);
+    lv_roller_set_visible_row_count(roller, 3);
+    lv_roller_set_selected(roller, (uint16_t)(selected_tenths - min_tenths), LV_ANIM_OFF);
+    free(options);
+}
+
+/**
+ * @brief Build and show the Live Shot range overlay.
+ */
+static void ui_open_plot_range_overlay(void)
+{
+    lv_obj_t *panel = NULL;
+    lv_obj_t *title = NULL;
+    lv_obj_t *done_btn = NULL;
+    lv_obj_t *done_lbl = NULL;
+    const lv_coord_t line_start_y = 74;
+    const lv_coord_t line_step_y = 104;
+    const lv_coord_t label_x = 24;
+    const lv_coord_t roller_x = 472;
+    const lv_coord_t roller_w = 240;
+    const lv_coord_t roller_h = 64;
+
+    ui_close_plot_range_overlay();
+
+    if (s_ui.root == NULL) {
+        return;
+    }
+
+    s_ui.plot_range_overlay = lv_obj_create(s_ui.root);
+    lv_obj_remove_style_all(s_ui.plot_range_overlay);
+    lv_obj_set_size(s_ui.plot_range_overlay, 800, 480);
+    lv_obj_set_style_bg_color(s_ui.plot_range_overlay, lv_color_hex(0x020617), 0);
+    lv_obj_set_style_bg_opa(s_ui.plot_range_overlay, LV_OPA_70, 0);
+
+    panel = lv_obj_create(s_ui.plot_range_overlay);
+    lv_obj_set_size(panel, 760, 414);
+    lv_obj_center(panel);
+    ui_style_card(panel, UI_COLOR_PANEL);
+    lv_obj_set_scrollbar_mode(panel, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scroll_dir(panel, LV_DIR_VER);
+    lv_obj_set_style_pad_all(panel, 14, 0);
+    lv_obj_set_style_pad_bottom(panel, 28, 0);
+
+    title = lv_label_create(panel);
+    lv_label_set_text(title, "Set Range");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 10, 8);
+
+    s_ui.plot_range_pressure_value_label = lv_label_create(panel);
+    lv_obj_set_style_text_font(s_ui.plot_range_pressure_value_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(s_ui.plot_range_pressure_value_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_set_width(s_ui.plot_range_pressure_value_label, roller_x - label_x - 18);
+    lv_obj_set_pos(s_ui.plot_range_pressure_value_label, label_x, line_start_y);
+
+    s_ui.plot_range_weight_value_label = lv_label_create(panel);
+    lv_obj_set_style_text_font(s_ui.plot_range_weight_value_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(s_ui.plot_range_weight_value_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_set_width(s_ui.plot_range_weight_value_label, roller_x - label_x - 18);
+    lv_obj_set_pos(s_ui.plot_range_weight_value_label, label_x, line_start_y + line_step_y);
+
+    s_ui.plot_range_flow_value_label = lv_label_create(panel);
+    lv_obj_set_style_text_font(s_ui.plot_range_flow_value_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(s_ui.plot_range_flow_value_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_set_width(s_ui.plot_range_flow_value_label, roller_x - label_x - 18);
+    lv_obj_set_pos(s_ui.plot_range_flow_value_label, label_x, line_start_y + (2 * line_step_y));
+
+    s_ui.plot_range_temperature_value_label = lv_label_create(panel);
+    lv_obj_set_style_text_font(s_ui.plot_range_temperature_value_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(s_ui.plot_range_temperature_value_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_set_width(s_ui.plot_range_temperature_value_label, roller_x - label_x - 18);
+    lv_obj_set_pos(s_ui.plot_range_temperature_value_label, label_x, line_start_y + (3 * line_step_y));
+
+    s_ui.plot_range_pressure_roller = lv_roller_create(panel);
+    lv_obj_set_size(s_ui.plot_range_pressure_roller, roller_w, roller_h);
+    lv_obj_set_pos(s_ui.plot_range_pressure_roller, roller_x, line_start_y - 10);
+    lv_obj_add_event_cb(s_ui.plot_range_pressure_roller,
+                        ui_plot_range_roller_event_cb,
+                        LV_EVENT_VALUE_CHANGED,
+                        (void *)(intptr_t)UI_PLOT_RANGE_ROLLER_PRESSURE);
+
+    s_ui.plot_range_weight_roller = lv_roller_create(panel);
+    lv_obj_set_size(s_ui.plot_range_weight_roller, roller_w, roller_h);
+    lv_obj_set_pos(s_ui.plot_range_weight_roller, roller_x, line_start_y + line_step_y - 10);
+    lv_obj_add_event_cb(s_ui.plot_range_weight_roller,
+                        ui_plot_range_roller_event_cb,
+                        LV_EVENT_VALUE_CHANGED,
+                        (void *)(intptr_t)UI_PLOT_RANGE_ROLLER_WEIGHT);
+
+    s_ui.plot_range_flow_roller = lv_roller_create(panel);
+    lv_obj_set_size(s_ui.plot_range_flow_roller, roller_w, roller_h);
+    lv_obj_set_pos(s_ui.plot_range_flow_roller, roller_x, line_start_y + (2 * line_step_y) - 10);
+    lv_obj_add_event_cb(s_ui.plot_range_flow_roller,
+                        ui_plot_range_roller_event_cb,
+                        LV_EVENT_VALUE_CHANGED,
+                        (void *)(intptr_t)UI_PLOT_RANGE_ROLLER_FLOW);
+
+    s_ui.plot_range_temperature_roller = lv_roller_create(panel);
+    lv_obj_set_size(s_ui.plot_range_temperature_roller, roller_w, roller_h);
+    lv_obj_set_pos(s_ui.plot_range_temperature_roller, roller_x, line_start_y + (3 * line_step_y) - 10);
+    lv_obj_add_event_cb(s_ui.plot_range_temperature_roller,
+                        ui_plot_range_roller_event_cb,
+                        LV_EVENT_VALUE_CHANGED,
+                        (void *)(intptr_t)UI_PLOT_RANGE_ROLLER_TEMPERATURE);
+
+    ui_plot_range_set_roller_options_tenths(
+        s_ui.plot_range_pressure_roller,
+        10,
+        200,
+        (int)lroundf(s_ui.plot_manual_pressure_max_bar * 10.0f));
+    ui_plot_range_set_roller_options_tenths(
+        s_ui.plot_range_weight_roller,
+        100,
+        1000,
+        (int)lroundf(s_ui.plot_manual_weight_max_g * 10.0f));
+    ui_plot_range_set_roller_options_tenths(
+        s_ui.plot_range_flow_roller,
+        10,
+        300,
+        (int)lroundf(s_ui.plot_manual_flow_max_ml_s * 10.0f));
+    ui_plot_range_set_roller_options_tenths(
+        s_ui.plot_range_temperature_roller,
+        300,
+        1050,
+        (int)lroundf(s_ui.plot_manual_temperature_max_c * 10.0f));
+
+    ui_plot_range_update_labels();
+
+    done_btn = lv_button_create(panel);
+    lv_obj_set_size(done_btn, 240, 56);
+    lv_obj_set_pos(done_btn, (760 - 240) / 2, line_start_y + (4 * line_step_y) + 22);
+    ui_style_action_button(done_btn);
+    lv_obj_add_event_cb(done_btn, ui_plot_range_done_event_cb, LV_EVENT_CLICKED, NULL);
+
+    done_lbl = lv_label_create(done_btn);
+    lv_label_set_text(done_lbl, "Done");
+    ui_style_button_label(done_lbl);
+    lv_obj_center(done_lbl);
+}
+
+/**
+ * @brief Handle Live Shot autoscale checkbox toggles.
+ */
+static void ui_plot_checkbox_event_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    bool checked = lv_obj_has_state(obj, LV_STATE_CHECKED);
+    ui_plot_checkbox_id_t checkbox_id = (ui_plot_checkbox_id_t)(intptr_t)lv_event_get_user_data(e);
+
+    switch (checkbox_id) {
+    case UI_PLOT_CHECKBOX_AUTOSCALE_PRESSURE:
+        s_ui.plot_autoscale_pressure = checked;
+        break;
+    case UI_PLOT_CHECKBOX_AUTOSCALE_WEIGHT:
+        s_ui.plot_autoscale_weight = checked;
+        break;
+    case UI_PLOT_CHECKBOX_AUTOSCALE_FLOW:
+        s_ui.plot_autoscale_flow = checked;
+        break;
+    case UI_PLOT_CHECKBOX_AUTOSCALE_TEMPERATURE:
+        s_ui.plot_autoscale_temperature = checked;
+        break;
+    default:
+        break;
+    }
+
+    if (system_constants_set_live_shot_autoscale(
+            s_ui.plot_autoscale_pressure,
+            s_ui.plot_autoscale_weight,
+            s_ui.plot_autoscale_flow,
+            s_ui.plot_autoscale_temperature) != ESP_OK) {
+        ESP_LOGW(TAG, "Live Shot autoscale apply failed.");
+    } else if (system_constants_save_live_shot_ranges() != ESP_OK) {
+        ESP_LOGW(TAG, "Live Shot autoscale save to SD failed.");
+    }
+
+    ui_render_live_shot_plot();
+}
+
+/**
+ * @brief Open the Live Shot range configuration overlay.
+ */
+static void ui_plot_set_range_button_event_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_open_plot_range_overlay();
+}
+
+/**
+ * @brief Handle one-decimal range roller changes.
+ */
+static void ui_plot_range_roller_event_cb(lv_event_t *e)
+{
+    ui_plot_range_roller_id_t roller_id = (ui_plot_range_roller_id_t)(intptr_t)lv_event_get_user_data(e);
+    lv_obj_t *roller = lv_event_get_target(e);
+    char selected_text[24] = {0};
+    float value = 0.0f;
+
+    if (roller == NULL) {
+        return;
+    }
+
+    lv_roller_get_selected_str(roller, selected_text, sizeof(selected_text));
+    value = strtof(selected_text, NULL);
+
+    switch (roller_id) {
+    case UI_PLOT_RANGE_ROLLER_PRESSURE:
+        s_ui.plot_manual_pressure_max_bar = ui_plot_clamp_positive(value, 1.0f, 20.0f, 12.0f);
+        break;
+    case UI_PLOT_RANGE_ROLLER_WEIGHT:
+        s_ui.plot_manual_weight_max_g = ui_plot_clamp_positive(value, 10.0f, 100.0f, 60.0f);
+        break;
+    case UI_PLOT_RANGE_ROLLER_FLOW:
+        s_ui.plot_manual_flow_max_ml_s = ui_plot_clamp_positive(value, 1.0f, 30.0f, 5.0f);
+        break;
+    case UI_PLOT_RANGE_ROLLER_TEMPERATURE:
+        s_ui.plot_manual_temperature_max_c = ui_plot_clamp_positive(value, 30.0f, 105.0f, 105.0f);
+        break;
+    default:
+        break;
+    }
+
+    ui_plot_range_update_labels();
+    ui_render_live_shot_plot();
+}
+
+/**
+ * @brief Persist range settings and close the overlay.
+ */
+static void ui_plot_range_done_event_cb(lv_event_t *e)
+{
+    (void)e;
+    if (system_constants_set_live_shot_ranges(
+            s_ui.plot_manual_pressure_max_bar,
+            s_ui.plot_manual_weight_max_g,
+            s_ui.plot_manual_flow_max_ml_s,
+            s_ui.plot_manual_temperature_max_c) != ESP_OK) {
+        ESP_LOGW(TAG, "Live Shot range apply failed.");
+    } else if (system_constants_save_live_shot_ranges() != ESP_OK) {
+        ESP_LOGW(TAG, "Live Shot range save to SD failed.");
+    }
+    ui_close_plot_range_overlay();
+    ui_render_live_shot_plot();
 }
 
 /**
@@ -2050,7 +2826,12 @@ static void ui_sync_sim_data_toggle_from_peer_event(void)
         ui_clear_plot_data();
     }
     if (!enabled) {
-        ui_reset_sim_data_stream_state();
+        if (brew_event && s_ui.plot_history_count > 0U) {
+            s_ui.plot_history_frozen = true;
+            ui_render_live_shot_plot();
+        } else {
+            ui_reset_sim_data_stream_state();
+        }
     }
     if (brew_event) {
         s_ui.brewing = enabled;
@@ -2346,7 +3127,10 @@ static void ui_process_sim_data_fifo(void)
         s_ui.sim_data_last_seq = packet->seq;
         s_ui.sim_data_last_seq_valid = true;
         s_ui.sim_data_packets_received++;
-        ui_plot_realtime_packet(packet);
+        ui_plot_realtime_packet(packet,
+                                (s_ui.sim_data_packet_interval_us > 0U)
+                                    ? s_ui.sim_data_packet_interval_us
+                                    : UI_SIM_DATA_DEFAULT_PACKET_INTERVAL_US);
     }
 
     if (!have_packet) {
@@ -2417,7 +3201,12 @@ static void ui_sync_sim_data_toggle_from_stream_activity(void)
     }
 
     s_ui.sim_data_enabled = false;
-    ui_reset_sim_data_stream_state();
+    if (s_ui.plot_history_count > 0U) {
+        s_ui.plot_history_frozen = true;
+        ui_render_live_shot_plot();
+    } else {
+        ui_reset_sim_data_stream_state();
+    }
     s_ui.brewing = false;
     if (s_ui.brew_toggle_btn != NULL) {
         lv_obj_clear_state(s_ui.brew_toggle_btn, LV_STATE_CHECKED);
@@ -3099,6 +3888,10 @@ static void ui_brew_toggle_event_cb(lv_event_t *e)
     } else {
         (void)communication_functions_queue_data_text_command("StopBrew");
         s_ui.sim_data_enabled = false;
+        if (s_ui.plot_history_count > 0U) {
+            s_ui.plot_history_frozen = true;
+            ui_render_live_shot_plot();
+        }
         s_ui.brew_server_shot_valid = false;
         s_ui.brew_server_pressure_valid = false;
         s_ui.brew_server_water_valid = false;
@@ -3136,29 +3929,6 @@ static void ui_steam_toggle_event_cb(lv_event_t *e)
     }
     ui_update_header_status();
     ui_update_brew_widgets();
-}
-
-/**
- * @brief Handle profile selection button click.
- *
- * @details Sets active profile based on button user data index.
- *
- * @param[in] e LVGL event payload.
- */
-static void ui_profile_btn_event_cb(lv_event_t *e)
-{
-    intptr_t profile = (intptr_t)lv_event_get_user_data(e);
-    if (profile < 1 || profile > ui_get_constants()->profile_count) {
-        return;
-    }
-    ui_apply_profile_defaults((int)profile);
-    ui_update_home_labels();
-    ui_update_header_status();
-    ui_send_profile_selection_command(s_ui.startup_mode == UI_INIT_MODE_OFFLINE);
-    if (s_ui.active_page == UI_PAGE_PROFILES) {
-        ui_render_active_page();
-    }
-    ESP_LOGI(TAG, "profile %d selected", s_ui.active_profile);
 }
 
 /**
@@ -3229,56 +3999,129 @@ static void ui_settings_slider_event_cb(lv_event_t *e)
 }
 
 /**
- * @brief Construct RealTime Plot page.
+ * @brief Construct the Live Shot page.
  *
- * @details Renders a rolling 10-second dual-series plot (pressure + flow)
- * sourced from binary downlink packets after a StartBrew event.
+ * @details Builds a Brew-style title header, a full-width 4-signal chart,
+ * and bottom controls (autoscale toggles + Set Range popup).
  */
-static void ui_build_page_home(void)
+static void ui_build_page_live_shot(void)
 {
-    ui_build_page_title(s_ui.content, "RealTime Plot");
+    lv_obj_t *title = ui_build_page_title(s_ui.content, "Live Shot");
+    lv_obj_t *controls = NULL;
+    lv_obj_t *set_range_btn = NULL;
+    lv_obj_t *set_range_lbl = NULL;
+    lv_obj_t *legend_pressure = NULL;
+    lv_obj_t *legend_weight = NULL;
+    lv_obj_t *legend_flow = NULL;
+    lv_obj_t *legend_temperature = NULL;
+    lv_coord_t content_w = lv_obj_get_content_width(s_ui.content);
+    lv_coord_t content_h = lv_obj_get_content_height(s_ui.content);
+    const lv_coord_t axis_reserved_w = 198;
+    lv_coord_t top_bottom = 0;
+    lv_coord_t legend_y = 0;
+    lv_coord_t chart_top = 0;
+    lv_coord_t controls_h = 92;
+    lv_coord_t controls_top = 0;
+    lv_coord_t chart_w = 0;
+    lv_coord_t chart_h = 0;
+    const system_constants_data_t *constants = ui_get_constants();
+
+    if (content_w <= 0) {
+        content_w = lv_obj_get_width(s_ui.content);
+    }
+    if (content_h <= 0) {
+        content_h = lv_obj_get_height(s_ui.content);
+    }
+
+    if (constants != NULL) {
+        s_ui.plot_manual_pressure_max_bar = ui_plot_clamp_positive(
+            constants->live_shot_pressure_max_bar, 1.0f, 20.0f, 12.0f);
+        s_ui.plot_manual_weight_max_g = ui_plot_clamp_positive(
+            constants->live_shot_weight_max_g, 10.0f, 100.0f, 60.0f);
+        s_ui.plot_manual_flow_max_ml_s = ui_plot_clamp_positive(
+            constants->live_shot_flow_max_ml_s, 1.0f, 30.0f, 5.0f);
+        s_ui.plot_manual_temperature_max_c = ui_plot_clamp_positive(
+            constants->live_shot_temperature_max_c, 30.0f, 105.0f, 105.0f);
+        s_ui.plot_autoscale_pressure = constants->live_shot_autoscale_pressure;
+        s_ui.plot_autoscale_weight = constants->live_shot_autoscale_weight;
+        s_ui.plot_autoscale_flow = constants->live_shot_autoscale_flow;
+        s_ui.plot_autoscale_temperature = constants->live_shot_autoscale_temperature;
+    }
+
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_letter_space(title, 5, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xBFDBFE), LV_STATE_PRESSED);
+    lv_obj_set_y(title, lv_obj_get_y(title) - 10);
     ui_build_page_live_summary(s_ui.content);
+    if (s_ui.page_status != NULL) {
+        lv_obj_add_flag(s_ui.page_status, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_ui.page_runtime != NULL) {
+        lv_obj_set_style_text_font(s_ui.page_runtime, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(s_ui.page_runtime, lv_color_hex(UI_COLOR_TEXT), 0);
+        lv_obj_align_to(s_ui.page_runtime, title, LV_ALIGN_OUT_RIGHT_BOTTOM, 20, 0);
+    }
 
-    lv_obj_t *card = lv_obj_create(s_ui.content);
-    lv_obj_set_size(card, 760, 300);
-    lv_obj_align(card, LV_ALIGN_TOP_LEFT, 8, 92);
-    ui_style_card(card, UI_COLOR_CARD);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(card, 12, 0);
+    top_bottom = lv_obj_get_y(title) + lv_obj_get_height(title);
+    if (s_ui.page_runtime != NULL) {
+        lv_coord_t runtime_bottom = lv_obj_get_y(s_ui.page_runtime) + lv_obj_get_height(s_ui.page_runtime);
+        if (runtime_bottom > top_bottom) {
+            top_bottom = runtime_bottom;
+        }
+    }
+    chart_top = top_bottom + 5;
+    legend_y = chart_top - 28;
+    controls_top = content_h - controls_h - 20;
+    chart_w = content_w - axis_reserved_w + 10;
+    chart_h = controls_top - chart_top;
+    if (chart_w < 420) {
+        chart_w = 420;
+    }
+    if (chart_h < 120) {
+        chart_h = 120;
+    }
 
-    s_ui.plot_chart = lv_chart_create(card);
-    lv_obj_set_size(s_ui.plot_chart, 640, 248);
-    lv_obj_align(s_ui.plot_chart, LV_ALIGN_TOP_LEFT, 8, 10);
+    s_ui.plot_chart = lv_chart_create(s_ui.content);
+    lv_obj_set_pos(s_ui.plot_chart, 0, chart_top);
+    lv_obj_set_size(s_ui.plot_chart, chart_w, chart_h);
     lv_obj_set_style_bg_color(s_ui.plot_chart, lv_color_hex(UI_COLOR_CARD_ALT), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_ui.plot_chart, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(s_ui.plot_chart, 1, LV_PART_MAIN);
     lv_obj_set_style_border_color(s_ui.plot_chart, lv_color_hex(UI_COLOR_BORDER), LV_PART_MAIN);
     lv_obj_set_style_line_width(s_ui.plot_chart, 2, LV_PART_ITEMS);
+    lv_obj_set_style_line_color(s_ui.plot_chart, lv_color_hex(0x64748B), LV_PART_MAIN);
+    lv_obj_set_style_line_opa(s_ui.plot_chart, LV_OPA_40, LV_PART_MAIN);
+    lv_obj_set_style_width(s_ui.plot_chart, 0, LV_PART_INDICATOR);
+    lv_obj_set_style_height(s_ui.plot_chart, 0, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(s_ui.plot_chart, LV_OPA_TRANSP, LV_PART_INDICATOR);
     lv_chart_set_type(s_ui.plot_chart, LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(s_ui.plot_chart, UI_PLOT_POINT_COUNT);
     lv_chart_set_div_line_count(s_ui.plot_chart, 10, 20);
-    lv_chart_set_range(
-        s_ui.plot_chart,
-        LV_CHART_AXIS_PRIMARY_Y,
-        0,
-        (lv_coord_t)lroundf(10.0f * UI_PLOT_FLOAT_SCALE_FACTOR));
-    lv_chart_set_range(
-        s_ui.plot_chart,
-        LV_CHART_AXIS_SECONDARY_Y,
-        0,
-        (lv_coord_t)lroundf(5.0f * UI_PLOT_FLOAT_SCALE_FACTOR));
+    lv_chart_set_range(s_ui.plot_chart, LV_CHART_AXIS_PRIMARY_Y, 0, UI_PLOT_NORMALIZED_MAX);
 
     s_ui.plot_pressure_series = lv_chart_add_series(
         s_ui.plot_chart,
-        lv_color_hex(UI_COLOR_SUCCESS),
+        lv_color_hex(0xF97316),
+        LV_CHART_AXIS_PRIMARY_Y);
+    s_ui.plot_weight_series = lv_chart_add_series(
+        s_ui.plot_chart,
+        lv_color_hex(0xFACC15),
         LV_CHART_AXIS_PRIMARY_Y);
     s_ui.plot_flow_series = lv_chart_add_series(
         s_ui.plot_chart,
-        lv_color_hex(UI_COLOR_ACCENT),
-        LV_CHART_AXIS_SECONDARY_Y);
+        lv_color_hex(0x38BDF8),
+        LV_CHART_AXIS_PRIMARY_Y);
+    s_ui.plot_temperature_series = lv_chart_add_series(
+        s_ui.plot_chart,
+        lv_color_hex(0xFB7185),
+        LV_CHART_AXIS_PRIMARY_Y);
 
     for (uint32_t index = 0; index < UI_PLOT_POINT_COUNT; index++) {
-        s_ui.plot_pressure_chart_y_values[index] = 0;
-        s_ui.plot_flow_chart_y_values[index] = 0;
+        s_ui.plot_pressure_chart_y_values[index] = LV_CHART_POINT_NONE;
+        s_ui.plot_weight_chart_y_values[index] = LV_CHART_POINT_NONE;
+        s_ui.plot_flow_chart_y_values[index] = LV_CHART_POINT_NONE;
+        s_ui.plot_temperature_chart_y_values[index] = LV_CHART_POINT_NONE;
     }
     if (s_ui.plot_pressure_series != NULL) {
         lv_chart_set_series_ext_y_array(
@@ -3286,38 +4129,143 @@ static void ui_build_page_home(void)
             s_ui.plot_pressure_series,
             s_ui.plot_pressure_chart_y_values);
     }
+    if (s_ui.plot_weight_series != NULL) {
+        lv_chart_set_series_ext_y_array(
+            s_ui.plot_chart,
+            s_ui.plot_weight_series,
+            s_ui.plot_weight_chart_y_values);
+    }
     if (s_ui.plot_flow_series != NULL) {
         lv_chart_set_series_ext_y_array(
             s_ui.plot_chart,
             s_ui.plot_flow_series,
             s_ui.plot_flow_chart_y_values);
     }
+    if (s_ui.plot_temperature_series != NULL) {
+        lv_chart_set_series_ext_y_array(
+            s_ui.plot_chart,
+            s_ui.plot_temperature_series,
+            s_ui.plot_temperature_chart_y_values);
+    }
 
     for (uint32_t index = 0; index < UI_PLOT_X_LABEL_COUNT; index++) {
-        s_ui.plot_x_axis_labels[index] = lv_label_create(card);
+        s_ui.plot_x_axis_labels[index] = lv_label_create(s_ui.content);
         lv_obj_set_style_text_font(s_ui.plot_x_axis_labels[index], &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(s_ui.plot_x_axis_labels[index], lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
     }
     for (uint32_t index = 0; index < UI_PLOT_Y_LABEL_COUNT; index++) {
-        s_ui.plot_pressure_y_axis_labels[index] = lv_label_create(card);
+        s_ui.plot_pressure_y_axis_labels[index] = lv_label_create(s_ui.content);
         lv_obj_set_style_text_font(s_ui.plot_pressure_y_axis_labels[index], &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(s_ui.plot_pressure_y_axis_labels[index], lv_color_hex(UI_COLOR_SUCCESS), 0);
-        s_ui.plot_flow_y_axis_labels[index] = lv_label_create(card);
+        lv_obj_set_style_text_color(s_ui.plot_pressure_y_axis_labels[index], lv_color_hex(0xF97316), 0);
+
+        s_ui.plot_weight_y_axis_labels[index] = lv_label_create(s_ui.content);
+        lv_obj_set_style_text_font(s_ui.plot_weight_y_axis_labels[index], &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(s_ui.plot_weight_y_axis_labels[index], lv_color_hex(0xFACC15), 0);
+
+        s_ui.plot_flow_y_axis_labels[index] = lv_label_create(s_ui.content);
         lv_obj_set_style_text_font(s_ui.plot_flow_y_axis_labels[index], &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(s_ui.plot_flow_y_axis_labels[index], lv_color_hex(UI_COLOR_ACCENT), 0);
+        lv_obj_set_style_text_color(s_ui.plot_flow_y_axis_labels[index], lv_color_hex(0x38BDF8), 0);
+
+        s_ui.plot_temperature_y_axis_labels[index] = lv_label_create(s_ui.content);
+        lv_obj_set_style_text_font(s_ui.plot_temperature_y_axis_labels[index], &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(s_ui.plot_temperature_y_axis_labels[index], lv_color_hex(0xFB7185), 0);
     }
 
-    lv_obj_t *legend = lv_label_create(card);
-    lv_label_set_text(legend, "Pressure [bar] (green)  |  Flow [ml/sec] (blue)");
-    lv_obj_set_style_text_font(legend, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(legend, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
-    lv_obj_align(legend, LV_ALIGN_BOTTOM_LEFT, 12, -4);
+    legend_pressure = lv_label_create(s_ui.content);
+    lv_label_set_text(legend_pressure, "Pressure");
+    lv_obj_set_style_text_font(legend_pressure, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(legend_pressure, lv_color_hex(0xF97316), 0);
+    lv_obj_set_pos(legend_pressure, 36, legend_y);
 
-    s_ui.plot_stream_started = false;
-    s_ui.plot_pressure_y_axis_limit = 0;
-    s_ui.plot_flow_y_axis_limit = 0;
-    ui_update_plot_axis_labels(10.0f, 5.0f);
-    lv_chart_refresh(s_ui.plot_chart);
+    legend_weight = lv_label_create(s_ui.content);
+    lv_label_set_text(legend_weight, "Weight");
+    lv_obj_set_style_text_font(legend_weight, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(legend_weight, lv_color_hex(0xFACC15), 0);
+    lv_obj_set_pos(legend_weight, 186, legend_y);
+
+    legend_flow = lv_label_create(s_ui.content);
+    lv_label_set_text(legend_flow, "Flow");
+    lv_obj_set_style_text_font(legend_flow, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(legend_flow, lv_color_hex(0x38BDF8), 0);
+    lv_obj_set_pos(legend_flow, 318, legend_y);
+
+    legend_temperature = lv_label_create(s_ui.content);
+    lv_label_set_text(legend_temperature, "Temperature");
+    lv_obj_set_style_text_font(legend_temperature, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(legend_temperature, lv_color_hex(0xFB7185), 0);
+    lv_obj_set_pos(legend_temperature, 428, legend_y);
+
+    controls = lv_obj_create(s_ui.content);
+    lv_obj_set_pos(controls, 0, controls_top);
+    lv_obj_set_size(controls, content_w, controls_h);
+    lv_obj_set_style_radius(controls, 10, 0);
+    lv_obj_set_style_bg_color(controls, lv_color_hex(UI_COLOR_PANEL_ALT), 0);
+    lv_obj_set_style_bg_opa(controls, LV_OPA_40, 0);
+    lv_obj_set_style_border_width(controls, 1, 0);
+    lv_obj_set_style_border_color(controls, lv_color_hex(UI_COLOR_BORDER), 0);
+    lv_obj_set_style_pad_all(controls, 8, 0);
+    lv_obj_clear_flag(controls, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_ui.plot_autoscale_pressure_checkbox = lv_checkbox_create(controls);
+    lv_checkbox_set_text(s_ui.plot_autoscale_pressure_checkbox, "Auto Pressure");
+    lv_obj_set_style_text_color(s_ui.plot_autoscale_pressure_checkbox, lv_color_hex(UI_COLOR_TEXT), LV_PART_MAIN);
+    lv_obj_set_pos(s_ui.plot_autoscale_pressure_checkbox, 16, 8);
+    lv_obj_add_event_cb(s_ui.plot_autoscale_pressure_checkbox,
+                        ui_plot_checkbox_event_cb,
+                        LV_EVENT_VALUE_CHANGED,
+                        (void *)(intptr_t)UI_PLOT_CHECKBOX_AUTOSCALE_PRESSURE);
+    if (s_ui.plot_autoscale_pressure) {
+        lv_obj_add_state(s_ui.plot_autoscale_pressure_checkbox, LV_STATE_CHECKED);
+    }
+
+    s_ui.plot_autoscale_weight_checkbox = lv_checkbox_create(controls);
+    lv_checkbox_set_text(s_ui.plot_autoscale_weight_checkbox, "Auto Weight");
+    lv_obj_set_style_text_color(s_ui.plot_autoscale_weight_checkbox, lv_color_hex(UI_COLOR_TEXT), LV_PART_MAIN);
+    lv_obj_set_pos(s_ui.plot_autoscale_weight_checkbox, 232, 8);
+    lv_obj_add_event_cb(s_ui.plot_autoscale_weight_checkbox,
+                        ui_plot_checkbox_event_cb,
+                        LV_EVENT_VALUE_CHANGED,
+                        (void *)(intptr_t)UI_PLOT_CHECKBOX_AUTOSCALE_WEIGHT);
+    if (s_ui.plot_autoscale_weight) {
+        lv_obj_add_state(s_ui.plot_autoscale_weight_checkbox, LV_STATE_CHECKED);
+    }
+
+    s_ui.plot_autoscale_flow_checkbox = lv_checkbox_create(controls);
+    lv_checkbox_set_text(s_ui.plot_autoscale_flow_checkbox, "Auto Flow");
+    lv_obj_set_style_text_color(s_ui.plot_autoscale_flow_checkbox, lv_color_hex(UI_COLOR_TEXT), LV_PART_MAIN);
+    lv_obj_set_pos(s_ui.plot_autoscale_flow_checkbox, 16, 48);
+    lv_obj_add_event_cb(s_ui.plot_autoscale_flow_checkbox,
+                        ui_plot_checkbox_event_cb,
+                        LV_EVENT_VALUE_CHANGED,
+                        (void *)(intptr_t)UI_PLOT_CHECKBOX_AUTOSCALE_FLOW);
+    if (s_ui.plot_autoscale_flow) {
+        lv_obj_add_state(s_ui.plot_autoscale_flow_checkbox, LV_STATE_CHECKED);
+    }
+
+    s_ui.plot_autoscale_temperature_checkbox = lv_checkbox_create(controls);
+    lv_checkbox_set_text(s_ui.plot_autoscale_temperature_checkbox, "Auto Temp");
+    lv_obj_set_style_text_color(s_ui.plot_autoscale_temperature_checkbox, lv_color_hex(UI_COLOR_TEXT), LV_PART_MAIN);
+    lv_obj_set_pos(s_ui.plot_autoscale_temperature_checkbox, 232, 48);
+    lv_obj_add_event_cb(s_ui.plot_autoscale_temperature_checkbox,
+                        ui_plot_checkbox_event_cb,
+                        LV_EVENT_VALUE_CHANGED,
+                        (void *)(intptr_t)UI_PLOT_CHECKBOX_AUTOSCALE_TEMPERATURE);
+    if (s_ui.plot_autoscale_temperature) {
+        lv_obj_add_state(s_ui.plot_autoscale_temperature_checkbox, LV_STATE_CHECKED);
+    }
+
+    set_range_btn = lv_button_create(controls);
+    lv_obj_set_size(set_range_btn, 128, 56);
+    lv_obj_align(set_range_btn, LV_ALIGN_RIGHT_MID, -8, 0);
+    ui_style_action_button(set_range_btn);
+    lv_obj_add_event_cb(set_range_btn, ui_plot_set_range_button_event_cb, LV_EVENT_CLICKED, NULL);
+
+    set_range_lbl = lv_label_create(set_range_btn);
+    lv_label_set_text(set_range_lbl, "Set Range");
+    ui_style_button_label(set_range_lbl);
+    lv_obj_center(set_range_lbl);
+
+    ui_render_live_shot_plot();
 }
 
 /**
@@ -3336,6 +4284,7 @@ static void ui_build_page_brew(void)
     lv_obj_set_style_text_letter_space(brew_title, 5, 0);
     lv_obj_set_style_text_color(brew_title, lv_color_hex(0xF8FAFC), 0);
     lv_obj_set_style_text_color(brew_title, lv_color_hex(0xBFDBFE), LV_STATE_PRESSED);
+    lv_obj_set_y(brew_title, lv_obj_get_y(brew_title) - 10);
     ui_build_page_live_summary(s_ui.content);
     if (s_ui.page_status != NULL) {
         lv_obj_add_flag(s_ui.page_status, LV_OBJ_FLAG_HIDDEN);
@@ -3715,34 +4664,6 @@ static void ui_error_reset_event_cb(lv_event_t *e)
 }
 
 /**
- * @brief Construct profile selection page.
- *
- * @details Displays quick profile presets with one-click activation.
- */
-static void ui_build_page_profiles(void)
-{
-    ui_build_page_title(s_ui.content, "Profiles");
-    ui_build_page_live_summary(s_ui.content);
-
-    const system_constants_data_t *constants = ui_get_constants();
-    for (int i = 0; i < constants->profile_count; i++) {
-        lv_obj_t *btn = lv_button_create(s_ui.content);
-        lv_obj_set_size(btn, 740, 72);
-        lv_obj_align(btn, LV_ALIGN_TOP_LEFT, 20, 102 + (i * 86));
-        ui_style_action_button(btn);
-        if (s_ui.active_profile == (i + 1)) {
-            lv_obj_add_state(btn, LV_STATE_CHECKED);
-        }
-        lv_obj_add_event_cb(btn, ui_profile_btn_event_cb, LV_EVENT_CLICKED, (void *)(intptr_t)(i + 1));
-
-        lv_obj_t *lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, constants->profiles[i].name);
-        ui_style_button_label(lbl);
-        lv_obj_center(lbl);
-    }
-}
-
-/**
  * @brief Construct settings page.
  *
  * @details Offers quick numeric tuning of target temperature and preinfusion.
@@ -3888,17 +4809,31 @@ static void ui_build_page_settings(void)
  */
 static void ui_render_active_page(void)
 {
+    ui_close_plot_range_overlay();
+
     s_ui.page_status = NULL;
     s_ui.page_runtime = NULL;
     s_ui.plot_chart = NULL;
     s_ui.plot_pressure_series = NULL;
+    s_ui.plot_weight_series = NULL;
     s_ui.plot_flow_series = NULL;
+    s_ui.plot_temperature_series = NULL;
+    s_ui.plot_show_pressure_checkbox = NULL;
+    s_ui.plot_show_weight_checkbox = NULL;
+    s_ui.plot_show_flow_checkbox = NULL;
+    s_ui.plot_show_temperature_checkbox = NULL;
+    s_ui.plot_autoscale_pressure_checkbox = NULL;
+    s_ui.plot_autoscale_weight_checkbox = NULL;
+    s_ui.plot_autoscale_flow_checkbox = NULL;
+    s_ui.plot_autoscale_temperature_checkbox = NULL;
     for (size_t i = 0; i < UI_PLOT_X_LABEL_COUNT; i++) {
         s_ui.plot_x_axis_labels[i] = NULL;
     }
     for (size_t i = 0; i < UI_PLOT_Y_LABEL_COUNT; i++) {
         s_ui.plot_pressure_y_axis_labels[i] = NULL;
+        s_ui.plot_weight_y_axis_labels[i] = NULL;
         s_ui.plot_flow_y_axis_labels[i] = NULL;
+        s_ui.plot_temperature_y_axis_labels[i] = NULL;
     }
     s_ui.brew_profile_dropdown = NULL;
     s_ui.home_active_profile = NULL;
@@ -3917,11 +4852,6 @@ static void ui_render_active_page(void)
     s_ui.coffee_preparation_success_ok_btn = NULL;
 
     switch (s_ui.active_page) {
-    case UI_PAGE_PLOT:
-        s_ui.content = s_ui.tab_pages[UI_PAGE_PLOT];
-        lv_obj_clean(s_ui.content);
-        ui_build_page_home();
-        break;
     case UI_PAGE_BREW:
         s_ui.content = s_ui.tab_pages[UI_PAGE_BREW];
         lv_obj_clean(s_ui.content);
@@ -3929,10 +4859,10 @@ static void ui_render_active_page(void)
         s_ui.steam_toggle_btn = NULL;
         ui_build_page_brew();
         break;
-    case UI_PAGE_PROFILES:
-        s_ui.content = s_ui.tab_pages[UI_PAGE_PROFILES];
+    case UI_PAGE_LIVE_SHOT:
+        s_ui.content = s_ui.tab_pages[UI_PAGE_LIVE_SHOT];
         lv_obj_clean(s_ui.content);
-        ui_build_page_profiles();
+        ui_build_page_live_shot();
         break;
     case UI_PAGE_SETTINGS:
         s_ui.content = s_ui.tab_pages[UI_PAGE_SETTINGS];
@@ -4041,8 +4971,7 @@ static void ui_build_main_screen(void)
     lv_obj_set_style_pad_ver(tab_bar, 8, LV_PART_MAIN);
 
     s_ui.tab_pages[UI_PAGE_BREW] = lv_tabview_add_tab(s_ui.tabview, "Brew");
-    s_ui.tab_pages[UI_PAGE_PROFILES] = lv_tabview_add_tab(s_ui.tabview, "Profiles");
-    s_ui.tab_pages[UI_PAGE_PLOT] = lv_tabview_add_tab(s_ui.tabview, "Plot");
+    s_ui.tab_pages[UI_PAGE_LIVE_SHOT] = lv_tabview_add_tab(s_ui.tabview, "Live Shot");
     s_ui.tab_pages[UI_PAGE_SETTINGS] = lv_tabview_add_tab(s_ui.tabview, "Settings");
 
     for (int i = 0; i < UI_PAGE_COUNT; i++) {
@@ -4139,13 +5068,34 @@ void ui_screen_create(void)
     s_ui.sim_data_toggle_syncing = false;
     s_ui.plot_chart = NULL;
     s_ui.plot_pressure_series = NULL;
+    s_ui.plot_weight_series = NULL;
     s_ui.plot_flow_series = NULL;
+    s_ui.plot_temperature_series = NULL;
+    s_ui.plot_show_pressure_checkbox = NULL;
+    s_ui.plot_show_weight_checkbox = NULL;
+    s_ui.plot_show_flow_checkbox = NULL;
+    s_ui.plot_show_temperature_checkbox = NULL;
+    s_ui.plot_autoscale_pressure_checkbox = NULL;
+    s_ui.plot_autoscale_weight_checkbox = NULL;
+    s_ui.plot_autoscale_flow_checkbox = NULL;
+    s_ui.plot_autoscale_temperature_checkbox = NULL;
+    s_ui.plot_range_overlay = NULL;
+    s_ui.plot_range_pressure_value_label = NULL;
+    s_ui.plot_range_weight_value_label = NULL;
+    s_ui.plot_range_flow_value_label = NULL;
+    s_ui.plot_range_temperature_value_label = NULL;
+    s_ui.plot_range_pressure_roller = NULL;
+    s_ui.plot_range_weight_roller = NULL;
+    s_ui.plot_range_flow_roller = NULL;
+    s_ui.plot_range_temperature_roller = NULL;
     for (size_t i = 0; i < UI_PLOT_X_LABEL_COUNT; i++) {
         s_ui.plot_x_axis_labels[i] = NULL;
     }
     for (size_t i = 0; i < UI_PLOT_Y_LABEL_COUNT; i++) {
         s_ui.plot_pressure_y_axis_labels[i] = NULL;
+        s_ui.plot_weight_y_axis_labels[i] = NULL;
         s_ui.plot_flow_y_axis_labels[i] = NULL;
+        s_ui.plot_temperature_y_axis_labels[i] = NULL;
     }
     s_ui.clock_set_day_roller = NULL;
     s_ui.clock_set_month_roller = NULL;
@@ -4205,8 +5155,13 @@ void ui_screen_create(void)
     s_ui.sim_data_last_chart_refresh_us = 0;
     s_ui.sim_data_last_status_refresh_us = 0;
     s_ui.plot_stream_started = false;
-    s_ui.plot_pressure_y_axis_limit = 0;
-    s_ui.plot_flow_y_axis_limit = 0;
+    s_ui.plot_history_count = 0U;
+    s_ui.plot_history_frozen = false;
+    memset(s_ui.plot_history_time_sec, 0, sizeof(s_ui.plot_history_time_sec));
+    memset(s_ui.plot_history_pressure_bar, 0, sizeof(s_ui.plot_history_pressure_bar));
+    memset(s_ui.plot_history_weight_g, 0, sizeof(s_ui.plot_history_weight_g));
+    memset(s_ui.plot_history_flow_ml_s, 0, sizeof(s_ui.plot_history_flow_ml_s));
+    memset(s_ui.plot_history_temperature_c, 0, sizeof(s_ui.plot_history_temperature_c));
     s_ui.init_mode_selection = UI_INIT_MODE_NONE;
     s_ui.startup_mode = UI_INIT_MODE_NONE;
     s_ui.init_mode_countdown_seconds = UI_INIT_MODE_DEFAULT_COUNTDOWN_SEC;

@@ -16,6 +16,14 @@
     <PressureMax>12.0</PressureMax>
     <FlowMin>0.0</FlowMin>
     <FlowMax>5.0</FlowMax>
+    <LiveShotPressureMax>12.0</LiveShotPressureMax>
+    <LiveShotWeightMax>60.0</LiveShotWeightMax>
+    <LiveShotFlowMax>5.0</LiveShotFlowMax>
+    <LiveShotTemperatureMax>105.0</LiveShotTemperatureMax>
+    <LiveShotAutoscalePressure>1</LiveShotAutoscalePressure>
+    <LiveShotAutoscaleWeight>1</LiveShotAutoscaleWeight>
+    <LiveShotAutoscaleFlow>1</LiveShotAutoscaleFlow>
+    <LiveShotAutoscaleTemperature>1</LiveShotAutoscaleTemperature>
   </Limits>
 
   <BrewProfiles>

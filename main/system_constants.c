@@ -7,19 +7,63 @@
 #include "system_constants.h"
 
 #include <ctype.h>
+#include <math.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_check.h"
 #include "esp_log.h"
 
 static const char *TAG = "sys_constants";
+static const char *SYSTEM_CONSTANTS_OVERRIDES_PATH = "/sdcard/SystemConstantsOverrides.ini";
+
+#define LIVE_SHOT_PRESSURE_MIN_BAR (1.0f)
+#define LIVE_SHOT_PRESSURE_MAX_BAR (20.0f)
+#define LIVE_SHOT_WEIGHT_MIN_G (10.0f)
+#define LIVE_SHOT_WEIGHT_MAX_G (100.0f)
+#define LIVE_SHOT_FLOW_MIN_ML_S (1.0f)
+#define LIVE_SHOT_FLOW_MAX_ML_S (30.0f)
+#define LIVE_SHOT_TEMPERATURE_MIN_C (30.0f)
+#define LIVE_SHOT_TEMPERATURE_MAX_C (105.0f)
 
 extern const char SystemConstants_xml_start[] asm("_binary_SystemConstants_xml_start");
 extern const char SystemConstants_xml_end[] asm("_binary_SystemConstants_xml_end");
 
 static system_constants_data_t s_constants = {0};
+
+static float clampf_range(float value, float min_value, float max_value)
+{
+    if (value < min_value) {
+        return min_value;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
+static bool parse_bool_text(const char *text, bool fallback_value)
+{
+    if (text == NULL) {
+        return fallback_value;
+    }
+    if ((strcmp(text, "1") == 0) ||
+        (strcasecmp(text, "true") == 0) ||
+        (strcasecmp(text, "yes") == 0) ||
+        (strcasecmp(text, "on") == 0)) {
+        return true;
+    }
+    if ((strcmp(text, "0") == 0) ||
+        (strcasecmp(text, "false") == 0) ||
+        (strcasecmp(text, "no") == 0) ||
+        (strcasecmp(text, "off") == 0)) {
+        return false;
+    }
+    return fallback_value;
+}
 
 /**
  * @brief Convert decimal text into tenths.
@@ -135,6 +179,14 @@ static void system_constants_set_defaults(void)
     s_constants.pressure_max_tenths = 120;
     s_constants.flow_min_tenths = 0;
     s_constants.flow_max_tenths = 50;
+    s_constants.live_shot_pressure_max_bar = 12.0f;
+    s_constants.live_shot_weight_max_g = 60.0f;
+    s_constants.live_shot_flow_max_ml_s = 5.0f;
+    s_constants.live_shot_temperature_max_c = 105.0f;
+    s_constants.live_shot_autoscale_pressure = true;
+    s_constants.live_shot_autoscale_weight = true;
+    s_constants.live_shot_autoscale_flow = true;
+    s_constants.live_shot_autoscale_temperature = true;
 
     snprintf(s_constants.profiles[0].name, sizeof(s_constants.profiles[0].name), "Classic 9 Bar");
     s_constants.profiles[0].target_temperature_c = 93;
@@ -237,6 +289,103 @@ static void parse_global_values(const char *xml_start, const char *xml_end)
     if (xml_extract_text_range(xml_start, xml_end, "FlowMax", value, sizeof(value))) {
         s_constants.flow_max_tenths = parse_tenths(value);
     }
+    if (xml_extract_text_range(xml_start, xml_end, "LiveShotPressureMax", value, sizeof(value))) {
+        s_constants.live_shot_pressure_max_bar = strtof(value, NULL);
+    }
+    if (xml_extract_text_range(xml_start, xml_end, "LiveShotWeightMax", value, sizeof(value))) {
+        s_constants.live_shot_weight_max_g = strtof(value, NULL);
+    }
+    if (xml_extract_text_range(xml_start, xml_end, "LiveShotFlowMax", value, sizeof(value))) {
+        s_constants.live_shot_flow_max_ml_s = strtof(value, NULL);
+    }
+    if (xml_extract_text_range(xml_start, xml_end, "LiveShotTemperatureMax", value, sizeof(value))) {
+        s_constants.live_shot_temperature_max_c = strtof(value, NULL);
+    }
+    if (xml_extract_text_range(xml_start, xml_end, "LiveShotAutoscalePressure", value, sizeof(value))) {
+        s_constants.live_shot_autoscale_pressure = parse_bool_text(value, s_constants.live_shot_autoscale_pressure);
+    }
+    if (xml_extract_text_range(xml_start, xml_end, "LiveShotAutoscaleWeight", value, sizeof(value))) {
+        s_constants.live_shot_autoscale_weight = parse_bool_text(value, s_constants.live_shot_autoscale_weight);
+    }
+    if (xml_extract_text_range(xml_start, xml_end, "LiveShotAutoscaleFlow", value, sizeof(value))) {
+        s_constants.live_shot_autoscale_flow = parse_bool_text(value, s_constants.live_shot_autoscale_flow);
+    }
+    if (xml_extract_text_range(xml_start, xml_end, "LiveShotAutoscaleTemperature", value, sizeof(value))) {
+        s_constants.live_shot_autoscale_temperature = parse_bool_text(value, s_constants.live_shot_autoscale_temperature);
+    }
+
+    s_constants.live_shot_pressure_max_bar = clampf_range(
+        s_constants.live_shot_pressure_max_bar,
+        LIVE_SHOT_PRESSURE_MIN_BAR,
+        LIVE_SHOT_PRESSURE_MAX_BAR);
+    s_constants.live_shot_weight_max_g = clampf_range(
+        s_constants.live_shot_weight_max_g,
+        LIVE_SHOT_WEIGHT_MIN_G,
+        LIVE_SHOT_WEIGHT_MAX_G);
+    s_constants.live_shot_flow_max_ml_s = clampf_range(
+        s_constants.live_shot_flow_max_ml_s,
+        LIVE_SHOT_FLOW_MIN_ML_S,
+        LIVE_SHOT_FLOW_MAX_ML_S);
+    s_constants.live_shot_temperature_max_c = clampf_range(
+        s_constants.live_shot_temperature_max_c,
+        LIVE_SHOT_TEMPERATURE_MIN_C,
+        LIVE_SHOT_TEMPERATURE_MAX_C);
+}
+
+static void system_constants_try_load_live_shot_overrides_from_sd(void)
+{
+    FILE *f = fopen(SYSTEM_CONSTANTS_OVERRIDES_PATH, "r");
+    if (f == NULL) {
+        return;
+    }
+
+    char line[128];
+    while (fgets(line, sizeof(line), f) != NULL) {
+        char key[64] = {0};
+        char value_text[64] = {0};
+        if (sscanf(line, " %63[^=]=%63s", key, value_text) != 2) {
+            continue;
+        }
+        if (strcmp(key, "live_shot_pressure_max_bar") == 0) {
+            s_constants.live_shot_pressure_max_bar = strtof(value_text, NULL);
+        } else if (strcmp(key, "live_shot_weight_max_g") == 0) {
+            s_constants.live_shot_weight_max_g = strtof(value_text, NULL);
+        } else if (strcmp(key, "live_shot_flow_max_ml_s") == 0) {
+            s_constants.live_shot_flow_max_ml_s = strtof(value_text, NULL);
+        } else if (strcmp(key, "live_shot_temperature_max_c") == 0) {
+            s_constants.live_shot_temperature_max_c = strtof(value_text, NULL);
+        } else if (strcmp(key, "live_shot_autoscale_pressure") == 0) {
+            s_constants.live_shot_autoscale_pressure =
+                parse_bool_text(value_text, s_constants.live_shot_autoscale_pressure);
+        } else if (strcmp(key, "live_shot_autoscale_weight") == 0) {
+            s_constants.live_shot_autoscale_weight =
+                parse_bool_text(value_text, s_constants.live_shot_autoscale_weight);
+        } else if (strcmp(key, "live_shot_autoscale_flow") == 0) {
+            s_constants.live_shot_autoscale_flow =
+                parse_bool_text(value_text, s_constants.live_shot_autoscale_flow);
+        } else if (strcmp(key, "live_shot_autoscale_temperature") == 0) {
+            s_constants.live_shot_autoscale_temperature =
+                parse_bool_text(value_text, s_constants.live_shot_autoscale_temperature);
+        }
+    }
+    fclose(f);
+
+    s_constants.live_shot_pressure_max_bar = clampf_range(
+        s_constants.live_shot_pressure_max_bar,
+        LIVE_SHOT_PRESSURE_MIN_BAR,
+        LIVE_SHOT_PRESSURE_MAX_BAR);
+    s_constants.live_shot_weight_max_g = clampf_range(
+        s_constants.live_shot_weight_max_g,
+        LIVE_SHOT_WEIGHT_MIN_G,
+        LIVE_SHOT_WEIGHT_MAX_G);
+    s_constants.live_shot_flow_max_ml_s = clampf_range(
+        s_constants.live_shot_flow_max_ml_s,
+        LIVE_SHOT_FLOW_MIN_ML_S,
+        LIVE_SHOT_FLOW_MAX_ML_S);
+    s_constants.live_shot_temperature_max_c = clampf_range(
+        s_constants.live_shot_temperature_max_c,
+        LIVE_SHOT_TEMPERATURE_MIN_C,
+        LIVE_SHOT_TEMPERATURE_MAX_C);
 }
 
 /**
@@ -307,6 +456,9 @@ esp_err_t system_constants_load(void)
     ESP_LOGI(TAG, "System constants step: parse profiles");
     parse_profiles(xml_start, xml_end);
     ESP_LOGI(TAG, "System constants step result: parse profiles complete");
+    ESP_LOGI(TAG, "System constants step: load SD range overrides");
+    system_constants_try_load_live_shot_overrides_from_sd();
+    ESP_LOGI(TAG, "System constants step result: load SD range overrides complete");
 
     ESP_LOGI(TAG,
              "Loaded SystemConstants.xml: profiles=%d client=%s compatible=%s",
@@ -354,4 +506,81 @@ const char *system_constants_get_xml_text(void)
 size_t system_constants_get_xml_length(void)
 {
     return (size_t)(SystemConstants_xml_end - SystemConstants_xml_start);
+}
+
+esp_err_t system_constants_set_live_shot_ranges(float pressure_max_bar,
+                                                float weight_max_g,
+                                                float flow_max_ml_s,
+                                                float temperature_max_c)
+{
+    if (!isfinite(pressure_max_bar) ||
+        !isfinite(weight_max_g) ||
+        !isfinite(flow_max_ml_s) ||
+        !isfinite(temperature_max_c)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    s_constants.live_shot_pressure_max_bar = clampf_range(
+        pressure_max_bar,
+        LIVE_SHOT_PRESSURE_MIN_BAR,
+        LIVE_SHOT_PRESSURE_MAX_BAR);
+    s_constants.live_shot_weight_max_g = clampf_range(
+        weight_max_g,
+        LIVE_SHOT_WEIGHT_MIN_G,
+        LIVE_SHOT_WEIGHT_MAX_G);
+    s_constants.live_shot_flow_max_ml_s = clampf_range(
+        flow_max_ml_s,
+        LIVE_SHOT_FLOW_MIN_ML_S,
+        LIVE_SHOT_FLOW_MAX_ML_S);
+    s_constants.live_shot_temperature_max_c = clampf_range(
+        temperature_max_c,
+        LIVE_SHOT_TEMPERATURE_MIN_C,
+        LIVE_SHOT_TEMPERATURE_MAX_C);
+    return ESP_OK;
+}
+
+esp_err_t system_constants_set_live_shot_autoscale(bool autoscale_pressure,
+                                                   bool autoscale_weight,
+                                                   bool autoscale_flow,
+                                                   bool autoscale_temperature)
+{
+    s_constants.live_shot_autoscale_pressure = autoscale_pressure;
+    s_constants.live_shot_autoscale_weight = autoscale_weight;
+    s_constants.live_shot_autoscale_flow = autoscale_flow;
+    s_constants.live_shot_autoscale_temperature = autoscale_temperature;
+    return ESP_OK;
+}
+
+esp_err_t system_constants_save_live_shot_ranges(void)
+{
+    FILE *f = fopen(SYSTEM_CONSTANTS_OVERRIDES_PATH, "w");
+    if (f == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int written = fprintf(
+        f,
+        "live_shot_pressure_max_bar=%.1f\n"
+        "live_shot_weight_max_g=%.1f\n"
+        "live_shot_flow_max_ml_s=%.1f\n"
+        "live_shot_temperature_max_c=%.1f\n"
+        "live_shot_autoscale_pressure=%u\n"
+        "live_shot_autoscale_weight=%u\n"
+        "live_shot_autoscale_flow=%u\n"
+        "live_shot_autoscale_temperature=%u\n",
+        (double)s_constants.live_shot_pressure_max_bar,
+        (double)s_constants.live_shot_weight_max_g,
+        (double)s_constants.live_shot_flow_max_ml_s,
+        (double)s_constants.live_shot_temperature_max_c,
+        s_constants.live_shot_autoscale_pressure ? 1U : 0U,
+        s_constants.live_shot_autoscale_weight ? 1U : 0U,
+        s_constants.live_shot_autoscale_flow ? 1U : 0U,
+        s_constants.live_shot_autoscale_temperature ? 1U : 0U);
+    int flush_ret = fflush(f);
+    int close_ret = fclose(f);
+    if (written <= 0 || flush_ret != 0 || close_ret != 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    return ESP_OK;
 }
