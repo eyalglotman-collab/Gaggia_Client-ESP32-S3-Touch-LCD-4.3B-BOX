@@ -158,6 +158,13 @@ git add README.md
 git -c user.name="Codex" -c user.email="codex@local" commit -m "docs: <message>"
 ```
 
+### GitHub Repository Ownership Rule
+
+- All commits and version updates for this project must be performed in this repository and pushed to:
+  - `git@github.com:eyalglotman-collab/Gaggia_Client-ESP32-S3-Touch-LCD-4.3B-BOX.git`
+- Do not perform official versioning or release commits in temporary/mirror copies.
+- `VERSION` changes and release tags must match the commit history of this GitHub repository.
+
 ## Workspace Review Rules
 
 - You must read all files in the two workspace projects: `Eyal_espresso_client` and `Eyal_espresso_server_simulator`.
