@@ -994,7 +994,7 @@ static void ui_show_coffee_preparation_success_msgbox(void)
     lv_obj_t *img = NULL;
     lv_obj_t *ok_label = NULL;
 
-    if (s_ui.root == NULL) {
+    if (s_ui.root == NULL || s_ui.active_page != UI_PAGE_BREW) {
         return;
     }
 
@@ -1802,6 +1802,10 @@ static void ui_update_plot_axis_labels(float pressure_max,
     lv_coord_t chart_y = 0;
     lv_coord_t chart_w = 0;
     lv_coord_t chart_h = 0;
+    const lv_coord_t y_axis_pressure_x_offset = 18;
+    const lv_coord_t y_axis_weight_x_offset = 44;
+    const lv_coord_t y_axis_flow_x_offset = 70;
+    const lv_coord_t y_axis_temperature_x_offset = 96;
 
     if (s_ui.plot_chart == NULL) {
         return;
@@ -1847,7 +1851,10 @@ static void ui_update_plot_axis_labels(float pressure_max,
                 pressure_max * normalized);
             lv_label_set_text_static(pressure_label, s_ui.plot_pressure_y_axis_label_text[index]);
             lv_obj_update_layout(pressure_label);
-            lv_obj_set_pos(pressure_label, chart_x + chart_w + 6, pos_y - (lv_obj_get_height(pressure_label) / 2));
+            lv_obj_set_pos(
+                pressure_label,
+                chart_x + chart_w + y_axis_pressure_x_offset,
+                pos_y - (lv_obj_get_height(pressure_label) / 2));
         }
 
         if (weight_label != NULL) {
@@ -1858,7 +1865,10 @@ static void ui_update_plot_axis_labels(float pressure_max,
                 weight_max * normalized);
             lv_label_set_text_static(weight_label, s_ui.plot_weight_y_axis_label_text[index]);
             lv_obj_update_layout(weight_label);
-            lv_obj_set_pos(weight_label, chart_x + chart_w + 42, pos_y - (lv_obj_get_height(weight_label) / 2));
+            lv_obj_set_pos(
+                weight_label,
+                chart_x + chart_w + y_axis_weight_x_offset,
+                pos_y - (lv_obj_get_height(weight_label) / 2));
         }
 
         if (flow_label != NULL) {
@@ -1869,7 +1879,10 @@ static void ui_update_plot_axis_labels(float pressure_max,
                 flow_max * normalized);
             lv_label_set_text_static(flow_label, s_ui.plot_flow_y_axis_label_text[index]);
             lv_obj_update_layout(flow_label);
-            lv_obj_set_pos(flow_label, chart_x + chart_w + 78, pos_y - (lv_obj_get_height(flow_label) / 2));
+            lv_obj_set_pos(
+                flow_label,
+                chart_x + chart_w + y_axis_flow_x_offset,
+                pos_y - (lv_obj_get_height(flow_label) / 2));
         }
 
         if (temperature_label != NULL) {
@@ -1880,7 +1893,10 @@ static void ui_update_plot_axis_labels(float pressure_max,
                 temperature_max * normalized);
             lv_label_set_text_static(temperature_label, s_ui.plot_temperature_y_axis_label_text[index]);
             lv_obj_update_layout(temperature_label);
-            lv_obj_set_pos(temperature_label, chart_x + chart_w + 114, pos_y - (lv_obj_get_height(temperature_label) / 2));
+            lv_obj_set_pos(
+                temperature_label,
+                chart_x + chart_w + y_axis_temperature_x_offset,
+                pos_y - (lv_obj_get_height(temperature_label) / 2));
         }
     }
 }
@@ -2038,43 +2054,58 @@ static void ui_render_live_shot_plot(void)
         s_ui.plot_temperature_chart_y_values[bin_idx] = temperature_scaled;
     }
 
-    /* Fill sparse time bins with last known value so traces remain continuous
-     * when sample timestamps quantize to the same point index. */
-    int32_t last_pressure = LV_CHART_POINT_NONE;
-    int32_t last_weight = LV_CHART_POINT_NONE;
-    int32_t last_flow = LV_CHART_POINT_NONE;
-    int32_t last_temperature = LV_CHART_POINT_NONE;
+    /* Fill sparse time bins with last known value only inside the populated
+     * sample range. This keeps continuity between received samples but avoids
+     * drawing "future" flat lines all the way to the right edge. */
+    uint32_t max_populated_idx = 0U;
+    bool have_populated_idx = false;
     for (uint32_t index = 0; index < point_count; index++) {
-        if (s_ui.plot_pressure_chart_y_values[index] == LV_CHART_POINT_NONE) {
-            if (last_pressure != LV_CHART_POINT_NONE) {
-                s_ui.plot_pressure_chart_y_values[index] = last_pressure;
-            }
-        } else {
-            last_pressure = s_ui.plot_pressure_chart_y_values[index];
+        if (s_ui.plot_pressure_chart_y_values[index] != LV_CHART_POINT_NONE ||
+            s_ui.plot_weight_chart_y_values[index] != LV_CHART_POINT_NONE ||
+            s_ui.plot_flow_chart_y_values[index] != LV_CHART_POINT_NONE ||
+            s_ui.plot_temperature_chart_y_values[index] != LV_CHART_POINT_NONE) {
+            max_populated_idx = index;
+            have_populated_idx = true;
         }
+    }
 
-        if (s_ui.plot_weight_chart_y_values[index] == LV_CHART_POINT_NONE) {
-            if (last_weight != LV_CHART_POINT_NONE) {
-                s_ui.plot_weight_chart_y_values[index] = last_weight;
+    if (have_populated_idx) {
+        int32_t last_pressure = LV_CHART_POINT_NONE;
+        int32_t last_weight = LV_CHART_POINT_NONE;
+        int32_t last_flow = LV_CHART_POINT_NONE;
+        int32_t last_temperature = LV_CHART_POINT_NONE;
+        for (uint32_t index = 0; index <= max_populated_idx; index++) {
+            if (s_ui.plot_pressure_chart_y_values[index] == LV_CHART_POINT_NONE) {
+                if (last_pressure != LV_CHART_POINT_NONE) {
+                    s_ui.plot_pressure_chart_y_values[index] = last_pressure;
+                }
+            } else {
+                last_pressure = s_ui.plot_pressure_chart_y_values[index];
             }
-        } else {
-            last_weight = s_ui.plot_weight_chart_y_values[index];
-        }
 
-        if (s_ui.plot_flow_chart_y_values[index] == LV_CHART_POINT_NONE) {
-            if (last_flow != LV_CHART_POINT_NONE) {
-                s_ui.plot_flow_chart_y_values[index] = last_flow;
+            if (s_ui.plot_weight_chart_y_values[index] == LV_CHART_POINT_NONE) {
+                if (last_weight != LV_CHART_POINT_NONE) {
+                    s_ui.plot_weight_chart_y_values[index] = last_weight;
+                }
+            } else {
+                last_weight = s_ui.plot_weight_chart_y_values[index];
             }
-        } else {
-            last_flow = s_ui.plot_flow_chart_y_values[index];
-        }
 
-        if (s_ui.plot_temperature_chart_y_values[index] == LV_CHART_POINT_NONE) {
-            if (last_temperature != LV_CHART_POINT_NONE) {
-                s_ui.plot_temperature_chart_y_values[index] = last_temperature;
+            if (s_ui.plot_flow_chart_y_values[index] == LV_CHART_POINT_NONE) {
+                if (last_flow != LV_CHART_POINT_NONE) {
+                    s_ui.plot_flow_chart_y_values[index] = last_flow;
+                }
+            } else {
+                last_flow = s_ui.plot_flow_chart_y_values[index];
             }
-        } else {
-            last_temperature = s_ui.plot_temperature_chart_y_values[index];
+
+            if (s_ui.plot_temperature_chart_y_values[index] == LV_CHART_POINT_NONE) {
+                if (last_temperature != LV_CHART_POINT_NONE) {
+                    s_ui.plot_temperature_chart_y_values[index] = last_temperature;
+                }
+            } else {
+                last_temperature = s_ui.plot_temperature_chart_y_values[index];
+            }
         }
     }
 
@@ -4016,7 +4047,7 @@ static void ui_build_page_live_shot(void)
     lv_obj_t *legend_temperature = NULL;
     lv_coord_t content_w = lv_obj_get_content_width(s_ui.content);
     lv_coord_t content_h = lv_obj_get_content_height(s_ui.content);
-    const lv_coord_t axis_reserved_w = 198;
+    const lv_coord_t axis_reserved_w = 160;
     lv_coord_t top_bottom = 0;
     lv_coord_t legend_y = 0;
     lv_coord_t chart_top = 0;
@@ -4052,7 +4083,7 @@ static void ui_build_page_live_shot(void)
     lv_obj_set_style_text_letter_space(title, 5, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(0xF8FAFC), 0);
     lv_obj_set_style_text_color(title, lv_color_hex(0xBFDBFE), LV_STATE_PRESSED);
-    lv_obj_set_y(title, lv_obj_get_y(title) - 10);
+    lv_obj_set_y(title, lv_obj_get_y(title) - 14);
     ui_build_page_live_summary(s_ui.content);
     if (s_ui.page_status != NULL) {
         lv_obj_add_flag(s_ui.page_status, LV_OBJ_FLAG_HIDDEN);
@@ -4060,7 +4091,7 @@ static void ui_build_page_live_shot(void)
     if (s_ui.page_runtime != NULL) {
         lv_obj_set_style_text_font(s_ui.page_runtime, &lv_font_montserrat_16, 0);
         lv_obj_set_style_text_color(s_ui.page_runtime, lv_color_hex(UI_COLOR_TEXT), 0);
-        lv_obj_align_to(s_ui.page_runtime, title, LV_ALIGN_OUT_RIGHT_BOTTOM, 20, 0);
+        lv_obj_align_to(s_ui.page_runtime, title, LV_ALIGN_OUT_RIGHT_BOTTOM, 20, -6);
     }
 
     top_bottom = lv_obj_get_y(title) + lv_obj_get_height(title);
@@ -4072,7 +4103,7 @@ static void ui_build_page_live_shot(void)
     }
     chart_top = top_bottom + 5;
     legend_y = chart_top - 28;
-    controls_top = content_h - controls_h - 20;
+    controls_top = content_h - controls_h - 10;
     chart_w = content_w - axis_reserved_w + 10;
     chart_h = controls_top - chart_top;
     if (chart_w < 420) {
@@ -4284,7 +4315,7 @@ static void ui_build_page_brew(void)
     lv_obj_set_style_text_letter_space(brew_title, 5, 0);
     lv_obj_set_style_text_color(brew_title, lv_color_hex(0xF8FAFC), 0);
     lv_obj_set_style_text_color(brew_title, lv_color_hex(0xBFDBFE), LV_STATE_PRESSED);
-    lv_obj_set_y(brew_title, lv_obj_get_y(brew_title) - 10);
+    lv_obj_set_y(brew_title, lv_obj_get_y(brew_title) - 14);
     ui_build_page_live_summary(s_ui.content);
     if (s_ui.page_status != NULL) {
         lv_obj_add_flag(s_ui.page_status, LV_OBJ_FLAG_HIDDEN);
@@ -4292,7 +4323,7 @@ static void ui_build_page_brew(void)
     if (s_ui.page_runtime != NULL) {
         lv_obj_set_style_text_font(s_ui.page_runtime, &lv_font_montserrat_16, 0);
         lv_obj_set_style_text_color(s_ui.page_runtime, lv_color_hex(UI_COLOR_TEXT), 0);
-        lv_obj_align_to(s_ui.page_runtime, brew_title, LV_ALIGN_OUT_RIGHT_BOTTOM, 20, 0);
+        lv_obj_align_to(s_ui.page_runtime, brew_title, LV_ALIGN_OUT_RIGHT_BOTTOM, 20, -6);
     }
 
     s_ui.home_active_profile = lv_label_create(s_ui.content);
@@ -4900,6 +4931,9 @@ static void ui_render_active_page(void)
 static void ui_tabview_event_cb(lv_event_t *e)
 {
     s_ui.active_page = (ui_page_t)lv_tabview_get_tab_active(lv_event_get_target(e));
+    if (s_ui.active_page != UI_PAGE_BREW) {
+        ui_hide_coffee_preparation_success_msgbox();
+    }
     ui_render_active_page();
 }
 
