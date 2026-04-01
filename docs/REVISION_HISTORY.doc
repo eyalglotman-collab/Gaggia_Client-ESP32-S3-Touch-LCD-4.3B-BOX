@@ -4,9 +4,13 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.4.1\par
+0.4.8\par
 \par
 \b Latest Version Feature List\b0\par
+- Live Shot plotting now starts from T=0, keeps X-axis labels aligned to the grid, preserves full shot-duration visibility, and improves flow/weight continuity when incoming samples are sparse or invalid.\par
+- Keepalive duplicate handling now replays the cached correlated response for duplicate request IDs instead of single-shot no-resend behavior.\par
+- Wi-Fi power-save policy is now dynamic: initialization and backlight ON force `WIFI_PS_NONE`, while backlight OFF applies `WIFI_PS_MIN_MODEM` to save power when the screen is dark.\par
+- Monitor capture workflow is now explicitly standardized to `scripts/monitor_capture.ps1` with pre/post COM availability checks, busy-port release attempts, and post-capture release verification.\par
 - README approval-bootstrap guidance now requires scoped executable approvals for known workspace tools under `C:/Espressif/Eyal_Projects_ESP32_S3/...` paths and explicitly forbids blanket arbitrary `.exe` approvals.\par
 - Minor version release checkpoint: promoted client version line to 0.4.0 for the synchronized dual-project release.\par
 - Simulate Data graph now updates per packet with labeled X/Y axes, packet/sample timing display, stream idle auto-sync, and stop-action FIFO+plot reset behavior.\par
@@ -59,6 +63,11 @@
 - Reset now fast-paths directly to `connect` when low-layer Wi-Fi is still healthy, reducing reconnect latency after reset retries.\par
 \par
 \b X=0, Y=4\b0\par
+\b 2026-04-01 12:55:00\b0\par
+- Version: 0.4.8\par
+- Summary: Stabilized Live Shot plotting and keepalive duplicate recovery, added dynamic Wi-Fi power-save switching tied to backlight state, and hardened mandatory monitor-capture workflow.\par
+- Notes: `main/ui_screen.c` now aligns plot X-axis labels to grid positions without `s` suffixes, tracks elapsed shot time from zero, extends non-rolling display to expected brew duration, improves flow/weight continuity with fallback estimation from weight deltas, moves Y-axis label groups rightward for plot-space efficiency, removes the temperature graph and its autoscale checkbox, and compacts the bottom controls to enlarge the chart area. `main/CommunicationFunctions.c` now replays cached keepalive responses when duplicate `req` IDs arrive, replacing the previous single-shot no-resend duplicate path. `main/peripherals_manager.c` and `main/hardware_init.*` now force `WIFI_PS_NONE` at Wi-Fi initialization and switch between `WIFI_PS_NONE` (backlight ON) and `WIFI_PS_MIN_MODEM` (backlight OFF) with explicit rollback comments for stability validation. `scripts/monitor_capture.ps1` now enforces pre-check/release/retry logic for busy COM ports and verifies release after capture, and `README.md` now mandates this script as the only approved monitor method.\par
+\par
 \b 2026-03-25 14:00:00\b0\par
 - Version: 0.4.1\par
 - Summary: Hardened executable-approval documentation scope for safer Codex session bootstrap rules.\par

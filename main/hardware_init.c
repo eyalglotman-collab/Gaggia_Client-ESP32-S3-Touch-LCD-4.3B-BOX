@@ -13,6 +13,7 @@
 #include "esp_err.h"
 #include "esp_check.h"
 #include "esp_rom_sys.h"
+#include "esp_wifi.h"
 #include "esp_lcd_panel_rgb.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_touch.h"
@@ -441,6 +442,47 @@ esp_err_t hardware_i2c_write_read(uint8_t addr,
 }
 
 /**
+ * @brief Apply Wi-Fi STA power-save policy based on backlight state.
+ *
+ * @details Experimental power policy hook:
+ * - backlight ON  -> `WIFI_PS_NONE` for responsiveness
+ * - backlight OFF -> `WIFI_PS_MIN_MODEM` to save power while screen is dark
+ *
+ * Rollback note: if this causes link instability, remove this helper call from
+ * `hardware_set_backlight_enabled()` and keep the old backlight-only behavior.
+ *
+ * @param[in] backlight_enabled Current requested backlight state.
+ */
+static void hardware_apply_wifi_ps_from_backlight(bool backlight_enabled)
+{
+    wifi_ps_type_t target_ps = backlight_enabled ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM;
+    esp_err_t ps_ret = esp_wifi_set_ps(target_ps);
+
+    if (ps_ret == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "Wi-Fi power-save set to %s (backlight %s)",
+                 backlight_enabled ? "WIFI_PS_NONE" : "WIFI_PS_MIN_MODEM",
+                 backlight_enabled ? "ON" : "OFF");
+        return;
+    }
+
+    if (ps_ret == ESP_ERR_WIFI_NOT_INIT ||
+        ps_ret == ESP_ERR_WIFI_NOT_STARTED ||
+        ps_ret == ESP_ERR_INVALID_STATE) {
+        ESP_LOGD(TAG,
+                 "Wi-Fi PS update skipped (%s) while backlight %s",
+                 esp_err_to_name(ps_ret),
+                 backlight_enabled ? "ON" : "OFF");
+        return;
+    }
+
+    ESP_LOGW(TAG,
+             "Wi-Fi PS update failed while backlight %s: %s",
+             backlight_enabled ? "ON" : "OFF",
+             esp_err_to_name(ps_ret));
+}
+
+/**
  * @brief Set the LCD backlight state through CH422G.
  *
  * @details Uses the known-good board masks: `0x1E` keeps the backlight on and
@@ -459,6 +501,12 @@ esp_err_t hardware_set_backlight_enabled(bool enabled)
     esp_err_t ret = ch422g_set_io(mask);
     if (ret == ESP_OK) {
         s_backlight_enabled = enabled;
+        /* Experimental power optimization:
+         * keep Wi-Fi in no-power-save while screen is ON for UI responsiveness,
+         * and switch to MIN_MODEM while screen is OFF to reduce idle power.
+         * Revert by removing this call if the policy introduces instability.
+         */
+        hardware_apply_wifi_ps_from_backlight(enabled);
     }
     return ret;
 }

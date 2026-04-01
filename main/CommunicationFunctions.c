@@ -231,6 +231,7 @@ static void communication_build_keepalive_response_payload_locked(char *buffer,
                                                                   size_t buffer_len,
                                                                   bool include_metadata,
                                                                   uint32_t request_id);
+static esp_err_t communication_replay_duplicate_keepalive_response_locked(uint32_t request_id);
 static void communication_free_rx_buffer_locked(void);
 static esp_err_t communication_alloc_rx_buffer_locked(void);
 
@@ -1012,10 +1013,19 @@ static void communication_poll_received_frames_locked(void)
                          s_comm.last_keepalive_request_id);
             } else if (duplicate_request) {
                 communication_mark_keepalive_window_message_locked();
-                ESP_LOGW(TAG,
-                         "TopLayer duplicate keepalive request detected: req=%" PRIu32
-                         " (single-shot response mode: no resend)",
-                         payload_request_id);
+                esp_err_t replay_ret =
+                    communication_replay_duplicate_keepalive_response_locked(payload_request_id);
+                if (replay_ret == ESP_OK) {
+                    ESP_LOGW(TAG,
+                             "TopLayer duplicate keepalive request replayed: req=%" PRIu32,
+                             payload_request_id);
+                } else {
+                    ESP_LOGW(TAG,
+                             "TopLayer duplicate keepalive request detected but replay unavailable: "
+                             "req=%" PRIu32 " (%s)",
+                             payload_request_id,
+                             esp_err_to_name(replay_ret));
+                }
             } else {
                 if ((received_server_live_integer & 1U) != 0U ||
                     (received_client_live_integer & 1U) == 0U) {
@@ -1558,6 +1568,12 @@ static esp_err_t communication_send_pending_keepalive_response_locked(void)
     s_comm.keepalive_tx_count++;
     s_comm.snapshot.keepalive_tx_count = s_comm.keepalive_tx_count;
 
+    /* Duplicate keepalive replay safeguard:
+     * cache the most recent successful response request-id so if the bridge
+     * re-sends the same request after a timeout race we can replay quickly.
+     */
+    s_comm.duplicate_keepalive_replay_valid = true;
+    s_comm.duplicate_keepalive_replay_request_id = s_comm.last_keepalive_request_id;
     s_comm.last_responded_keepalive_request_id = s_comm.last_keepalive_request_id;
     s_comm.last_responded_keepalive_request_valid = true;
     s_comm.keepalive_ack_pending = false;
@@ -1565,6 +1581,47 @@ static esp_err_t communication_send_pending_keepalive_response_locked(void)
     s_comm.bottom_layer_retry_count = 0;
     s_comm.snapshot.bottom_layer_retry_count = 0;
     communication_enter_state_locked(COMMUNICATION_STATE_TOP_LAYER_KEEPALIVE_SERVER_RECEIVE);
+    return ESP_OK;
+}
+
+/**
+ * @brief Replay the latest keepalive response for a duplicated request id.
+ *
+ * @details The bridge may re-send an identical keepalive request id when its
+ * timeout expires before it receives the first client response. Replaying the
+ * cached correlated response closes that retry loop without disturbing the
+ * running-integer progression.
+ *
+ * @param[in] request_id Keepalive request id from the duplicate request frame.
+ *
+ * @return
+ *      - ESP_OK: Replay frame sent
+ *      - ESP_ERR_NOT_FOUND: No cached replay for this request id
+ *      - ESP_FAIL: Frame send failed
+ */
+static esp_err_t communication_replay_duplicate_keepalive_response_locked(uint32_t request_id)
+{
+    if (!s_comm.duplicate_keepalive_replay_valid ||
+        request_id != s_comm.duplicate_keepalive_replay_request_id) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    char *keepalive_payload = s_comm.scratch_payload;
+    keepalive_payload[0] = '\0';
+    communication_build_keepalive_response_payload_locked(
+        keepalive_payload,
+        COMMUNICATION_FRAME_MAX_PAYLOAD + 1U,
+        true,
+        request_id);
+
+    if (communication_send_frame_locked(COMMUNICATION_MESSAGE_KEEPALIVE, keepalive_payload) != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    s_comm.keepalive_tx_count++;
+    s_comm.snapshot.keepalive_tx_count = s_comm.keepalive_tx_count;
+    s_comm.last_responded_keepalive_request_id = request_id;
+    s_comm.last_responded_keepalive_request_valid = true;
     return ESP_OK;
 }
 
@@ -1667,9 +1724,11 @@ static void communication_schedule_bottom_layer_retry_locked(const char *reason_
     s_comm.session_id_valid = false;
     s_comm.last_keepalive_request_valid = false;
     s_comm.last_responded_keepalive_request_valid = false;
+    s_comm.duplicate_keepalive_replay_valid = false;
     s_comm.active_session_id = 0;
     s_comm.last_keepalive_request_id = 0;
     s_comm.last_responded_keepalive_request_id = 0;
+    s_comm.duplicate_keepalive_replay_request_id = 0;
     s_comm.snapshot.top_layer_connect_streak = 0;
 
     if (s_comm.bottom_layer_retry_count >= COMMUNICATION_BOTTOM_LAYER_RETRY_LIMIT) {

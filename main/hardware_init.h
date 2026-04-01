@@ -119,6 +119,12 @@ esp_err_t hardware_i2c_write_read(uint8_t addr,
  *
  * @details Drives the stable CH422G output pattern used by this board while
  * changing only the backlight enable bit.
+ * Experimental policy hook:
+ * - backlight ON  -> request `WIFI_PS_NONE`
+ * - backlight OFF -> request `WIFI_PS_MIN_MODEM`
+ * so Wi-Fi can save power while the screen is dark.
+ * Rollback: remove the hook in `hardware_set_backlight_enabled()` if this
+ * adds instability and keep only CH422G backlight control.
  *
  * @param[in] enabled `true` keeps the backlight enabled, `false` disables it.
  *

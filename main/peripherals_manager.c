@@ -606,6 +606,20 @@ esp_err_t peripherals_manager_init_wifi(bool offline)
         return ret;
     }
 
+    /* Experimental power policy bootstrap:
+     * start in WIFI_PS_NONE so transport/UI are fully responsive at init.
+     * Runtime backlight hooks can later switch OFF-screen operation to
+     * WIFI_PS_MIN_MODEM to save power.
+     * Revert note: remove this block if the policy adds instability.
+     */
+    ESP_LOGI(TAG, "Wi-Fi init step: esp_wifi_set_ps(WIFI_PS_NONE)");
+    ret = esp_wifi_set_ps(WIFI_PS_NONE);
+    ESP_LOGI(TAG, "Wi-Fi init step result: esp_wifi_set_ps -> %s", esp_err_to_name(ret));
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "Failed to force WIFI_PS_NONE at init; continuing with current Wi-Fi PS mode");
+    }
+
     wifi_scan_config_t scan_cfg = {
         .ssid = NULL,
         .bssid = NULL,

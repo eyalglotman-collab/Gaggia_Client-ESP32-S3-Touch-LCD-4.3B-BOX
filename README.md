@@ -123,6 +123,22 @@ For every build/flash task, Codex/Claude must use this exact gated sequence and 
 
 Post-flash monitor capture is optional and only required when explicitly requested.
 
+### Monitor Capture Method (Mandatory)
+
+When monitor capture is requested, this is the ONLY approved monitor command:
+
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Espressif\Eyal_Projects_ESP32_S3\Eyal_espresso_client\scripts\monitor_capture.ps1 -Port <PORT> -BaudRate 115200 -DurationSec <SECONDS>
+```
+
+Mandatory rules:
+
+- Use exactly the command above for every monitor task.
+- Do not use `cmd.exe /c C:/Espressif/Eyal_Projects_ESP32_S3/Eyal_espresso_client/scripts/idfw.cmd -p <PORT> monitor`.
+- Do not use direct `idf.py monitor`.
+- Do not use ad-hoc serial scripts or terminal serial tools for official monitor capture.
+- Keep the script's automatic pre-check, busy-port release, and post-monitor release/verification flow enabled.
+
 If any gate fails, the sequence is non-compliant and execution must stop immediately with:
 `RULE-GATED SEQUENCE BROKEN: <gate>`.
 
