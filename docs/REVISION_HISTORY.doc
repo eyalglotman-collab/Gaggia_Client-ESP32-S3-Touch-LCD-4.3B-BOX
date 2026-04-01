@@ -4,9 +4,12 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.4.8\par
+0.4.9\par
 \par
 \b Latest Version Feature List\b0\par
+- Live Shot axis labels now stay pinned to valid chart geometry across tab changes, use dynamic grid-aligned X-label placement, and show expected brew time next to the active profile name.\par
+- Live Shot rendering now guards against non-finite pressure/flow/weight/temperature/time samples by reusing the last valid values so traces no longer disappear.\par
+- README now formalizes the cross-project MUST governance rule for `Client FW`, `Server FW`, and `Server Simulator` version lines.\par
 - Live Shot plotting now starts from T=0, keeps X-axis labels aligned to the grid, preserves full shot-duration visibility, and improves flow/weight continuity when incoming samples are sparse or invalid.\par
 - Keepalive duplicate handling now replays the cached correlated response for duplicate request IDs instead of single-shot no-resend behavior.\par
 - Wi-Fi power-save policy is now dynamic: initialization and backlight ON force `WIFI_PS_NONE`, while backlight OFF applies `WIFI_PS_MIN_MODEM` to save power when the screen is dark.\par
@@ -63,6 +66,11 @@
 - Reset now fast-paths directly to `connect` when low-layer Wi-Fi is still healthy, reducing reconnect latency after reset retries.\par
 \par
 \b X=0, Y=4\b0\par
+\b 2026-04-01 16:53:00\b0\par
+- Version: 0.4.9\par
+- Summary: Stabilized Live Shot axis rendering through tab/layout transitions, hardened invalid-sample fallback behavior, and formalized cross-project version governance in README.\par
+- Notes: `main/ui_screen.c` now caches the last valid chart geometry so custom axes and labels remain stable when the tab is hidden or layout briefly reports zero size, aligns X-axis labels directly under computed vertical grid positions, recomputes post-shot axis span/ticks so labels stay consistent through full-brew rendering, and falls back to the latest valid pressure/temperature/weight/flow/time values when incoming samples are non-finite or invalid. Header runtime text now appends expected brew time in `(<xx> S)` format beside the profile name. `README.md` now codifies the MUST cross-project version governance rule for client firmware, bridge firmware, and simulator version scopes.\par
+\par
 \b 2026-04-01 12:55:00\b0\par
 - Version: 0.4.8\par
 - Summary: Stabilized Live Shot plotting and keepalive duplicate recovery, added dynamic Wi-Fi power-save switching tied to backlight state, and hardened mandatory monitor-capture workflow.\par

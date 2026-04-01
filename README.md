@@ -181,6 +181,26 @@ git -c user.name="Codex" -c user.email="codex@local" commit -m "docs: <message>"
 - Do not perform official versioning or release commits in temporary/mirror copies.
 - `VERSION` changes and release tags must match the commit history of this GitHub repository.
 
+## Cross-Project Version Governance Rule (MUST)
+
+This is a MUST rule. Codex/Claude must continuously track and maintain the following three version lines and apply the existing X.Y.Z versioning rules to the correct scope:
+
+- Client FW version:
+  - Scope: ESP32-S3 firmware code plus all docs and scripts in `Eyal_espresso_client`.
+  - Version file: `Eyal_espresso_client/VERSION`.
+- Server FW version:
+  - Scope: ESP32-C3 bridge firmware code in `Eyal_espresso_server_simulator/firmware/esp32c3_bridge`.
+  - Version file: `Eyal_espresso_server_simulator/firmware/esp32c3_bridge/VERSION`.
+- Server Simulator version:
+  - Scope: backend Python, web interface, and all docs and scripts in `Eyal_espresso_server_simulator` (excluding bridge firmware-only changes).
+  - Version file: `Eyal_espresso_server_simulator/VERSION`.
+
+Mandatory behavior:
+
+- If a change affects one scope, bump only that scope's version.
+- If a change affects multiple scopes, bump each affected scope in the same release cycle.
+- Version bumps must be committed together with the corresponding code/doc/script changes in the authoritative GitHub repositories.
+
 ## Workspace Review Rules
 
 - You must read all files in the two workspace projects: `Eyal_espresso_client` and `Eyal_espresso_server_simulator`.
