@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdarg.h>
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -401,7 +402,8 @@ static ui_state_t s_ui = {
 #define UI_CLOCK_SET_YEAR_END   (2045)
 #define UI_TABVIEW_HEIGHT      (432)
 #define UI_CLOCK_BAR_HEIGHT    (56)
-#define UI_SYSTEM_CONSTANTS_TEXT_MAX (4096)
+#define UI_SYSTEM_CONSTANTS_SUMMARY_TEXT_MAX (8192)
+#define UI_SYSTEM_CONSTANTS_TREE_TEXT_MAX (32768)
 #define UI_SIM_DATA_POLL_PERIOD_MS (20)
 #define UI_SIM_DATA_CHART_REFRESH_PERIOD_MS (100U)
 #define UI_SIM_DATA_STATUS_REFRESH_PERIOD_MS (250U)
@@ -417,7 +419,8 @@ static ui_state_t s_ui = {
 #define UI_PLOT_X_LABEL_STEP_SECONDS (1.0f)
 #define UI_PLOT_NORMALIZED_MAX (10000)
 #define UI_PLOT_FLOAT_SCALE_FACTOR (100.0f)
-#define UI_PLOT_SAMPLES_PER_CHANNEL (10U)
+/* 5 samples per 100 ms packet => 50 Hz plotting per channel. */
+#define UI_PLOT_SAMPLES_PER_CHANNEL (5U)
 #define UI_PLOT_CHANNEL_OFFSET_PRESSURE (0U)
 #define UI_PLOT_CHANNEL_OFFSET_FLOW (UI_PLOT_SAMPLES_PER_CHANNEL)
 #define UI_PLOT_CHANNEL_OFFSET_TEMPERATURE (2U * UI_PLOT_SAMPLES_PER_CHANNEL)
@@ -445,7 +448,27 @@ typedef enum {
 static const system_constants_data_t *ui_get_constants(void);
 static const system_constants_profile_t *ui_get_profile_constants(int profile_index);
 static void ui_apply_profile_defaults(int profile_index);
-static const char *ui_get_system_constants_pretty_text(void);
+static const char *ui_get_system_constants_summary_text(void);
+static const char *ui_get_system_constants_profiles_tree_text(void);
+static bool ui_system_constants_appendf(char *buffer, size_t buffer_size, size_t *used, const char *fmt, ...);
+static bool ui_system_constants_append_line(char *buffer,
+                                            size_t buffer_size,
+                                            size_t *used,
+                                            uint8_t depth,
+                                            const char *fmt,
+                                            ...);
+static bool ui_system_constants_append_settings_tree(const lcd_controller_settings_t *settings,
+                                                     char *buffer,
+                                                     size_t buffer_size,
+                                                     size_t *used,
+                                                     uint8_t depth);
+static bool ui_system_constants_append_profile_tree_recursive(const lcd_controller_profile_t *profiles,
+                                                              uint8_t index,
+                                                              uint8_t max_profiles,
+                                                              char *buffer,
+                                                              size_t buffer_size,
+                                                              size_t *used,
+                                                              uint8_t depth);
 static void ui_update_connection_info_overlay_contents(void);
 static void ui_update_sim_data_status_label(void);
 static esp_err_t ui_request_sim_data_toggle(bool enabled, bool sync_toggle_button);
@@ -506,7 +529,9 @@ static lv_obj_t *ui_create_toggle_button(lv_obj_t *parent,
                                          lv_coord_t y,
                                          lv_event_cb_t cb);
 
-static char s_system_constants_pretty_text[UI_SYSTEM_CONSTANTS_TEXT_MAX];
+static char s_system_constants_summary_text[UI_SYSTEM_CONSTANTS_SUMMARY_TEXT_MAX];
+static char s_system_constants_tree_text[UI_SYSTEM_CONSTANTS_TREE_TEXT_MAX];
+static uint32_t s_lcd_protocol_bootstrap_retry_tick = 0U;
 static const uint32_t UI_INIT_MODE_DEFAULT_COUNTDOWN_SEC = 5U;
 
 /**
@@ -2274,36 +2299,28 @@ static void ui_render_live_shot_plot(void)
 }
 
 /**
- * @brief Append one packet sample to Live Shot history and refresh the chart.
+ * @brief Append one packet worth of brew samples to Live Shot history.
  *
- * @details Uses the latest sample in each channel to keep a deterministic
- * 10 Hz history timeline that can be shown as rolling live-window or static
- * full-shot playback.
+ * @details Each packet carries `UI_PLOT_SAMPLES_PER_CHANNEL` values per
+ * channel. We append all of them in arrival order so a 100 ms packet with
+ * 5 samples/channel renders at 50 samples per second.
  */
 static void ui_plot_realtime_packet(const data_downlink_packet_t *packet, uint32_t packet_interval_us)
 {
     const uint32_t sample_count = UI_PLOT_SAMPLES_PER_CHANNEL;
-    float pressure_value = 0.0f;
-    float flow_value = 0.0f;
-    float flow_peak_value = 0.0f;
-    float temperature_value = 0.0f;
-    float weight_value = 0.0f;
-    float weight_peak_value = 0.0f;
-    float last_pressure_value = 0.0f;
-    float last_weight_value = 0.0f;
-    float last_flow_value = 0.0f;
-    float last_temperature_value = 0.0f;
-    float elapsed_s = 0.0f;
-    float fallback_dt_s = 0.1f;
-    float estimated_flow_from_weight = 0.0f;
-    float duration_s = 0.0f;
-    bool flow_sample_finite = false;
-    bool flow_sample_negative = false;
-    bool flow_has_estimate = false;
-    bool flow_has_target = false;
-    bool weight_sample_finite = false;
-    bool weight_sample_negative = false;
+    float packet_interval_s = 0.1f;
+    float sample_dt_s = 0.02f;
+    float packet_elapsed_s = 0.0f;
+    float brew_duration_s = 0.0f;
+    float target_flow_fallback = 0.0f;
+    float previous_time_s = 0.0f;
+    float previous_pressure_value = 0.0f;
+    float previous_weight_value = 0.0f;
+    float previous_flow_value = 0.0f;
+    float previous_temperature_value = (float)s_ui.target_temp_c;
+    float first_sample_time_s = 0.0f;
     bool has_packet_elapsed = false;
+    bool has_float_channels = false;
 
     if (packet == NULL || sample_count == 0U) {
         return;
@@ -2312,137 +2329,135 @@ static void ui_plot_realtime_packet(const data_downlink_packet_t *packet, uint32
     if (!s_ui.brewing || s_ui.plot_history_frozen) {
         return;
     }
-    if (s_ui.plot_history_count > 0U) {
-        last_pressure_value = s_ui.plot_history_pressure_bar[s_ui.plot_history_count - 1U];
-        last_weight_value = s_ui.plot_history_weight_g[s_ui.plot_history_count - 1U];
-        last_flow_value = s_ui.plot_history_flow_ml_s[s_ui.plot_history_count - 1U];
-        last_temperature_value = s_ui.plot_history_temperature_c[s_ui.plot_history_count - 1U];
-    }
 
-    if ((UI_PLOT_CHANNEL_OFFSET_TEMPERATURE + sample_count) <= DATA_SIZE_FLOATS) {
-        pressure_value = packet->f[UI_PLOT_CHANNEL_OFFSET_PRESSURE + sample_count - 1U];
-        flow_value = packet->f[UI_PLOT_CHANNEL_OFFSET_FLOW + sample_count - 1U];
-        flow_sample_finite = isfinite(flow_value);
-        flow_sample_negative = flow_sample_finite && (flow_value < 0.0f);
-        temperature_value = packet->f[UI_PLOT_CHANNEL_OFFSET_TEMPERATURE + sample_count - 1U];
-        for (uint32_t sample_index = 0; sample_index < sample_count; sample_index++) {
-            float flow_sample = packet->f[UI_PLOT_CHANNEL_OFFSET_FLOW + sample_index];
-            if (isfinite(flow_sample) && flow_sample > flow_peak_value) {
-                flow_peak_value = flow_sample;
-            }
-        }
-        if (flow_peak_value > flow_value) {
-            flow_value = flow_peak_value;
-        }
+    if (packet_interval_us > 0U) {
+        packet_interval_s = (float)packet_interval_us / 1000000.0f;
     }
-    if ((UI_PLOT_CHANNEL_OFFSET_WEIGHT + sample_count) <= DATA_SIZE_FLOATS) {
-        weight_value = packet->f[UI_PLOT_CHANNEL_OFFSET_WEIGHT + sample_count - 1U];
-        weight_sample_finite = isfinite(weight_value);
-        weight_sample_negative = weight_sample_finite && (weight_value < 0.0f);
-        for (uint32_t sample_index = 0; sample_index < sample_count; sample_index++) {
-            float weight_sample = packet->f[UI_PLOT_CHANNEL_OFFSET_WEIGHT + sample_index];
-            if (isfinite(weight_sample) && weight_sample > weight_peak_value) {
-                weight_peak_value = weight_sample;
-            }
-        }
-        if (weight_peak_value > weight_value) {
-            weight_value = weight_peak_value;
-        }
-    } else if (packet->i[LCD_CONTROLLER_BREW_SLOT_WEIGHT_X100] >= 0) {
-        weight_value = (float)packet->i[LCD_CONTROLLER_BREW_SLOT_WEIGHT_X100] / 100.0f;
-    } else {
-        weight_value = s_ui.brew_live_weight_g;
-    }
-    if ((!isfinite(weight_value) || weight_value <= 0.001f) &&
-        packet->i[LCD_CONTROLLER_BREW_SLOT_WEIGHT_X100] >= 0) {
-        weight_value = (float)packet->i[LCD_CONTROLLER_BREW_SLOT_WEIGHT_X100] / 100.0f;
-    }
-    if ((packet->i[LCD_CONTROLLER_BREW_SLOT_WEIGHT_X100] < 0) &&
-        s_ui.plot_history_count > 0U &&
-        ((weight_sample_finite && weight_sample_negative) || !weight_sample_finite)) {
-        weight_value = last_weight_value;
-    }
-    if (!isfinite(pressure_value)) {
-        pressure_value = (s_ui.plot_history_count > 0U) ? last_pressure_value : 0.0f;
-    }
-    if (!isfinite(temperature_value)) {
-        temperature_value = (s_ui.plot_history_count > 0U) ? last_temperature_value : (float)s_ui.target_temp_c;
-    }
-    if (!isfinite(weight_value) || weight_value < 0.0f) {
-        weight_value = (s_ui.plot_history_count > 0U) ? last_weight_value : 0.0f;
+    sample_dt_s = packet_interval_s / (float)sample_count;
+    if (!isfinite(sample_dt_s) || sample_dt_s <= 0.0f) {
+        sample_dt_s = 0.02f;
     }
 
     if (packet->i[LCD_CONTROLLER_BREW_SLOT_BREW_ELAPSED_MS] >= 0) {
-        elapsed_s = (float)packet->i[LCD_CONTROLLER_BREW_SLOT_BREW_ELAPSED_MS] / 1000.0f;
+        packet_elapsed_s = (float)packet->i[LCD_CONTROLLER_BREW_SLOT_BREW_ELAPSED_MS] / 1000.0f;
         has_packet_elapsed = true;
-    } else if (s_ui.plot_history_count > 0U) {
-        elapsed_s = s_ui.plot_history_time_sec[s_ui.plot_history_count - 1U];
     }
     if (packet->i[LCD_CONTROLLER_BREW_SLOT_BREW_DURATION_MS] > 0) {
-        duration_s = (float)packet->i[LCD_CONTROLLER_BREW_SLOT_BREW_DURATION_MS] / 1000.0f;
-        if (duration_s > s_ui.plot_expected_duration_s) {
-            s_ui.plot_expected_duration_s = duration_s;
+        brew_duration_s = (float)packet->i[LCD_CONTROLLER_BREW_SLOT_BREW_DURATION_MS] / 1000.0f;
+        if (brew_duration_s > s_ui.plot_expected_duration_s) {
+            s_ui.plot_expected_duration_s = brew_duration_s;
         }
+    }
+    if (packet->i[LCD_CONTROLLER_BREW_SLOT_TARGET_FLOW_ML_S_X1000] > 0) {
+        target_flow_fallback = (float)packet->i[LCD_CONTROLLER_BREW_SLOT_TARGET_FLOW_ML_S_X1000] / 1000.0f;
     }
 
-    if (packet_interval_us > 0U) {
-        fallback_dt_s = (float)packet_interval_us / 1000000.0f;
-    }
+    has_float_channels = ((UI_PLOT_CHANNEL_OFFSET_WEIGHT + sample_count) <= DATA_SIZE_FLOATS);
     if (s_ui.plot_history_count > 0U) {
-        float last_time = s_ui.plot_history_time_sec[s_ui.plot_history_count - 1U];
-        if (has_packet_elapsed) {
-            if (elapsed_s < last_time) {
-                elapsed_s = last_time;
-            }
-        } else {
-            elapsed_s = last_time + fallback_dt_s;
+        previous_time_s = s_ui.plot_history_time_sec[s_ui.plot_history_count - 1U];
+        previous_pressure_value = s_ui.plot_history_pressure_bar[s_ui.plot_history_count - 1U];
+        previous_weight_value = s_ui.plot_history_weight_g[s_ui.plot_history_count - 1U];
+        previous_flow_value = s_ui.plot_history_flow_ml_s[s_ui.plot_history_count - 1U];
+        previous_temperature_value = s_ui.plot_history_temperature_c[s_ui.plot_history_count - 1U];
+    }
+
+    if (s_ui.plot_history_count > 0U) {
+        first_sample_time_s = previous_time_s + sample_dt_s;
+    } else if (has_packet_elapsed) {
+        first_sample_time_s = packet_elapsed_s - (sample_dt_s * (float)(sample_count - 1U));
+    } else {
+        first_sample_time_s = 0.0f;
+    }
+    if (!isfinite(first_sample_time_s)) {
+        first_sample_time_s = previous_time_s;
+    }
+    if (first_sample_time_s < 0.0f) {
+        first_sample_time_s = 0.0f;
+    }
+
+    for (uint32_t sample_index = 0U; sample_index < sample_count; sample_index++) {
+        float pressure_value = previous_pressure_value;
+        float flow_value = previous_flow_value;
+        float temperature_value = previous_temperature_value;
+        float weight_value = previous_weight_value;
+        float sample_time_s = first_sample_time_s + (sample_dt_s * (float)sample_index);
+        float estimated_flow_from_weight = 0.0f;
+        float dt_s = 0.0f;
+
+        if (has_float_channels) {
+            pressure_value = packet->f[UI_PLOT_CHANNEL_OFFSET_PRESSURE + sample_index];
+            flow_value = packet->f[UI_PLOT_CHANNEL_OFFSET_FLOW + sample_index];
+            temperature_value = packet->f[UI_PLOT_CHANNEL_OFFSET_TEMPERATURE + sample_index];
+            weight_value = packet->f[UI_PLOT_CHANNEL_OFFSET_WEIGHT + sample_index];
+        } else if (packet->i[LCD_CONTROLLER_BREW_SLOT_WEIGHT_X100] >= 0) {
+            weight_value = (float)packet->i[LCD_CONTROLLER_BREW_SLOT_WEIGHT_X100] / 100.0f;
         }
-        if (elapsed_s > last_time + 0.0001f) {
-            float last_weight = s_ui.plot_history_weight_g[s_ui.plot_history_count - 1U];
-            estimated_flow_from_weight = (weight_value - last_weight) / (elapsed_s - last_time);
-            if (!isfinite(estimated_flow_from_weight) || estimated_flow_from_weight < 0.0f) {
-                estimated_flow_from_weight = 0.0f;
+
+        if (!isfinite(sample_time_s) || sample_time_s < 0.0f) {
+            sample_time_s = previous_time_s;
+        }
+        if (sample_time_s < previous_time_s) {
+            sample_time_s = previous_time_s;
+        }
+
+        if (!isfinite(pressure_value)) {
+            pressure_value = previous_pressure_value;
+        }
+        if (!isfinite(temperature_value)) {
+            temperature_value = previous_temperature_value;
+        }
+
+        if ((!isfinite(weight_value) || weight_value < 0.0f) &&
+            packet->i[LCD_CONTROLLER_BREW_SLOT_WEIGHT_X100] >= 0) {
+            weight_value = (float)packet->i[LCD_CONTROLLER_BREW_SLOT_WEIGHT_X100] / 100.0f;
+        }
+        if (!isfinite(weight_value) || weight_value < 0.0f) {
+            weight_value = previous_weight_value;
+        }
+
+        if (!isfinite(flow_value) || flow_value <= 0.001f) {
+            dt_s = sample_time_s - previous_time_s;
+            if (dt_s > 0.0001f) {
+                estimated_flow_from_weight = (weight_value - previous_weight_value) / dt_s;
+                if (!isfinite(estimated_flow_from_weight) || estimated_flow_from_weight < 0.0f) {
+                    estimated_flow_from_weight = 0.0f;
+                }
+                if (estimated_flow_from_weight > 40.0f) {
+                    estimated_flow_from_weight = 40.0f;
+                }
             }
-            if (estimated_flow_from_weight > 40.0f) {
-                estimated_flow_from_weight = 40.0f;
-            }
+
             if (estimated_flow_from_weight > 0.001f) {
-                flow_has_estimate = true;
+                flow_value = estimated_flow_from_weight;
+            } else if (target_flow_fallback > 0.001f) {
+                flow_value = target_flow_fallback;
+            } else {
+                flow_value = previous_flow_value;
             }
         }
-    }
-    if (!isfinite(elapsed_s) || elapsed_s < 0.0f) {
-        elapsed_s = (s_ui.plot_history_count > 0U)
-                        ? s_ui.plot_history_time_sec[s_ui.plot_history_count - 1U]
-                        : 0.0f;
+        if (!isfinite(flow_value) || flow_value < 0.0f) {
+            flow_value = previous_flow_value;
+        }
+
+        pressure_value = ui_plot_clamp_positive(pressure_value, 0.0f, 25.0f, 0.0f);
+        weight_value = ui_plot_clamp_positive(weight_value, 0.0f, 200.0f, 0.0f);
+        flow_value = ui_plot_clamp_positive(flow_value, 0.0f, 40.0f, 0.0f);
+        temperature_value = ui_plot_clamp_positive(temperature_value, 0.0f, 120.0f, 0.0f);
+
+        ui_plot_append_history_sample(
+            sample_time_s,
+            pressure_value,
+            weight_value,
+            flow_value,
+            temperature_value);
+
+        previous_time_s = sample_time_s;
+        previous_pressure_value = pressure_value;
+        previous_weight_value = weight_value;
+        previous_flow_value = flow_value;
+        previous_temperature_value = temperature_value;
     }
 
-    if (!isfinite(flow_value) || flow_value <= 0.001f) {
-        if (estimated_flow_from_weight > 0.001f) {
-            flow_value = estimated_flow_from_weight;
-            flow_has_estimate = true;
-        } else if (packet->i[LCD_CONTROLLER_BREW_SLOT_TARGET_FLOW_ML_S_X1000] > 0) {
-            flow_value = (float)packet->i[LCD_CONTROLLER_BREW_SLOT_TARGET_FLOW_ML_S_X1000] / 1000.0f;
-            flow_has_target = true;
-        }
-    }
-    if (s_ui.plot_history_count > 0U) {
-        bool flow_missing_or_invalid = (!flow_sample_finite && !flow_has_estimate && !flow_has_target) ||
-                                       (flow_sample_negative && !flow_has_estimate && !flow_has_target);
-        if (flow_missing_or_invalid) {
-            flow_value = last_flow_value;
-        }
-    }
-    if (!isfinite(flow_value) || flow_value < 0.0f) {
-        flow_value = (s_ui.plot_history_count > 0U) ? last_flow_value : 0.0f;
-    }
-
-    ui_plot_append_history_sample(
-        elapsed_s,
-        ui_plot_clamp_positive(pressure_value, 0.0f, 25.0f, 0.0f),
-        ui_plot_clamp_positive(weight_value, 0.0f, 200.0f, 0.0f),
-        ui_plot_clamp_positive(flow_value, 0.0f, 40.0f, 0.0f),
-        ui_plot_clamp_positive(temperature_value, 0.0f, 120.0f, 0.0f));
     s_ui.plot_stream_started = true;
     ui_render_live_shot_plot();
 }
@@ -3537,102 +3552,774 @@ static void ui_sim_data_poll_timer_cb(lv_timer_t *timer)
 }
 
 /**
- * @brief Format loaded system constants into a tree-style text view.
+ * @brief Append formatted text into a bounded System Constants buffer.
  *
- * @details Converts the active constants snapshot into a readable outline so
- * the hierarchy is clear on screen without showing raw XML tags.
+ * @details Uses `vsnprintf` so all appends share a single truncation-safe
+ * code path and callers can stop when the output reaches buffer capacity.
  *
- * @return Pointer to a static formatted XML buffer.
+ * @param[in,out] buffer Destination text buffer.
+ * @param[in] buffer_size Total destination buffer size in bytes.
+ * @param[in,out] used Current used length in bytes (without NUL terminator).
+ * @param[in] fmt `printf`-style format string.
+ *
+ * @return True when append succeeded without truncation; false otherwise.
  */
-static const char *ui_get_system_constants_pretty_text(void)
+static bool ui_system_constants_appendf(char *buffer, size_t buffer_size, size_t *used, const char *fmt, ...)
+{
+    va_list args;
+    int written = 0;
+    size_t available = 0U;
+
+    if (buffer == NULL || used == NULL || fmt == NULL || buffer_size == 0U || *used >= buffer_size) {
+        return false;
+    }
+
+    available = buffer_size - *used;
+
+    va_start(args, fmt);
+    written = vsnprintf(buffer + *used, available, fmt, args);
+    va_end(args);
+    if (written < 0) {
+        return false;
+    }
+    if ((size_t)written >= available) {
+        *used = buffer_size - 1U;
+        buffer[*used] = '\0';
+        return false;
+    }
+
+    *used += (size_t)written;
+    return true;
+}
+
+/**
+ * @brief Append one indented tree row to a System Constants text buffer.
+ *
+ * @details Prefixes indentation with 4-space steps per depth level, appends
+ * the formatted row text, then appends a newline.
+ *
+ * @param[in,out] buffer Destination text buffer.
+ * @param[in] buffer_size Total destination buffer size in bytes.
+ * @param[in,out] used Current used length in bytes (without NUL terminator).
+ * @param[in] depth Tree indentation depth.
+ * @param[in] fmt `printf`-style format string for row text.
+ *
+ * @return True when the full row fits; false on truncation/error.
+ */
+static bool ui_system_constants_append_line(char *buffer,
+                                            size_t buffer_size,
+                                            size_t *used,
+                                            uint8_t depth,
+                                            const char *fmt,
+                                            ...)
+{
+    va_list args;
+    int written = 0;
+    size_t available = 0U;
+
+    if (buffer == NULL || used == NULL || fmt == NULL || buffer_size == 0U || *used >= buffer_size) {
+        return false;
+    }
+
+    for (uint8_t i = 0U; i < depth; i++) {
+        if (!ui_system_constants_appendf(buffer, buffer_size, used, "    ")) {
+            return false;
+        }
+    }
+
+    available = buffer_size - *used;
+    va_start(args, fmt);
+    written = vsnprintf(buffer + *used, available, fmt, args);
+    va_end(args);
+    if (written < 0) {
+        return false;
+    }
+    if ((size_t)written >= available) {
+        *used = buffer_size - 1U;
+        buffer[*used] = '\0';
+        return false;
+    }
+    *used += (size_t)written;
+
+    return ui_system_constants_appendf(buffer, buffer_size, used, "\n");
+}
+
+/**
+ * @brief Append the dataset `settings` struct as a tree section.
+ *
+ * @param[in] settings Dataset settings pointer.
+ * @param[in,out] buffer Destination text buffer.
+ * @param[in] buffer_size Total destination buffer size in bytes.
+ * @param[in,out] used Current used length in bytes (without NUL terminator).
+ * @param[in] depth Parent tree depth where `settings` row is emitted.
+ *
+ * @return True when section append succeeded; false on truncation/error.
+ */
+static bool ui_system_constants_append_settings_tree(const lcd_controller_settings_t *settings,
+                                                     char *buffer,
+                                                     size_t buffer_size,
+                                                     size_t *used,
+                                                     uint8_t depth)
+{
+    if (settings == NULL) {
+        return ui_system_constants_append_line(buffer, buffer_size, used, depth, "settings: null");
+    }
+
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth, "settings")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "steam_setpoint: %u", settings->steam_setpoint)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "offset_temp: %u", settings->offset_temp)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "hpwr: %u", settings->hpwr)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "main_divider: %u", settings->main_divider)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "brew_divider: %u", settings->brew_divider)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "active_profile: %u", settings->active_profile)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "power_line_frequency: %u", settings->power_line_frequency)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "lcd_sleep: %u", settings->lcd_sleep)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "warmup_state: %s", settings->warmup_state ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "home_on_shot_finish: %s",
+                                         settings->home_on_shot_finish ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "brew_delta_state: %s",
+                                         settings->brew_delta_state ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "basket_prefill: %s",
+                                         settings->basket_prefill ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "scales_f1: %" PRIi32, settings->scales_f1)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "scales_f2: %" PRIi32, settings->scales_f2)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "pump_flow_at_zero: %.3f", (double)settings->pump_flow_at_zero)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "led_state: %s", settings->led_state ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "led_disco: %s", settings->led_disco ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "led_r: %u", settings->led_r)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "led_g: %u", settings->led_g)) {
+        return false;
+    }
+    return ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "led_b: %u", settings->led_b);
+}
+
+/**
+ * @brief Recursively append each profile struct from the dataset.
+ *
+ * @details Uses recursion so nested/tree traversal can grow naturally as the
+ * profile schema evolves while keeping the viewer generation code structured.
+ *
+ * @param[in] profiles Profile array pointer.
+ * @param[in] index Current profile index in recursion.
+ * @param[in] max_profiles Maximum profile count to render.
+ * @param[in,out] buffer Destination text buffer.
+ * @param[in] buffer_size Total destination buffer size in bytes.
+ * @param[in,out] used Current used length in bytes (without NUL terminator).
+ * @param[in] depth Parent tree depth where profile nodes are emitted.
+ *
+ * @return True when all requested profiles are rendered; false otherwise.
+ */
+static bool ui_system_constants_append_profile_tree_recursive(const lcd_controller_profile_t *profiles,
+                                                              uint8_t index,
+                                                              uint8_t max_profiles,
+                                                              char *buffer,
+                                                              size_t buffer_size,
+                                                              size_t *used,
+                                                              uint8_t depth)
+{
+    const lcd_controller_profile_t *profile = NULL;
+
+    if (profiles == NULL) {
+        return ui_system_constants_append_line(buffer, buffer_size, used, depth, "profiles: null");
+    }
+    if (index >= max_profiles) {
+        return true;
+    }
+
+    profile = &profiles[index];
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth, "profile[%u]", (unsigned)index)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "name: %s", profile->name)) {
+        return false;
+    }
+
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "preinfusion_state: %s", profile->preinfusion_state ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "preinfusion_flow_state: %s",
+                                         profile->preinfusion_flow_state ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "preinfusion_sec: %u", profile->preinfusion_sec)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "preinfusion_bar: %.3f", (double)profile->preinfusion_bar)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "preinfusion_flow_vol: %.3f",
+                                         (double)profile->preinfusion_flow_vol)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "preinfusion_flow_time: %u", profile->preinfusion_flow_time)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "preinfusion_flow_pressure_target: %.3f",
+                                         (double)profile->preinfusion_flow_pressure_target)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "preinfusion_pressure_flow_target: %.3f",
+                                         (double)profile->preinfusion_pressure_flow_target)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "preinfusion_filled: %.3f", (double)profile->preinfusion_filled)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "preinfusion_pressure_above: %s",
+                                         profile->preinfusion_pressure_above ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "preinfusion_weight_above: %.3f",
+                                         (double)profile->preinfusion_weight_above)) {
+        return false;
+    }
+
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "soak_state: %s", profile->soak_state ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "soak_time_pressure: %u", profile->soak_time_pressure)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "soak_time_flow: %u", profile->soak_time_flow)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "soak_keep_pressure: %.3f", (double)profile->soak_keep_pressure)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "soak_keep_flow: %.3f", (double)profile->soak_keep_flow)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "soak_below_pressure: %.3f", (double)profile->soak_below_pressure)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "soak_above_pressure: %.3f", (double)profile->soak_above_pressure)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "soak_above_weight: %.3f", (double)profile->soak_above_weight)) {
+        return false;
+    }
+
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "preinfusion_ramp: %u", profile->preinfusion_ramp)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "preinfusion_ramp_slope: %u", profile->preinfusion_ramp_slope)) {
+        return false;
+    }
+
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tp_state: %s", profile->tp_state ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tp_type: %s", profile->tp_type ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tp_profiling_start: %.3f", (double)profile->tp_profiling_start)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tp_profiling_finish: %.3f", (double)profile->tp_profiling_finish)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tp_profiling_hold: %u", profile->tp_profiling_hold)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "tp_profiling_hold_limit: %.3f",
+                                         (double)profile->tp_profiling_hold_limit)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tp_profiling_slope: %u", profile->tp_profiling_slope)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tp_profiling_slope_shape: %u", profile->tp_profiling_slope_shape)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "tp_profiling_flow_restriction: %.3f",
+                                         (double)profile->tp_profiling_flow_restriction)) {
+        return false;
+    }
+
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tf_profile_start: %.3f", (double)profile->tf_profile_start)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tf_profile_end: %.3f", (double)profile->tf_profile_end)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tf_profile_hold: %u", profile->tf_profile_hold)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tf_profile_hold_limit: %.3f", (double)profile->tf_profile_hold_limit)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tf_profile_slope: %u", profile->tf_profile_slope)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "tf_profile_slope_shape: %u", profile->tf_profile_slope_shape)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "tf_profiling_pressure_restriction: %.3f",
+                                         (double)profile->tf_profiling_pressure_restriction)) {
+        return false;
+    }
+
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "profiling_state: %s", profile->profiling_state ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "mf_profile_state: %s", profile->mf_profile_state ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "mp_profiling_start: %.3f", (double)profile->mp_profiling_start)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "mp_profiling_finish: %.3f", (double)profile->mp_profiling_finish)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "mp_profiling_slope: %u", profile->mp_profiling_slope)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "mp_profiling_slope_shape: %u", profile->mp_profiling_slope_shape)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "mp_profiling_flow_restriction: %.3f",
+                                         (double)profile->mp_profiling_flow_restriction)) {
+        return false;
+    }
+
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "mf_profile_start: %.3f", (double)profile->mf_profile_start)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "mf_profile_end: %.3f", (double)profile->mf_profile_end)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "mf_profile_slope: %u", profile->mf_profile_slope)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "mf_profile_slope_shape: %u", profile->mf_profile_slope_shape)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "mf_profiling_pressure_restriction: %.3f",
+                                         (double)profile->mf_profiling_pressure_restriction)) {
+        return false;
+    }
+
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "setpoint: %u", profile->setpoint)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "stop_on_weight_state: %s",
+                                         profile->stop_on_weight_state ? "true" : "false")) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(
+            buffer, buffer_size, used, depth + 1U, "shot_dose: %.3f", (double)profile->shot_dose)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer,
+                                         buffer_size,
+                                         used,
+                                         depth + 1U,
+                                         "shot_stop_on_custom_weight: %.3f",
+                                         (double)profile->shot_stop_on_custom_weight)) {
+        return false;
+    }
+    if (!ui_system_constants_append_line(buffer, buffer_size, used, depth + 1U, "shot_preset: %u", profile->shot_preset)) {
+        return false;
+    }
+
+    return ui_system_constants_append_profile_tree_recursive(
+        profiles, (uint8_t)(index + 1U), max_profiles, buffer, buffer_size, used, depth);
+}
+
+/**
+ * @brief Format legacy and runtime constants for the summary tab.
+ *
+ * @details Builds the human-readable constants view that keeps all pre-existing
+ * values visible, including limits, ranges, autoscale settings, and profile
+ * summaries.
+ *
+ * @return Pointer to a static formatted text buffer.
+ */
+static const char *ui_get_system_constants_summary_text(void)
 {
     const system_constants_data_t *constants = ui_get_constants();
-    size_t used = 0;
-    int written = 0;
+    size_t used = 0U;
+    int profile_count = 0;
+    bool ok = true;
 
-    s_system_constants_pretty_text[0] = '\0';
-
+    s_system_constants_summary_text[0] = '\0';
     if (constants == NULL) {
-        snprintf(s_system_constants_pretty_text,
-                 sizeof(s_system_constants_pretty_text),
+        snprintf(s_system_constants_summary_text,
+                 sizeof(s_system_constants_summary_text),
                  "System Constants\n    Unavailable");
-        return s_system_constants_pretty_text;
+        return s_system_constants_summary_text;
     }
 
-    written = snprintf(
-        s_system_constants_pretty_text,
-        sizeof(s_system_constants_pretty_text),
-        "System Constants\n"
-        "    Versions\n"
-        "        Client Version: %s\n"
-        "        Compatible Version: %s\n"
-        "    Connection\n"
-        "        Host: %s\n"
-        "        Port: %s\n"
-        "        Baud Rate: %d\n"
-        "    Limits\n"
-        "        Temperature: %d-%d C\n"
-        "        Pressure: %d.%d-%d.%d bar\n"
-        "        Flow: %d.%d-%d.%d ml/s\n"
-        "    Profiles (%d)",
-        constants->client_version,
-        constants->compatible_client_version,
-        constants->connection_host,
-        constants->connection_port,
-        constants->connection_baud_rate,
-        constants->temperature_min_c,
-        constants->temperature_max_c,
-        constants->pressure_min_tenths / 10,
-        abs(constants->pressure_min_tenths % 10),
-        constants->pressure_max_tenths / 10,
-        abs(constants->pressure_max_tenths % 10),
-        constants->flow_min_tenths / 10,
-        abs(constants->flow_min_tenths % 10),
-        constants->flow_max_tenths / 10,
-        abs(constants->flow_max_tenths % 10),
-        constants->profile_count);
-
-    if (written < 0) {
-        s_system_constants_pretty_text[0] = '\0';
-        return s_system_constants_pretty_text;
+    profile_count = constants->profile_count;
+    if (profile_count < 0) {
+        profile_count = 0;
+    }
+    if (profile_count > (int)SYSTEM_CONSTANTS_MAX_PROFILES) {
+        profile_count = (int)SYSTEM_CONSTANTS_MAX_PROFILES;
     }
 
-    used = (size_t)written;
-    if (used >= sizeof(s_system_constants_pretty_text)) {
-        used = sizeof(s_system_constants_pretty_text) - 1U;
+    ok &= ui_system_constants_append_line(
+        s_system_constants_summary_text, sizeof(s_system_constants_summary_text), &used, 0U, "System Constants");
+    ok &= ui_system_constants_append_line(
+        s_system_constants_summary_text, sizeof(s_system_constants_summary_text), &used, 1U, "Versions");
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Client Version: %s",
+                                          constants->client_version);
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Compatible Version: %s",
+                                          constants->compatible_client_version);
+
+    ok &= ui_system_constants_append_line(
+        s_system_constants_summary_text, sizeof(s_system_constants_summary_text), &used, 1U, "Connection");
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Host: %s",
+                                          constants->connection_host);
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Port: %s",
+                                          constants->connection_port);
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Baud Rate: %d",
+                                          constants->connection_baud_rate);
+
+    ok &= ui_system_constants_append_line(
+        s_system_constants_summary_text, sizeof(s_system_constants_summary_text), &used, 1U, "Limits");
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Temperature: %d-%d C",
+                                          constants->temperature_min_c,
+                                          constants->temperature_max_c);
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Pressure: %d.%d-%d.%d bar",
+                                          constants->pressure_min_tenths / 10,
+                                          abs(constants->pressure_min_tenths % 10),
+                                          constants->pressure_max_tenths / 10,
+                                          abs(constants->pressure_max_tenths % 10));
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Flow: %d.%d-%d.%d ml/s",
+                                          constants->flow_min_tenths / 10,
+                                          abs(constants->flow_min_tenths % 10),
+                                          constants->flow_max_tenths / 10,
+                                          abs(constants->flow_max_tenths % 10));
+
+    ok &= ui_system_constants_append_line(
+        s_system_constants_summary_text, sizeof(s_system_constants_summary_text), &used, 1U, "Live Shot");
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Pressure Max: %.2f bar (autoscale=%s)",
+                                          (double)constants->live_shot_pressure_max_bar,
+                                          constants->live_shot_autoscale_pressure ? "true" : "false");
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Weight Max: %.2f g (autoscale=%s)",
+                                          (double)constants->live_shot_weight_max_g,
+                                          constants->live_shot_autoscale_weight ? "true" : "false");
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Flow Max: %.2f ml/s (autoscale=%s)",
+                                          (double)constants->live_shot_flow_max_ml_s,
+                                          constants->live_shot_autoscale_flow ? "true" : "false");
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Temperature Max: %.2f C (autoscale=%s)",
+                                          (double)constants->live_shot_temperature_max_c,
+                                          constants->live_shot_autoscale_temperature ? "true" : "false");
+
+    ok &= ui_system_constants_append_line(
+        s_system_constants_summary_text, sizeof(s_system_constants_summary_text), &used, 1U, "Dataset Snapshot");
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Schema Version: %u",
+                                          constants->lcd_profile_dataset.schema_version);
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          2U,
+                                          "Active Profile: %u",
+                                          constants->lcd_profile_dataset.settings.active_profile);
+
+    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                          sizeof(s_system_constants_summary_text),
+                                          &used,
+                                          1U,
+                                          "Profiles (%d)",
+                                          profile_count);
+    for (int i = 0; ok && i < profile_count; i++) {
+        ok &= ui_system_constants_append_line(
+            s_system_constants_summary_text, sizeof(s_system_constants_summary_text), &used, 2U, "Profile %d", i + 1);
+        ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                              sizeof(s_system_constants_summary_text),
+                                              &used,
+                                              3U,
+                                              "Name: %s",
+                                              constants->profiles[i].name);
+        ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                              sizeof(s_system_constants_summary_text),
+                                              &used,
+                                              3U,
+                                              "Target Temperature: %d C",
+                                              constants->profiles[i].target_temperature_c);
+        ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                              sizeof(s_system_constants_summary_text),
+                                              &used,
+                                              3U,
+                                              "Preinfusion: %d s",
+                                              constants->profiles[i].preinfusion_seconds);
+        ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                              sizeof(s_system_constants_summary_text),
+                                              &used,
+                                              3U,
+                                              "Target Pressure: %d.%d bar",
+                                              constants->profiles[i].target_pressure_tenths / 10,
+                                              abs(constants->profiles[i].target_pressure_tenths % 10));
+        ok &= ui_system_constants_append_line(s_system_constants_summary_text,
+                                              sizeof(s_system_constants_summary_text),
+                                              &used,
+                                              3U,
+                                              "Target Flow: %d.%d ml/s",
+                                              constants->profiles[i].target_flow_tenths / 10,
+                                              abs(constants->profiles[i].target_flow_tenths % 10));
     }
 
-    for (int i = 0; i < constants->profile_count && used + 1U < sizeof(s_system_constants_pretty_text); i++) {
-        written = snprintf(
-            s_system_constants_pretty_text + used,
-            sizeof(s_system_constants_pretty_text) - used,
-            "\n"
-            "        Profile %d\n"
-            "            Name: %s\n"
-            "            Target Temperature: %d C\n"
-            "            Preinfusion: %d s\n"
-            "            Target Pressure: %d.%d bar\n"
-            "            Target Flow: %d.%d ml/s",
-            i + 1,
-            constants->profiles[i].name,
-            constants->profiles[i].target_temperature_c,
-            constants->profiles[i].preinfusion_seconds,
-            constants->profiles[i].target_pressure_tenths / 10,
-            abs(constants->profiles[i].target_pressure_tenths % 10),
-            constants->profiles[i].target_flow_tenths / 10,
-            abs(constants->profiles[i].target_flow_tenths % 10));
-        if (written < 0) {
-            break;
-        }
-        used += (size_t)written;
-        if (used >= sizeof(s_system_constants_pretty_text)) {
-            used = sizeof(s_system_constants_pretty_text) - 1U;
-            break;
-        }
+    if (!ok) {
+        (void)ui_system_constants_append_line(s_system_constants_summary_text,
+                                              sizeof(s_system_constants_summary_text),
+                                              &used,
+                                              0U,
+                                              "... output truncated ...");
     }
 
-    s_system_constants_pretty_text[used] = '\0';
-    return s_system_constants_pretty_text;
+    return s_system_constants_summary_text;
+}
+
+/**
+ * @brief Build the full recursive profile dataset tree for the Profiles tab.
+ *
+ * @details Renders the entire in-memory dataset hierarchy (`dataset ->
+ * settings -> profiles[*]`) so all profile fields are visible in one viewer.
+ *
+ * @return Pointer to a static formatted text buffer.
+ */
+static const char *ui_get_system_constants_profiles_tree_text(void)
+{
+    const system_constants_data_t *constants = ui_get_constants();
+    const lcd_controller_dataset_t *dataset = NULL;
+    size_t used = 0U;
+    bool ok = true;
+    uint8_t profile_count = LCD_CONTROLLER_MAX_PROFILES;
+
+    s_system_constants_tree_text[0] = '\0';
+    if (constants == NULL) {
+        snprintf(s_system_constants_tree_text, sizeof(s_system_constants_tree_text), "dataset\n    unavailable");
+        return s_system_constants_tree_text;
+    }
+
+    dataset = &constants->lcd_profile_dataset;
+    if (constants->profile_count > 0 && constants->profile_count <= (int)LCD_CONTROLLER_MAX_PROFILES) {
+        profile_count = (uint8_t)constants->profile_count;
+    }
+
+    ok &= ui_system_constants_append_line(s_system_constants_tree_text, sizeof(s_system_constants_tree_text), &used, 0U, "dataset");
+    ok &= ui_system_constants_append_line(s_system_constants_tree_text,
+                                          sizeof(s_system_constants_tree_text),
+                                          &used,
+                                          1U,
+                                          "schema_version: %u",
+                                          dataset->schema_version);
+    ok &= ui_system_constants_append_settings_tree(
+        &dataset->settings, s_system_constants_tree_text, sizeof(s_system_constants_tree_text), &used, 1U);
+    ok &= ui_system_constants_append_line(s_system_constants_tree_text,
+                                          sizeof(s_system_constants_tree_text),
+                                          &used,
+                                          1U,
+                                          "profiles[%u]",
+                                          (unsigned)profile_count);
+    ok &= ui_system_constants_append_profile_tree_recursive(dataset->profiles,
+                                                            0U,
+                                                            profile_count,
+                                                            s_system_constants_tree_text,
+                                                            sizeof(s_system_constants_tree_text),
+                                                            &used,
+                                                            2U);
+
+    if (!ok) {
+        (void)ui_system_constants_append_line(
+            s_system_constants_tree_text, sizeof(s_system_constants_tree_text), &used, 0U, "... output truncated ...");
+    }
+
+    return s_system_constants_tree_text;
 }
 
 /**
@@ -3950,70 +4637,125 @@ static void ui_settings_connection_info_event_cb(lv_event_t *e)
 }
 
 /**
- * @brief Open the System Constants XML viewer from the Settings tab.
+ * @brief Open the tabbed System Constants viewer from the Settings tab.
  *
- * @details Builds a scrollable overlay that presents the embedded
- * `SystemConstants.xml` text in an indented hierarchy view, with a bottom
- * `Done` button positioned 10 pixels below the rendered text.
+ * @details Builds a modal with two tabs:
+ * `Constants` for legacy/runtime summary values and
+ * `Profiles Tree` for the full recursive profile dataset hierarchy.
  *
  * @param[in] e LVGL event payload.
  */
 static void ui_settings_system_constants_event_cb(lv_event_t *e)
 {
+    lv_obj_t *scr = NULL;
+    lv_obj_t *panel = NULL;
+    lv_obj_t *title = NULL;
+    lv_obj_t *tabview = NULL;
+    lv_obj_t *tab_bar = NULL;
+    lv_obj_t *constants_tab = NULL;
+    lv_obj_t *profiles_tab = NULL;
+    lv_obj_t *constants_body = NULL;
+    lv_obj_t *profiles_body = NULL;
+    lv_obj_t *constants_label = NULL;
+    lv_obj_t *profiles_label = NULL;
+    lv_obj_t *done_btn = NULL;
+    lv_obj_t *done_lbl = NULL;
+
     (void)e;
 
     ui_close_system_constants_overlay();
 
-    lv_obj_t *scr = lv_screen_active();
+    scr = lv_screen_active();
     s_ui.system_constants_overlay = lv_obj_create(scr);
     lv_obj_remove_style_all(s_ui.system_constants_overlay);
     lv_obj_set_size(s_ui.system_constants_overlay, 800, 480);
     lv_obj_set_style_bg_color(s_ui.system_constants_overlay, lv_color_hex(UI_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(s_ui.system_constants_overlay, LV_OPA_COVER, 0);
 
-    lv_obj_t *panel = lv_obj_create(s_ui.system_constants_overlay);
+    panel = lv_obj_create(s_ui.system_constants_overlay);
     lv_obj_set_size(panel, 760, 440);
     lv_obj_center(panel);
     ui_style_card(panel, UI_COLOR_PANEL);
     lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *title = lv_label_create(panel);
+    title = lv_label_create(panel);
     lv_label_set_text(title, "System Constants");
     lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(UI_COLOR_TEXT), 0);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 16);
 
-    lv_obj_t *xml_body = lv_obj_create(panel);
-    lv_obj_set_size(xml_body, 720, 340);
-    lv_obj_align(xml_body, LV_ALIGN_TOP_MID, 0, 70);
-    ui_style_card(xml_body, UI_COLOR_CARD);
-    lv_obj_set_scrollbar_mode(xml_body, LV_SCROLLBAR_MODE_ACTIVE);
-    lv_obj_set_style_pad_all(xml_body, 16, 0);
-    lv_obj_set_scroll_dir(xml_body, LV_DIR_VER);
+    tabview = lv_tabview_create(panel);
+    lv_obj_set_size(tabview, 720, 292);
+    lv_obj_align(tabview, LV_ALIGN_TOP_MID, 0, 76);
+    lv_tabview_set_tab_bar_position(tabview, LV_DIR_TOP);
+    lv_tabview_set_tab_bar_size(tabview, 40);
+    lv_obj_set_style_bg_color(tabview, lv_color_hex(UI_COLOR_CARD), LV_PART_MAIN);
+    lv_obj_set_style_border_width(tabview, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(tabview, 0, LV_PART_MAIN);
 
-    lv_obj_t *xml_label = lv_label_create(xml_body);
-    lv_label_set_long_mode(xml_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(xml_label, 680);
-    lv_obj_set_style_text_font(xml_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(xml_label, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(xml_label, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_label_set_text(xml_label, ui_get_system_constants_pretty_text());
+    tab_bar = lv_tabview_get_tab_bar(tabview);
+    lv_obj_set_style_bg_color(tab_bar, lv_color_hex(UI_COLOR_CARD_ALT), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(tab_bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(tab_bar, lv_color_hex(UI_COLOR_BORDER), LV_PART_MAIN);
+    lv_obj_set_style_border_width(tab_bar, 1, LV_PART_MAIN);
+    lv_obj_set_style_text_color(tab_bar, lv_color_hex(UI_COLOR_TEXT), LV_PART_ITEMS);
+    lv_obj_set_style_text_font(tab_bar, &lv_font_montserrat_16, LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(tab_bar, lv_color_hex(UI_COLOR_ACCENT_ALT), LV_PART_ITEMS | LV_STATE_CHECKED);
+    lv_obj_set_style_text_color(tab_bar, lv_color_hex(UI_COLOR_TEXT), LV_PART_ITEMS | LV_STATE_CHECKED);
 
-    lv_obj_t *done_btn = lv_button_create(xml_body);
+    constants_tab = lv_tabview_add_tab(tabview, "Constants");
+    profiles_tab = lv_tabview_add_tab(tabview, "Profiles Tree");
+    lv_obj_set_scrollbar_mode(constants_tab, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scrollbar_mode(profiles_tab, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(constants_tab, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(profiles_tab, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(constants_tab, 0, 0);
+    lv_obj_set_style_pad_all(profiles_tab, 0, 0);
+
+    constants_body = lv_obj_create(constants_tab);
+    lv_obj_set_size(constants_body, lv_pct(100), lv_pct(100));
+    lv_obj_align(constants_body, LV_ALIGN_TOP_LEFT, 0, 0);
+    ui_style_card(constants_body, UI_COLOR_CARD);
+    lv_obj_set_style_border_width(constants_body, 0, 0);
+    lv_obj_set_scrollbar_mode(constants_body, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_scroll_dir(constants_body, LV_DIR_VER);
+    lv_obj_set_style_pad_all(constants_body, 12, 0);
+
+    constants_label = lv_label_create(constants_body);
+    lv_label_set_long_mode(constants_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(constants_label, 676);
+    lv_obj_set_style_text_font(constants_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(constants_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(constants_label, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_label_set_text(constants_label, ui_get_system_constants_summary_text());
+
+    profiles_body = lv_obj_create(profiles_tab);
+    lv_obj_set_size(profiles_body, lv_pct(100), lv_pct(100));
+    lv_obj_align(profiles_body, LV_ALIGN_TOP_LEFT, 0, 0);
+    ui_style_card(profiles_body, UI_COLOR_CARD);
+    lv_obj_set_style_border_width(profiles_body, 0, 0);
+    lv_obj_set_scrollbar_mode(profiles_body, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_scroll_dir(profiles_body, LV_DIR_VER);
+    lv_obj_set_style_pad_all(profiles_body, 12, 0);
+
+    profiles_label = lv_label_create(profiles_body);
+    lv_label_set_long_mode(profiles_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(profiles_label, 676);
+    lv_obj_set_style_text_font(profiles_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(profiles_label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(profiles_label, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_label_set_text(profiles_label, ui_get_system_constants_profiles_tree_text());
+
+    done_btn = lv_button_create(panel);
     lv_obj_set_size(done_btn, 300, 58);
+    lv_obj_align(done_btn, LV_ALIGN_BOTTOM_MID, 0, -18);
     ui_style_action_button(done_btn);
     lv_obj_add_event_cb(done_btn, ui_system_constants_done_event_cb, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *done_lbl = lv_label_create(done_btn);
+    done_lbl = lv_label_create(done_btn);
     lv_label_set_text(done_lbl, "Done");
     ui_style_button_label(done_lbl);
     lv_obj_center(done_lbl);
-
-    lv_obj_update_layout(xml_body);
-    lv_coord_t text_bottom = lv_obj_get_y(xml_label) + lv_obj_get_height(xml_label);
-    lv_obj_set_pos(done_btn,
-                   (lv_obj_get_width(xml_body) - lv_obj_get_width(done_btn)) / 2,
-                   text_bottom + 10);
 }
 
 /**
@@ -4311,7 +5053,7 @@ static void ui_build_page_live_shot(void)
     lv_coord_t controls_top = 0;
     lv_coord_t chart_w = 0;
     lv_coord_t chart_h = 0;
-    const lv_coord_t controls_row_y = 13;
+    const lv_coord_t controls_row_y = 17;
     const lv_coord_t set_range_row_y = controls_row_y - 4;
     const system_constants_data_t *constants = ui_get_constants();
 
@@ -4468,11 +5210,11 @@ static void ui_build_page_live_shot(void)
     controls = lv_obj_create(s_ui.content);
     lv_obj_set_pos(controls, 0, controls_top);
     lv_obj_set_size(controls, content_w, controls_h);
-    lv_obj_set_style_radius(controls, 10, 0);
-    lv_obj_set_style_bg_color(controls, lv_color_hex(UI_COLOR_PANEL_ALT), 0);
-    lv_obj_set_style_bg_opa(controls, LV_OPA_40, 0);
-    lv_obj_set_style_border_width(controls, 1, 0);
-    lv_obj_set_style_border_color(controls, lv_color_hex(UI_COLOR_BORDER), 0);
+    lv_obj_set_style_radius(controls, 0, 0);
+    lv_obj_set_style_bg_opa(controls, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(controls, 0, 0);
+    lv_obj_set_style_shadow_width(controls, 0, 0);
+    lv_obj_set_style_outline_width(controls, 0, 0);
     lv_obj_set_style_pad_all(controls, 8, 0);
     lv_obj_clear_flag(controls, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -5177,6 +5919,7 @@ static void ui_tabview_event_cb(lv_event_t *e)
 static void ui_heartbeat_timer_cb(lv_timer_t *timer)
 {
     communication_snapshot_t comm_snapshot = {0};
+    lcd_controller_profile_catalog_t protocol_catalog = {0};
     int64_t uptime_us = esp_timer_get_time();
 
     (void)timer;
@@ -5187,6 +5930,16 @@ static void ui_heartbeat_timer_cb(lv_timer_t *timer)
     if (communication_functions_get_snapshot(&comm_snapshot) == ESP_OK) {
         (void)lcd_controller_protocol_process_peer_text_event(comm_snapshot.last_received_text_event_count,
                                                               comm_snapshot.last_received_text);
+    }
+    if (lcd_controller_protocol_get_profile_catalog(&protocol_catalog) == ESP_OK) {
+        if (protocol_catalog.count == 0U) {
+            if ((s_lcd_protocol_bootstrap_retry_tick % 5U) == 0U) {
+                (void)lcd_controller_protocol_initialize_hooks();
+            }
+            s_lcd_protocol_bootstrap_retry_tick++;
+        } else {
+            s_lcd_protocol_bootstrap_retry_tick = 0U;
+        }
     }
     ui_update_header_status();
     ui_update_header_runtime();
@@ -5281,6 +6034,7 @@ static void ui_build_main_screen(void)
     }
 
     if (lcd_controller_protocol_init(ui_lcd_protocol_send_command_cb, NULL) == ESP_OK) {
+        s_lcd_protocol_bootstrap_retry_tick = 0U;
         lcd_controller_protocol_set_profile_catalog_hook(ui_lcd_protocol_profile_catalog_hook, NULL);
         lcd_controller_protocol_set_brew_state_hook(ui_lcd_protocol_brew_state_hook, NULL);
         if (lcd_controller_protocol_initialize_hooks() != ESP_OK) {

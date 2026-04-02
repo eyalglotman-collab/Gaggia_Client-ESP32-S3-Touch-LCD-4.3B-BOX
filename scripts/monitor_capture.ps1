@@ -143,12 +143,14 @@ try {
         [System.GC]::WaitForPendingFinalizers()
         Start-Sleep -Milliseconds 200
 
-        Write-Host "Releasing COM port after monitor..."
-        Invoke-SimulatorComRelease
-
         Write-Host "Verifying COM port state after monitor..."
-        if (-not (Ensure-ComPortReleased -PortName $Port -ProbeBaudRate $BaudRate -MaxAttempts 3)) {
-            throw "Post-monitor check failed: COM port '$Port' is still busy."
+        if (Test-ComPortAvailable -PortName $Port -ProbeBaudRate $BaudRate) {
+            Write-Host "Port $Port is free after monitor."
+        } else {
+            Write-Host "Port $Port is busy after monitor. Requesting simulator release..."
+            if (-not (Ensure-ComPortReleased -PortName $Port -ProbeBaudRate $BaudRate -MaxAttempts 3)) {
+                throw "Post-monitor check failed: COM port '$Port' is still busy."
+            }
         }
     }
 

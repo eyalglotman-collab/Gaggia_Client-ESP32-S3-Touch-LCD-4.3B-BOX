@@ -134,7 +134,7 @@ typedef struct {
     char local_ip[16];
     char last_error[96];
     uint32_t last_received_text_event_count;
-    char last_received_text[160];
+    char last_received_text[2301];
     char scan_results[640];
 } communication_snapshot_t;
 

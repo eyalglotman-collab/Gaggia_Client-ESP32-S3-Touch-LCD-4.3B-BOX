@@ -9,13 +9,14 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "communication/DataStructuresLCD_Controller.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SYSTEM_CONSTANTS_MAX_PROFILES (8)
+#define SYSTEM_CONSTANTS_MAX_PROFILES (LCD_CONTROLLER_MAX_PROFILES)
 
 /**
  * @brief One brew-profile entry loaded from the constants XML.
@@ -59,6 +60,7 @@ typedef struct {
     bool live_shot_autoscale_flow;
     bool live_shot_autoscale_temperature;
     system_constants_profile_t profiles[SYSTEM_CONSTANTS_MAX_PROFILES];
+    lcd_controller_dataset_t lcd_profile_dataset;
 } system_constants_data_t;
 
 /**
@@ -103,6 +105,26 @@ const char *system_constants_get_xml_text(void);
  * @return Embedded XML text length in bytes.
  */
 size_t system_constants_get_xml_length(void);
+
+/**
+ * @brief Apply a full LCD profile/settings dataset and optionally persist it.
+ *
+ * @details Updates in-memory constants from protocol bootstrap data and writes
+ * the dataset to TF (SD) when requested.
+ *
+ * @param[in] dataset Parsed full LCD dataset from protocol.
+ * @param[in] persist_to_tf Save dataset to TF card when true.
+ *
+ * @return ESP_OK on success or an ESP_ERR_* code on validation/storage errors.
+ */
+esp_err_t system_constants_apply_lcd_dataset(const lcd_controller_dataset_t *dataset, bool persist_to_tf);
+
+/**
+ * @brief Return the last applied LCD dataset snapshot.
+ *
+ * @return Pointer to in-memory dataset owned by this module.
+ */
+const lcd_controller_dataset_t *system_constants_get_lcd_dataset(void);
 
 /**
  * @brief Update in-memory Live Shot manual range limits.

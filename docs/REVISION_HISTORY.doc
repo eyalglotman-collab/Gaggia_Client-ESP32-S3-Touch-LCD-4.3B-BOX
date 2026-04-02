@@ -4,9 +4,13 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.4.9\par
+0.4.10\par
 \par
 \b Latest Version Feature List\b0\par
+- Protocol bootstrap now supports full LCD dataset ingestion (`settings` + full profile structs), applies it to runtime constants, and persists the dataset snapshot to TF for reboot reload.\par
+- System Constants UI now uses a tabbed viewer with a legacy-compatible summary tab plus a recursive `Profiles Tree` tab that exposes all dataset fields.\par
+- Live Shot packet ingestion now processes multi-sample packets at 5 samples per 100 ms, and communication snapshot text capacity is expanded to carry full dataset payload events safely.\par
+- System constants defaults/XML now define five brew profiles, and monitor capture post-check now verifies COM availability before conditional release attempts.\par
 - Live Shot axis labels now stay pinned to valid chart geometry across tab changes, use dynamic grid-aligned X-label placement, and show expected brew time next to the active profile name.\par
 - Live Shot rendering now guards against non-finite pressure/flow/weight/temperature/time samples by reusing the last valid values so traces no longer disappear.\par
 - README now formalizes the cross-project MUST governance rule for `Client FW`, `Server FW`, and `Server Simulator` version lines.\par
@@ -66,6 +70,11 @@
 - Reset now fast-paths directly to `connect` when low-layer Wi-Fi is still healthy, reducing reconnect latency after reset retries.\par
 \par
 \b X=0, Y=4\b0\par
+\b 2026-04-02 22:27:44\b0\par
+- Version: 0.4.10\par
+- Summary: Added full LCD profile dataset bootstrap/persistence, expanded profile defaults/schema, and introduced a tabbed recursive System Constants viewer with packet-level multi-sample Live Shot ingestion.\par
+- Notes: `main/communication/DataStructuresLCD_Controller.h` now defines EEPROM-mirrored dataset structs (`lcd_controller_settings_t`, `lcd_controller_profile_t`, `lcd_controller_dataset_t`) and protocol constants/events were extended in `main/communication/SystemStatesLCD_Controller.h`. `main/communication/ProtocolLCD_Controller.c` now requests `LCDProtoProfileDatasetGet` during bootstrap, parses profile dataset payloads, derives catalog data from datasets, and applies/persists datasets through `system_constants_apply_lcd_dataset(..., true)`. `main/system_constants.*` now seeds defaults for five profiles, stores/loads `LCDProfileDataset.bin` on TF, and exposes dataset access APIs. `main/SystemConstants.xml` profile count/defaults were expanded from three to five profiles. `main/ui_screen.c` now adds tabbed System Constants presentation (`Constants` + recursive `Profiles Tree`) and processes multi-sample brew packets (5 samples per 100 ms) during Live Shot plotting. `main/CommunicationFunctions.h` increased `last_received_text` capacity for long dataset text events, and `scripts/monitor_capture.ps1` now validates post-monitor COM availability before conditional release retries.\par
+\par
 \b 2026-04-01 16:53:00\b0\par
 - Version: 0.4.9\par
 - Summary: Stabilized Live Shot axis rendering through tab/layout transitions, hardened invalid-sample fallback behavior, and formalized cross-project version governance in README.\par
