@@ -25,48 +25,4 @@
     <LiveShotAutoscaleFlow>1</LiveShotAutoscaleFlow>
     <LiveShotAutoscaleTemperature>1</LiveShotAutoscaleTemperature>
   </Limits>
-
-  <BrewProfiles>
-    <ProfileCount>5</ProfileCount>
-
-    <Profile>
-      <Name>Classic 9 Bar</Name>
-      <TargetTemperature>93</TargetTemperature>
-      <PreinfusionSeconds>4</PreinfusionSeconds>
-      <TargetPressure>9.0</TargetPressure>
-      <TargetFlow>2.0</TargetFlow>
-    </Profile>
-
-    <Profile>
-      <Name>Turbo Shot</Name>
-      <TargetTemperature>91</TargetTemperature>
-      <PreinfusionSeconds>2</PreinfusionSeconds>
-      <TargetPressure>7.5</TargetPressure>
-      <TargetFlow>3.0</TargetFlow>
-    </Profile>
-
-    <Profile>
-      <Name>Light Roast</Name>
-      <TargetTemperature>96</TargetTemperature>
-      <PreinfusionSeconds>6</PreinfusionSeconds>
-      <TargetPressure>9.5</TargetPressure>
-      <TargetFlow>1.8</TargetFlow>
-    </Profile>
-
-    <Profile>
-      <Name>Blooming Filter</Name>
-      <TargetTemperature>94</TargetTemperature>
-      <PreinfusionSeconds>5</PreinfusionSeconds>
-      <TargetPressure>7.0</TargetPressure>
-      <TargetFlow>2.1</TargetFlow>
-    </Profile>
-
-    <Profile>
-      <Name>Ristretto Dense</Name>
-      <TargetTemperature>92</TargetTemperature>
-      <PreinfusionSeconds>3</PreinfusionSeconds>
-      <TargetPressure>9.8</TargetPressure>
-      <TargetFlow>1.4</TargetFlow>
-    </Profile>
-  </BrewProfiles>
 </SystemConstants>

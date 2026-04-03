@@ -479,7 +479,6 @@ static bool lcd_controller_parse_profile_dataset_payload(const char *payload_tex
     char *profile_save_ptr = NULL;
     bool profile_slot_used[LCD_CONTROLLER_MAX_PROFILES] = {false};
     uint8_t parsed_profiles = 0U;
-    uint8_t sequential_slot = 0U;
     uint16_t parsed_schema = 0U;
 
     if (payload_text == NULL || out_dataset == NULL) {
@@ -503,6 +502,10 @@ static bool lcd_controller_parse_profile_dataset_payload(const char *payload_tex
     if (end_ptr == count_text || *end_ptr != '\0') {
         return false;
     }
+    /* Initialization requires a full profile set in one dataset payload. */
+    if (expected_count != LCD_CONTROLLER_MAX_PROFILES) {
+        return false;
+    }
 
     if (!lcd_controller_extract_payload_value(payload_text, "settings", settings_text, sizeof(settings_text))) {
         return false;
@@ -512,7 +515,7 @@ static bool lcd_controller_parse_profile_dataset_payload(const char *payload_tex
     }
 
     if (!lcd_controller_extract_payload_value(payload_text, "profiles", profiles_text, sizeof(profiles_text))) {
-        return (expected_count == 0UL);
+        return false;
     }
 
     profile_token = strtok_r(profiles_text, "|", &profile_save_ptr);
@@ -520,27 +523,19 @@ static bool lcd_controller_parse_profile_dataset_payload(const char *payload_tex
         char profile_token_copy[LCD_CONTROLLER_DATASET_PROFILE_TOKEN_MAX_TEXT] = {0};
         lcd_controller_profile_t parsed_profile = {0};
         uint8_t parsed_profile_id = 0U;
-        uint8_t target_slot = 0xFFU;
+        uint8_t target_slot = 0U;
 
         snprintf(profile_token_copy, sizeof(profile_token_copy), "%s", profile_token);
         if (!lcd_controller_parse_dataset_profile_csv(profile_token_copy, &parsed_profile, &parsed_profile_id)) {
             return false;
         }
 
-        if (parsed_profile_id >= 1U && parsed_profile_id <= LCD_CONTROLLER_MAX_PROFILES) {
-            target_slot = (uint8_t)(parsed_profile_id - 1U);
-            if (profile_slot_used[target_slot]) {
-                target_slot = 0xFFU;
-            }
+        if (parsed_profile_id < 1U || parsed_profile_id > LCD_CONTROLLER_MAX_PROFILES) {
+            return false;
         }
-        if (target_slot == 0xFFU) {
-            while (sequential_slot < LCD_CONTROLLER_MAX_PROFILES && profile_slot_used[sequential_slot]) {
-                sequential_slot++;
-            }
-            if (sequential_slot >= LCD_CONTROLLER_MAX_PROFILES) {
-                break;
-            }
-            target_slot = sequential_slot;
+        target_slot = (uint8_t)(parsed_profile_id - 1U);
+        if (profile_slot_used[target_slot]) {
+            return false;
         }
 
         out_dataset->profiles[target_slot] = parsed_profile;
@@ -548,12 +543,26 @@ static bool lcd_controller_parse_profile_dataset_payload(const char *payload_tex
         parsed_profiles++;
         profile_token = strtok_r(NULL, "|", &profile_save_ptr);
     }
+    if (profile_token != NULL) {
+        /* Payload contains more profiles than the fixed schema supports. */
+        return false;
+    }
 
     out_dataset->schema_version = parsed_schema;
     if (out_dataset->settings.active_profile < 1U || out_dataset->settings.active_profile > LCD_CONTROLLER_MAX_PROFILES) {
         out_dataset->settings.active_profile = 1U;
     }
-    return (parsed_profiles > 0U) || (expected_count == 0UL);
+
+    if (parsed_profiles != LCD_CONTROLLER_MAX_PROFILES) {
+        return false;
+    }
+    for (uint8_t index = 0U; index < LCD_CONTROLLER_MAX_PROFILES; index++) {
+        if (!profile_slot_used[index]) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 /**
@@ -693,13 +702,15 @@ esp_err_t lcd_controller_protocol_process_peer_text_event(uint32_t event_count,
         esp_err_t constants_ret = ESP_OK;
 
         if (!lcd_controller_parse_profile_dataset_payload(payload_text, &parsed_dataset)) {
-            ESP_LOGW(TAG, "Failed to parse profile dataset payload.");
+            ESP_LOGW(TAG, "Rejected profile dataset payload: full %u-profile dataset is required.",
+                     (unsigned)LCD_CONTROLLER_MAX_PROFILES);
             return ESP_ERR_INVALID_ARG;
         }
 
         xSemaphoreTake(s_protocol.mutex, portMAX_DELAY);
         s_protocol.profile_dataset = parsed_dataset;
         lcd_controller_build_catalog_from_dataset(&s_protocol.profile_dataset, &s_protocol.profile_catalog);
+        s_protocol.link_state = LCD_CONTROLLER_PROTOCOL_STATE_DATASET_SYNCED;
         catalog_hook = s_protocol.profile_hook_cb;
         catalog_hook_ctx = s_protocol.profile_hook_user_ctx;
         publish_catalog = (catalog_hook != NULL);

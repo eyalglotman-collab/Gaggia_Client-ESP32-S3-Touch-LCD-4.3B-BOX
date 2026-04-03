@@ -4,9 +4,12 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.4.11\par
+0.4.12\par
 \par
 \b Latest Version Feature List\b0\par
+- System constants and profiles are now split into separate embedded files (`SystemConstants.xml` and `Profiles.xml`), with independent parsing paths and profile-count validation sourced from `Profiles.xml`.\par
+- Settings now uses button-only actions: Target Temperature and Preinfusion sliders were removed, `System Constants` now shows only global constants, and a new `View Profiles` action opens the recursive profile viewer separately.\par
+- Client dataset bootstrap now requires a complete profile set payload and rejects partial profile datasets; TF dataset persistence removes stale prior files before rewrite.\par
 - Live Shot keeps the full 50 Hz timeline aligned to T=0 by latching session start from the first packet elapsed-time sample and replaying the full frozen shot window with corrected end-of-shot axis scaling.\par
 - Plot-range autoscale toggles and manual Y-axis limits now reload from persisted system constants so checkbox state and ranges survive rebuilds and power cycles.\par
 - Brew-page shot progress now resets to `0s` and `0.0 g` after brew completion while preserving the profile expected-time and target context in labels.\par
@@ -74,6 +77,11 @@
 - Reset now fast-paths directly to `connect` when low-layer Wi-Fi is still healthy, reducing reconnect latency after reset retries.\par
 \par
 \b X=0, Y=4\b0\par
+\b 2026-04-03 22:40:00\b0\par
+- Version: 0.4.12\par
+- Summary: Split system constants/profile sources and viewers, tightened full-profile bootstrap validation, and formalized flash-only wrapper behavior.\par
+- Notes: `main/CMakeLists.txt` now embeds both `SystemConstants.xml` and `Profiles.xml`; `main/system_constants.*` now parses globals from `SystemConstants.xml` and profiles from `Profiles.xml`, and removes stale TF dataset files before rewrite. `main/communication/ProtocolLCD_Controller.c` now requires full fixed-size profile datasets during bootstrap and marks dataset sync only after full-structure validation. `main/ui_screen.c` now provides separate Settings overlays for `System Constants` and `View Profiles`, and removes Target Temperature/Preinfusion sliders to keep Settings button-only. `scripts/idfw.cmd`, `README.md`, and `AGENTS.md` now support and document explicit `flash`/`flash-only` versus `build flash` flow selection.\par
+\par
 \b 2026-04-03 18:15:00\b0\par
 - Version: 0.4.11\par
 - Summary: Fixed Live Shot session-time anchoring and persisted plot-range UI state while extending 50 Hz history coverage for full-shot replay.\par

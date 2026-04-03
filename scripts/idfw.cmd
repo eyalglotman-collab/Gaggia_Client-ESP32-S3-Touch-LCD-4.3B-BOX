@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..") do set "REPO_ROOT=%%~fI"
@@ -32,10 +32,34 @@ set "PYTHONHOME="
 
 set "PATH=%IDF_PYTHON_ENV_PATH%\Scripts;C:\Program Files\Git\cmd;C:\Program Files\Git\mingw64\bin;C:\Program Files\Git\usr\bin;C:\Espressif\tools\cmake\3.30.2\bin;C:\Espressif\tools\ninja\1.12.1;C:\Espressif\tools\xtensa-esp-elf\esp-14.2.0_20251107\xtensa-esp-elf\bin;C:\Espressif\tools\riscv32-esp-elf\esp-14.2.0_20251107\riscv32-esp-elf\bin;C:\Espressif;%PATH%"
 
+set "HAS_BUILD=0"
+set "HAS_FLASH=0"
+set "NORMALIZED_ARGS="
+
+:NormalizeArgs
+if "%~1"=="" goto NormalizeDone
+set "ARG=%~1"
+if /I "!ARG!"=="flash-only" set "ARG=flash"
+if /I "!ARG!"=="build" set "HAS_BUILD=1"
+if /I "!ARG!"=="flash" set "HAS_FLASH=1"
+if defined NORMALIZED_ARGS (
+    set "NORMALIZED_ARGS=!NORMALIZED_ARGS! !ARG!"
+) else (
+    set "NORMALIZED_ARGS=!ARG!"
+)
+shift
+goto NormalizeArgs
+
+:NormalizeDone
+if not defined NORMALIZED_ARGS set "NORMALIZED_ARGS=build"
+if "!HAS_FLASH!"=="1" if "!HAS_BUILD!"=="0" (
+    echo Flash-only mode requested ^(no build step^).
+)
+
 echo Releasing COM port before idf action...
 call :ReleaseCom
 
-"%PYTHON_EXE%" "%IDF_PATH%\tools\idf.py" -B "%BUILD_DIR%" -DIDF_TARGET=esp32s3 %*
+"%PYTHON_EXE%" "%IDF_PATH%\tools\idf.py" -B "%BUILD_DIR%" -DIDF_TARGET=esp32s3 !NORMALIZED_ARGS!
 set "CMD_EXIT=%ERRORLEVEL%"
 
 echo Releasing COM port after idf action...

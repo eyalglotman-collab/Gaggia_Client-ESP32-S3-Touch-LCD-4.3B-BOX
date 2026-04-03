@@ -694,21 +694,6 @@ static void ui_style_button_label(lv_obj_t *label)
 }
 
 /**
- * @brief Apply shared dark slider styling.
- *
- * @details Uses the accent color for the active range while keeping the track
- * subdued against dark panels.
- *
- * @param[in] slider LVGL slider object.
- */
-static void ui_style_slider(lv_obj_t *slider)
-{
-    lv_obj_set_style_bg_color(slider, lv_color_hex(UI_COLOR_PANEL_ALT), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(slider, lv_color_hex(UI_COLOR_ACCENT), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(slider, lv_color_hex(0xF8FAFC), LV_PART_KNOB);
-}
-
-/**
  * @brief Update high-level status line in the header.
  *
  * @details Builds a single concise status text showing active mode and profile
@@ -806,7 +791,7 @@ static void ui_update_header_runtime(void)
         snprintf(
             line,
             sizeof(line),
-            "Profile: %s (%d S)  |  Temperature %s",
+            "Profile: %s (%d S)  |  Temp. %s",
             (profile_constants != NULL) ? profile_constants->name : "N/A",
             expected_brew_time_s,
             temp_text);
@@ -1365,14 +1350,40 @@ static const system_constants_profile_t *ui_get_profile_constants(int profile_in
 static void ui_apply_profile_defaults(int profile_index)
 {
     const system_constants_profile_t *profile = ui_get_profile_constants(profile_index);
+    const system_constants_data_t *constants = ui_get_constants();
     float brew_time_s = 30.0f;
-    if (s_ui.sim_data_work_packet.i[3] > 0) {
-        brew_time_s = (float)s_ui.sim_data_work_packet.i[3] / 1000.0f;
+    float flow_ml_sec = (float)profile->target_flow_tenths / 10.0f;
+    float shot_target_preview_g = 0.0f;
+    int profile_slot = profile_index - 1;
+
+    if (profile_slot >= 0 && profile_slot < LCD_CONTROLLER_MAX_PROFILES) {
+        shot_target_preview_g = constants->lcd_profile_dataset.profiles[profile_slot].shot_stop_on_custom_weight;
     }
+    if (!isfinite(shot_target_preview_g) || shot_target_preview_g <= 0.0f) {
+        shot_target_preview_g = 0.0f;
+    }
+
+    if (shot_target_preview_g > 0.0f && flow_ml_sec > 0.05f) {
+        brew_time_s = shot_target_preview_g / flow_ml_sec;
+    } else if (s_ui.sim_data_work_packet.i[LCD_CONTROLLER_BREW_SLOT_BREW_DURATION_MS] > 0) {
+        brew_time_s = (float)s_ui.sim_data_work_packet.i[LCD_CONTROLLER_BREW_SLOT_BREW_DURATION_MS] / 1000.0f;
+    }
+    if (!isfinite(brew_time_s) || brew_time_s < 1.0f) {
+        brew_time_s = 30.0f;
+    }
+    if (brew_time_s > 180.0f) {
+        brew_time_s = 180.0f;
+    }
+
     s_ui.active_profile = profile_index;
     s_ui.target_temp_c = profile->target_temperature_c;
     s_ui.preinf_s = profile->preinfusion_seconds;
-    s_ui.brew_shot_target_preview_g = ui_estimate_shot_target_preview_g(profile_index, brew_time_s);
+    s_ui.plot_expected_duration_s = brew_time_s;
+    if (shot_target_preview_g > 0.0f) {
+        s_ui.brew_shot_target_preview_g = shot_target_preview_g;
+    } else {
+        s_ui.brew_shot_target_preview_g = ui_estimate_shot_target_preview_g(profile_index, brew_time_s);
+    }
 }
 
 /**
@@ -4105,9 +4116,8 @@ static bool ui_system_constants_append_profile_tree_recursive(const lcd_controll
 /**
  * @brief Format legacy and runtime constants for the summary tab.
  *
- * @details Builds the human-readable constants view that keeps all pre-existing
- * values visible, including limits, ranges, autoscale settings, and profile
- * summaries.
+ * @details Builds the human-readable constants view using only global system
+ * constants (versions, connection, limits, and Live Shot defaults).
  *
  * @return Pointer to a static formatted text buffer.
  */
@@ -4115,7 +4125,6 @@ static const char *ui_get_system_constants_summary_text(void)
 {
     const system_constants_data_t *constants = ui_get_constants();
     size_t used = 0U;
-    int profile_count = 0;
     bool ok = true;
 
     s_system_constants_summary_text[0] = '\0';
@@ -4124,14 +4133,6 @@ static const char *ui_get_system_constants_summary_text(void)
                  sizeof(s_system_constants_summary_text),
                  "System Constants\n    Unavailable");
         return s_system_constants_summary_text;
-    }
-
-    profile_count = constants->profile_count;
-    if (profile_count < 0) {
-        profile_count = 0;
-    }
-    if (profile_count > (int)SYSTEM_CONSTANTS_MAX_PROFILES) {
-        profile_count = (int)SYSTEM_CONSTANTS_MAX_PROFILES;
     }
 
     ok &= ui_system_constants_append_line(
@@ -4230,64 +4231,6 @@ static const char *ui_get_system_constants_summary_text(void)
                                           "Temperature Max: %.2f C (autoscale=%s)",
                                           (double)constants->live_shot_temperature_max_c,
                                           constants->live_shot_autoscale_temperature ? "true" : "false");
-
-    ok &= ui_system_constants_append_line(
-        s_system_constants_summary_text, sizeof(s_system_constants_summary_text), &used, 1U, "Dataset Snapshot");
-    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
-                                          sizeof(s_system_constants_summary_text),
-                                          &used,
-                                          2U,
-                                          "Schema Version: %u",
-                                          constants->lcd_profile_dataset.schema_version);
-    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
-                                          sizeof(s_system_constants_summary_text),
-                                          &used,
-                                          2U,
-                                          "Active Profile: %u",
-                                          constants->lcd_profile_dataset.settings.active_profile);
-
-    ok &= ui_system_constants_append_line(s_system_constants_summary_text,
-                                          sizeof(s_system_constants_summary_text),
-                                          &used,
-                                          1U,
-                                          "Profiles (%d)",
-                                          profile_count);
-    for (int i = 0; ok && i < profile_count; i++) {
-        ok &= ui_system_constants_append_line(
-            s_system_constants_summary_text, sizeof(s_system_constants_summary_text), &used, 2U, "Profile %d", i + 1);
-        ok &= ui_system_constants_append_line(s_system_constants_summary_text,
-                                              sizeof(s_system_constants_summary_text),
-                                              &used,
-                                              3U,
-                                              "Name: %s",
-                                              constants->profiles[i].name);
-        ok &= ui_system_constants_append_line(s_system_constants_summary_text,
-                                              sizeof(s_system_constants_summary_text),
-                                              &used,
-                                              3U,
-                                              "Target Temperature: %d C",
-                                              constants->profiles[i].target_temperature_c);
-        ok &= ui_system_constants_append_line(s_system_constants_summary_text,
-                                              sizeof(s_system_constants_summary_text),
-                                              &used,
-                                              3U,
-                                              "Preinfusion: %d s",
-                                              constants->profiles[i].preinfusion_seconds);
-        ok &= ui_system_constants_append_line(s_system_constants_summary_text,
-                                              sizeof(s_system_constants_summary_text),
-                                              &used,
-                                              3U,
-                                              "Target Pressure: %d.%d bar",
-                                              constants->profiles[i].target_pressure_tenths / 10,
-                                              abs(constants->profiles[i].target_pressure_tenths % 10));
-        ok &= ui_system_constants_append_line(s_system_constants_summary_text,
-                                              sizeof(s_system_constants_summary_text),
-                                              &used,
-                                              3U,
-                                              "Target Flow: %d.%d ml/s",
-                                              constants->profiles[i].target_flow_tenths / 10,
-                                              abs(constants->profiles[i].target_flow_tenths % 10));
-    }
 
     if (!ok) {
         (void)ui_system_constants_append_line(s_system_constants_summary_text,
@@ -4673,31 +4616,22 @@ static void ui_settings_connection_info_event_cb(lv_event_t *e)
 }
 
 /**
- * @brief Open the tabbed System Constants viewer from the Settings tab.
+ * @brief Open a text viewer overlay from the Settings tab.
  *
- * @details Builds a modal with two tabs:
- * `Constants` for legacy/runtime summary values and
- * `Profiles Tree` for the full recursive profile dataset hierarchy.
+ * @details Renders one scrollable text page with a title and Done button.
  *
- * @param[in] e LVGL event payload.
+ * @param[in] title_text Overlay title.
+ * @param[in] body_text Full viewer text body.
  */
-static void ui_settings_system_constants_event_cb(lv_event_t *e)
+static void ui_open_settings_text_overlay(const char *title_text, const char *body_text)
 {
     lv_obj_t *scr = NULL;
     lv_obj_t *panel = NULL;
     lv_obj_t *title = NULL;
-    lv_obj_t *tabview = NULL;
-    lv_obj_t *tab_bar = NULL;
-    lv_obj_t *constants_tab = NULL;
-    lv_obj_t *profiles_tab = NULL;
-    lv_obj_t *constants_body = NULL;
-    lv_obj_t *profiles_body = NULL;
-    lv_obj_t *constants_label = NULL;
-    lv_obj_t *profiles_label = NULL;
+    lv_obj_t *body = NULL;
+    lv_obj_t *label = NULL;
     lv_obj_t *done_btn = NULL;
     lv_obj_t *done_lbl = NULL;
-
-    (void)e;
 
     ui_close_system_constants_overlay();
 
@@ -4715,72 +4649,27 @@ static void ui_settings_system_constants_event_cb(lv_event_t *e)
     lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
 
     title = lv_label_create(panel);
-    lv_label_set_text(title, "System Constants");
+    lv_label_set_text(title, title_text);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(UI_COLOR_TEXT), 0);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 16);
 
-    tabview = lv_tabview_create(panel);
-    lv_obj_set_size(tabview, 720, 292);
-    lv_obj_align(tabview, LV_ALIGN_TOP_MID, 0, 76);
-    lv_tabview_set_tab_bar_position(tabview, LV_DIR_TOP);
-    lv_tabview_set_tab_bar_size(tabview, 40);
-    lv_obj_set_style_bg_color(tabview, lv_color_hex(UI_COLOR_CARD), LV_PART_MAIN);
-    lv_obj_set_style_border_width(tabview, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(tabview, 0, LV_PART_MAIN);
+    body = lv_obj_create(panel);
+    lv_obj_set_size(body, 720, 292);
+    lv_obj_align(body, LV_ALIGN_TOP_MID, 0, 76);
+    ui_style_card(body, UI_COLOR_CARD);
+    lv_obj_set_style_border_width(body, 0, 0);
+    lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_scroll_dir(body, LV_DIR_VER);
+    lv_obj_set_style_pad_all(body, 12, 0);
 
-    tab_bar = lv_tabview_get_tab_bar(tabview);
-    lv_obj_set_style_bg_color(tab_bar, lv_color_hex(UI_COLOR_CARD_ALT), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(tab_bar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_color(tab_bar, lv_color_hex(UI_COLOR_BORDER), LV_PART_MAIN);
-    lv_obj_set_style_border_width(tab_bar, 1, LV_PART_MAIN);
-    lv_obj_set_style_text_color(tab_bar, lv_color_hex(UI_COLOR_TEXT), LV_PART_ITEMS);
-    lv_obj_set_style_text_font(tab_bar, &lv_font_montserrat_16, LV_PART_ITEMS);
-    lv_obj_set_style_bg_color(tab_bar, lv_color_hex(UI_COLOR_ACCENT_ALT), LV_PART_ITEMS | LV_STATE_CHECKED);
-    lv_obj_set_style_text_color(tab_bar, lv_color_hex(UI_COLOR_TEXT), LV_PART_ITEMS | LV_STATE_CHECKED);
-
-    constants_tab = lv_tabview_add_tab(tabview, "Constants");
-    profiles_tab = lv_tabview_add_tab(tabview, "Profiles Tree");
-    lv_obj_set_scrollbar_mode(constants_tab, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_scrollbar_mode(profiles_tab, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_clear_flag(constants_tab, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(profiles_tab, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(constants_tab, 0, 0);
-    lv_obj_set_style_pad_all(profiles_tab, 0, 0);
-
-    constants_body = lv_obj_create(constants_tab);
-    lv_obj_set_size(constants_body, lv_pct(100), lv_pct(100));
-    lv_obj_align(constants_body, LV_ALIGN_TOP_LEFT, 0, 0);
-    ui_style_card(constants_body, UI_COLOR_CARD);
-    lv_obj_set_style_border_width(constants_body, 0, 0);
-    lv_obj_set_scrollbar_mode(constants_body, LV_SCROLLBAR_MODE_ACTIVE);
-    lv_obj_set_scroll_dir(constants_body, LV_DIR_VER);
-    lv_obj_set_style_pad_all(constants_body, 12, 0);
-
-    constants_label = lv_label_create(constants_body);
-    lv_label_set_long_mode(constants_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(constants_label, 676);
-    lv_obj_set_style_text_font(constants_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(constants_label, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(constants_label, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_label_set_text(constants_label, ui_get_system_constants_summary_text());
-
-    profiles_body = lv_obj_create(profiles_tab);
-    lv_obj_set_size(profiles_body, lv_pct(100), lv_pct(100));
-    lv_obj_align(profiles_body, LV_ALIGN_TOP_LEFT, 0, 0);
-    ui_style_card(profiles_body, UI_COLOR_CARD);
-    lv_obj_set_style_border_width(profiles_body, 0, 0);
-    lv_obj_set_scrollbar_mode(profiles_body, LV_SCROLLBAR_MODE_ACTIVE);
-    lv_obj_set_scroll_dir(profiles_body, LV_DIR_VER);
-    lv_obj_set_style_pad_all(profiles_body, 12, 0);
-
-    profiles_label = lv_label_create(profiles_body);
-    lv_label_set_long_mode(profiles_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(profiles_label, 676);
-    lv_obj_set_style_text_font(profiles_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(profiles_label, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(profiles_label, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_label_set_text(profiles_label, ui_get_system_constants_profiles_tree_text());
+    label = lv_label_create(body);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(label, 676);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_label_set_text(label, body_text);
 
     done_btn = lv_button_create(panel);
     lv_obj_set_size(done_btn, 300, 58);
@@ -4792,6 +4681,32 @@ static void ui_settings_system_constants_event_cb(lv_event_t *e)
     lv_label_set_text(done_lbl, "Done");
     ui_style_button_label(done_lbl);
     lv_obj_center(done_lbl);
+}
+
+/**
+ * @brief Open the System Constants viewer from the Settings tab.
+ *
+ * @details Shows only global system constants data (no profile tree).
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_settings_system_constants_event_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_open_settings_text_overlay("System Constants", ui_get_system_constants_summary_text());
+}
+
+/**
+ * @brief Open the Profiles viewer from the Settings tab.
+ *
+ * @details Shows the full recursive profile dataset tree.
+ *
+ * @param[in] e LVGL event payload.
+ */
+static void ui_settings_profiles_event_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_open_settings_text_overlay("Profiles", ui_get_system_constants_profiles_tree_text());
 }
 
 /**
@@ -5024,44 +4939,11 @@ static void ui_profile_dropdown_event_cb(lv_event_t *e)
     }
 
     ui_apply_profile_defaults(profile);
-    s_ui.brew_shot_target_preview_g = ui_estimate_shot_target_preview_g(s_ui.active_profile, 30.0f);
     ui_update_home_labels();
     ui_update_header_status();
+    ui_update_header_runtime();
     ui_send_profile_selection_command(s_ui.startup_mode == UI_INIT_MODE_OFFLINE);
     ESP_LOGI(TAG, "profile %d selected from Profile Select dropdown", s_ui.active_profile);
-}
-
-/**
- * @brief Handle settings slider value changes.
- *
- * @details Updates target temperature or preinfusion duration and mirrors the
- * numeric value in adjacent labels.
- *
- * @param[in] e LVGL event payload.
- */
-static void ui_settings_slider_event_cb(lv_event_t *e)
-{
-    lv_obj_t *slider = lv_event_get_target(e);
-    intptr_t id = (intptr_t)lv_event_get_user_data(e);
-
-    if (id == 0) {
-        s_ui.target_temp_c = (int)lv_slider_get_value(slider);
-        if (s_ui.settings_target_value) {
-            char txt[24];
-            snprintf(txt, sizeof(txt), "%d C", s_ui.target_temp_c);
-            lv_label_set_text(s_ui.settings_target_value, txt);
-        }
-    } else if (id == 1) {
-        s_ui.preinf_s = (int)lv_slider_get_value(slider);
-        if (s_ui.settings_preinf_value) {
-            char txt[24];
-            snprintf(txt, sizeof(txt), "%d s", s_ui.preinf_s);
-            lv_label_set_text(s_ui.settings_preinf_value, txt);
-        }
-    }
-
-    ui_update_home_labels();
-    ui_update_header_status();
 }
 
 /**
@@ -5695,71 +5577,21 @@ static void ui_error_reset_event_cb(lv_event_t *e)
 /**
  * @brief Construct settings page.
  *
- * @details Offers quick numeric tuning of target temperature and preinfusion.
+ * @details Presents settings actions as button-only controls.
  */
 static void ui_build_page_settings(void)
 {
     ui_build_page_title(s_ui.content, "Settings");
     ui_build_page_live_summary(s_ui.content);
 
-    lv_obj_t *temp_lbl = lv_label_create(s_ui.content);
-    lv_label_set_text(temp_lbl, "Target Temperature");
-    lv_obj_set_style_text_font(temp_lbl, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(temp_lbl, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(temp_lbl, LV_ALIGN_TOP_LEFT, 20, 92);
-
-    s_ui.settings_target_slider = lv_slider_create(s_ui.content);
-    lv_obj_set_size(s_ui.settings_target_slider, 540, 8);
-    lv_obj_align(s_ui.settings_target_slider, LV_ALIGN_TOP_LEFT, 20, 132);
-    ui_style_slider(s_ui.settings_target_slider);
-    lv_slider_set_range(s_ui.settings_target_slider,
-                        ui_get_constants()->temperature_min_c,
-                        ui_get_constants()->temperature_max_c);
-    lv_slider_set_value(s_ui.settings_target_slider, s_ui.target_temp_c, LV_ANIM_OFF);
-    lv_obj_add_event_cb(s_ui.settings_target_slider, ui_settings_slider_event_cb, LV_EVENT_VALUE_CHANGED, (void *)0);
-
-    s_ui.settings_target_value = lv_label_create(s_ui.content);
-    lv_obj_set_style_text_font(s_ui.settings_target_value, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(s_ui.settings_target_value, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(s_ui.settings_target_value, LV_ALIGN_TOP_RIGHT, -40, 118);
-
-    lv_obj_t *pre_lbl = lv_label_create(s_ui.content);
-    lv_label_set_text(pre_lbl, "Preinfusion");
-    lv_obj_set_style_text_font(pre_lbl, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(pre_lbl, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(pre_lbl, LV_ALIGN_TOP_LEFT, 20, 170);
-
-    s_ui.settings_preinf_slider = lv_slider_create(s_ui.content);
-    lv_obj_set_size(s_ui.settings_preinf_slider, 540, 8);
-    lv_obj_align(s_ui.settings_preinf_slider, LV_ALIGN_TOP_LEFT, 20, 210);
-    ui_style_slider(s_ui.settings_preinf_slider);
-    lv_slider_set_range(s_ui.settings_preinf_slider, 0, 12);
-    lv_slider_set_value(s_ui.settings_preinf_slider, s_ui.preinf_s, LV_ANIM_OFF);
-    lv_obj_add_event_cb(s_ui.settings_preinf_slider, ui_settings_slider_event_cb, LV_EVENT_VALUE_CHANGED, (void *)1);
-
-    s_ui.settings_preinf_value = lv_label_create(s_ui.content);
-    lv_obj_set_style_text_font(s_ui.settings_preinf_value, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(s_ui.settings_preinf_value, lv_color_hex(UI_COLOR_TEXT), 0);
-    lv_obj_align(s_ui.settings_preinf_value, LV_ALIGN_TOP_RIGHT, -40, 196);
-
-    if (s_ui.settings_target_value) {
-        char txt[24];
-        snprintf(txt, sizeof(txt), "%d C", s_ui.target_temp_c);
-        lv_label_set_text(s_ui.settings_target_value, txt);
-    }
-    if (s_ui.settings_preinf_value) {
-        char txt[24];
-        snprintf(txt, sizeof(txt), "%d s", s_ui.preinf_s);
-        lv_label_set_text(s_ui.settings_preinf_value, txt);
-    }
-
     const lv_coord_t action_btn_width = 360;
     const lv_coord_t action_btn_height = 48;
     const lv_coord_t action_left_x = 20;
     const lv_coord_t action_right_x = 400;
-    const lv_coord_t action_row1_y = 238;
-    const lv_coord_t action_row2_y = 296;
-    const lv_coord_t action_row3_y = 354;
+    const lv_coord_t action_row1_y = 92;
+    const lv_coord_t action_row2_y = 150;
+    const lv_coord_t action_row3_y = 208;
+    const lv_coord_t action_row4_y = 266;
 
     s_ui.settings_backlight_toggle = lv_button_create(s_ui.content);
     lv_obj_set_size(s_ui.settings_backlight_toggle, action_btn_width, action_btn_height);
@@ -5819,9 +5651,20 @@ static void ui_build_page_settings(void)
     ui_style_button_label(system_constants_lbl);
     lv_obj_center(system_constants_lbl);
 
+    lv_obj_t *view_profiles_btn = lv_button_create(s_ui.content);
+    lv_obj_set_size(view_profiles_btn, action_btn_width, action_btn_height);
+    lv_obj_align(view_profiles_btn, LV_ALIGN_TOP_LEFT, action_right_x, action_row3_y);
+    ui_style_action_button(view_profiles_btn);
+    lv_obj_add_event_cb(view_profiles_btn, ui_settings_profiles_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *view_profiles_lbl = lv_label_create(view_profiles_btn);
+    lv_label_set_text(view_profiles_lbl, "View Profiles");
+    ui_style_button_label(view_profiles_lbl);
+    lv_obj_center(view_profiles_lbl);
+
     lv_obj_t *simulate_data_btn = lv_button_create(s_ui.content);
     lv_obj_set_size(simulate_data_btn, action_btn_width, action_btn_height);
-    lv_obj_align(simulate_data_btn, LV_ALIGN_TOP_LEFT, action_right_x, action_row3_y);
+    lv_obj_align(simulate_data_btn, LV_ALIGN_TOP_LEFT, action_left_x, action_row4_y);
     ui_style_action_button(simulate_data_btn);
     lv_obj_add_event_cb(simulate_data_btn, ui_settings_simulate_data_event_cb, LV_EVENT_CLICKED, NULL);
 
@@ -5948,6 +5791,7 @@ static void ui_heartbeat_timer_cb(lv_timer_t *timer)
 {
     communication_snapshot_t comm_snapshot = {0};
     lcd_controller_profile_catalog_t protocol_catalog = {0};
+    lcd_controller_protocol_link_state_t protocol_link_state = LCD_CONTROLLER_PROTOCOL_STATE_UNINITIALIZED;
     int64_t uptime_us = esp_timer_get_time();
 
     (void)timer;
@@ -5959,8 +5803,11 @@ static void ui_heartbeat_timer_cb(lv_timer_t *timer)
         (void)lcd_controller_protocol_process_peer_text_event(comm_snapshot.last_received_text_event_count,
                                                               comm_snapshot.last_received_text);
     }
+    protocol_link_state = lcd_controller_protocol_get_link_state();
     if (lcd_controller_protocol_get_profile_catalog(&protocol_catalog) == ESP_OK) {
-        if (protocol_catalog.count == 0U) {
+        bool dataset_synced = (protocol_link_state == LCD_CONTROLLER_PROTOCOL_STATE_DATASET_SYNCED);
+        bool catalog_complete = (protocol_catalog.count >= LCD_CONTROLLER_MAX_PROFILES);
+        if (!dataset_synced || !catalog_complete) {
             if ((s_lcd_protocol_bootstrap_retry_tick % 5U) == 0U) {
                 (void)lcd_controller_protocol_initialize_hooks();
             }

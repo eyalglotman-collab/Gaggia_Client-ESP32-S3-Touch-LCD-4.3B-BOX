@@ -1,13 +1,13 @@
 # Project Rules
 
 1. Build/Flash Commit Prompt
-- After every successful `idf.py build flash`, ask whether to commit current changes and create a sub-version release.
+- After every successful flash cycle (`idf.py flash` with or without `build`), ask whether to commit current changes and create a sub-version release.
 
 2. Versioning Scheme
 - The project version uses `X.Y.Z` stored in the `VERSION` file.
 - `X` (major): Functionality additions/removals and refactoring-level changes.
 - `Y` (minor): Bug fixes and smaller functionality changes.
-- `Z` (patch/sub-version): Increment on every successful build+flash cycle when changes are accepted.
+- `Z` (patch/sub-version): Increment on every accepted successful flash cycle.
 
 3. Function and Header Documentation
 - Every function declaration and definition must have a short header comment block.

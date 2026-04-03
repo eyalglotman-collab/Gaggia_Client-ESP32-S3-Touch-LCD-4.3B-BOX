@@ -19,9 +19,9 @@ extern "C" {
 #define SYSTEM_CONSTANTS_MAX_PROFILES (LCD_CONTROLLER_MAX_PROFILES)
 
 /**
- * @brief One brew-profile entry loaded from the constants XML.
+ * @brief One brew-profile entry loaded from the profiles XML.
  *
- * @details Stores the default profile targets parsed from `SystemConstants.xml`
+ * @details Stores the default profile targets parsed from `Profiles.xml`
  * so the UI can present names and apply profile-specific defaults.
  */
 typedef struct {
@@ -64,11 +64,11 @@ typedef struct {
 } system_constants_data_t;
 
 /**
- * @brief Load and parse the embedded `SystemConstants.xml` database.
+ * @brief Load and parse the embedded constants/profile XML databases.
  *
- * @details Reads the default XML database embedded in the firmware image and
- * updates the in-memory constants snapshot used by application startup and UI
- * code.
+ * @details Reads the embedded `SystemConstants.xml` (global values) and
+ * `Profiles.xml` (brew profiles), then updates the in-memory snapshot used by
+ * application startup and UI code.
  *
  * @return
  *      - ESP_OK: Constants parsed successfully

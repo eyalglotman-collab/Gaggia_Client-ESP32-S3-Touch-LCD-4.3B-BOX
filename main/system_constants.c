@@ -35,6 +35,8 @@ static const char *SYSTEM_CONSTANTS_LCD_DATASET_PATH = "/sdcard/LCDProfileDatase
 
 extern const char SystemConstants_xml_start[] asm("_binary_SystemConstants_xml_start");
 extern const char SystemConstants_xml_end[] asm("_binary_SystemConstants_xml_end");
+extern const char Profiles_xml_start[] asm("_binary_Profiles_xml_start");
+extern const char Profiles_xml_end[] asm("_binary_Profiles_xml_end");
 
 static system_constants_data_t s_constants = {0};
 
@@ -225,6 +227,8 @@ static void system_constants_seed_lcd_dataset_from_summary(void)
 static esp_err_t system_constants_save_lcd_dataset_to_sd(void)
 {
     system_constants_lcd_dataset_storage_t storage = {0};
+    /* Remove prior dataset first so stale profile bytes can never remain. */
+    (void)remove(SYSTEM_CONSTANTS_LCD_DATASET_PATH);
     FILE *f = fopen(SYSTEM_CONSTANTS_LCD_DATASET_PATH, "wb");
 
     if (f == NULL) {
@@ -465,12 +469,6 @@ static void parse_global_values(const char *xml_start, const char *xml_end)
     if (xml_extract_text_range(xml_start, xml_end, "BaudRate", value, sizeof(value))) {
         s_constants.connection_baud_rate = atoi(value);
     }
-    if (xml_extract_text_range(xml_start, xml_end, "ProfileCount", value, sizeof(value))) {
-        int count = atoi(value);
-        if (count > 0 && count <= SYSTEM_CONSTANTS_MAX_PROFILES) {
-            s_constants.profile_count = count;
-        }
-    }
     if (xml_extract_text_range(xml_start, xml_end, "TemperatureMin", value, sizeof(value))) {
         s_constants.temperature_min_c = atoi(value);
     }
@@ -600,9 +598,18 @@ static void system_constants_try_load_live_shot_overrides_from_sd(void)
 static void parse_profiles(const char *xml_start, const char *xml_end)
 {
     const char *cursor = xml_start;
+    char value[32] = {0};
+    int declared_count = SYSTEM_CONSTANTS_MAX_PROFILES;
     int parsed_count = 0;
 
-    while (parsed_count < SYSTEM_CONSTANTS_MAX_PROFILES) {
+    if (xml_extract_text_range(xml_start, xml_end, "ProfileCount", value, sizeof(value))) {
+        int count = atoi(value);
+        if (count > 0 && count <= SYSTEM_CONSTANTS_MAX_PROFILES) {
+            declared_count = count;
+        }
+    }
+
+    while (parsed_count < declared_count && parsed_count < SYSTEM_CONSTANTS_MAX_PROFILES) {
         const char *profile_start = strstr(cursor, "<Profile>");
         if (profile_start == NULL || profile_start >= xml_end) {
             break;
@@ -618,7 +625,7 @@ static void parse_profiles(const char *xml_start, const char *xml_end)
         cursor = profile_end + strlen("</Profile>");
     }
 
-    if (parsed_count > 0 && parsed_count < s_constants.profile_count) {
+    if (parsed_count > 0) {
         s_constants.profile_count = parsed_count;
     }
 }
@@ -626,9 +633,9 @@ static void parse_profiles(const char *xml_start, const char *xml_end)
 /**
  * @brief Load and parse the embedded default constants database.
  *
- * @details Reads the embedded `SystemConstants.xml` text, applies defaults,
- * parses the XML into the in-memory snapshot, and logs the resulting profile
- * and compatibility metadata.
+ * @details Reads embedded `SystemConstants.xml` (global/system values) and
+ * `Profiles.xml` (brew profile defaults), applies defaults, parses both files
+ * into the in-memory snapshot, and logs the resulting metadata.
  *
  * @return
  *      - ESP_OK: Constants loaded successfully
@@ -641,20 +648,26 @@ esp_err_t system_constants_load(void)
     system_constants_set_defaults();
     ESP_LOGI(TAG, "System constants step result: built-in defaults applied");
 
-    const char *xml_start = SystemConstants_xml_start;
-    const char *xml_end = SystemConstants_xml_end;
+    const char *system_xml_start = SystemConstants_xml_start;
+    const char *system_xml_end = SystemConstants_xml_end;
+    const char *profiles_xml_start = Profiles_xml_start;
+    const char *profiles_xml_end = Profiles_xml_end;
     ESP_LOGI(TAG, "System constants step: validating embedded XML pointers");
-    ESP_RETURN_ON_FALSE(xml_start != NULL && xml_end != NULL && xml_end > xml_start,
+    ESP_RETURN_ON_FALSE(system_xml_start != NULL && system_xml_end != NULL && system_xml_end > system_xml_start,
                         ESP_ERR_INVALID_STATE,
                         TAG,
                         "Embedded SystemConstants.xml is unavailable");
+    ESP_RETURN_ON_FALSE(profiles_xml_start != NULL && profiles_xml_end != NULL && profiles_xml_end > profiles_xml_start,
+                        ESP_ERR_INVALID_STATE,
+                        TAG,
+                        "Embedded Profiles.xml is unavailable");
     ESP_LOGI(TAG, "System constants step result: embedded XML pointers valid");
 
     ESP_LOGI(TAG, "System constants step: parse global values");
-    parse_global_values(xml_start, xml_end);
+    parse_global_values(system_xml_start, system_xml_end);
     ESP_LOGI(TAG, "System constants step result: parse global values complete");
-    ESP_LOGI(TAG, "System constants step: parse profiles");
-    parse_profiles(xml_start, xml_end);
+    ESP_LOGI(TAG, "System constants step: parse profiles (Profiles.xml)");
+    parse_profiles(profiles_xml_start, profiles_xml_end);
     ESP_LOGI(TAG, "System constants step result: parse profiles complete");
     ESP_LOGI(TAG, "System constants step: seed LCD dataset from current profile summary");
     system_constants_seed_lcd_dataset_from_summary();
@@ -671,7 +684,7 @@ esp_err_t system_constants_load(void)
     ESP_LOGI(TAG, "System constants step result: load SD range overrides complete");
 
     ESP_LOGI(TAG,
-             "Loaded SystemConstants.xml: profiles=%d client=%s compatible=%s",
+             "Loaded XML defaults: system=SystemConstants.xml profiles=Profiles.xml profiles=%d client=%s compatible=%s",
              s_constants.profile_count,
              s_constants.client_version,
              s_constants.compatible_client_version);
