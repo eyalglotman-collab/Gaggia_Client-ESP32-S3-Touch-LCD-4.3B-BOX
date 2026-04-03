@@ -4,9 +4,13 @@
 \b Eyal Espresso Firmware Revision History\b0\par
 \par
 \b Current Version\b0\par
-0.4.10\par
+0.4.11\par
 \par
 \b Latest Version Feature List\b0\par
+- Live Shot keeps the full 50 Hz timeline aligned to T=0 by latching session start from the first packet elapsed-time sample and replaying the full frozen shot window with corrected end-of-shot axis scaling.\par
+- Plot-range autoscale toggles and manual Y-axis limits now reload from persisted system constants so checkbox state and ranges survive rebuilds and power cycles.\par
+- Brew-page shot progress now resets to `0s` and `0.0 g` after brew completion while preserving the profile expected-time and target context in labels.\par
+- Plot history depth is increased to 2200 points to retain longer 50 Hz sessions without clipping the full-shot replay.\par
 - Protocol bootstrap now supports full LCD dataset ingestion (`settings` + full profile structs), applies it to runtime constants, and persists the dataset snapshot to TF for reboot reload.\par
 - System Constants UI now uses a tabbed viewer with a legacy-compatible summary tab plus a recursive `Profiles Tree` tab that exposes all dataset fields.\par
 - Live Shot packet ingestion now processes multi-sample packets at 5 samples per 100 ms, and communication snapshot text capacity is expanded to carry full dataset payload events safely.\par
@@ -70,6 +74,11 @@
 - Reset now fast-paths directly to `connect` when low-layer Wi-Fi is still healthy, reducing reconnect latency after reset retries.\par
 \par
 \b X=0, Y=4\b0\par
+\b 2026-04-03 18:15:00\b0\par
+- Version: 0.4.11\par
+- Summary: Fixed Live Shot session-time anchoring and persisted plot-range UI state while extending 50 Hz history coverage for full-shot replay.\par
+- Notes: `main/ui_screen.c` now stores `plot_session_start_time_s`, anchors realtime samples to explicit brew elapsed time, keeps a fixed 20 ms sample delta for 5-sample packets, and recomputes non-rolling end-of-shot axis span from the full captured timeline. UI plot settings now reload from `system_constants` during page build so autoscale checkboxes and manual max values persist after reinit. Brew-shot progress display now resets to zero values when not actively brewing, while still showing the configured target and expected shot time context. History capacity was raised from 1200 to 2200 points for longer 50 Hz captures. `main/system_constants.c` now loads TF profile datasets before applying SD plot-range overrides so persisted user plot settings are not overwritten.\par
+\par
 \b 2026-04-02 22:27:44\b0\par
 - Version: 0.4.10\par
 - Summary: Added full LCD profile dataset bootstrap/persistence, expanded profile defaults/schema, and introduced a tabbed recursive System Constants viewer with packet-level multi-sample Live Shot ingestion.\par

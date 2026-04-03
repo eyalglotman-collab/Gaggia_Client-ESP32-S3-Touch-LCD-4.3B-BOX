@@ -120,7 +120,6 @@ static void system_constants_sync_profile_summary_from_lcd_dataset(void)
         system_constants_profile_t *target = &s_constants.profiles[index];
         float pressure_bar = source->tp_profiling_finish;
         float flow_ml_s = source->mf_profile_end;
-        float shot_target = source->shot_stop_on_custom_weight;
         int temp_c = setpoint_to_celsius_int(source->setpoint);
 
         if (source->name[0] == '\0') {
@@ -132,13 +131,6 @@ static void system_constants_sync_profile_summary_from_lcd_dataset(void)
         target->preinfusion_seconds = (int)source->preinfusion_sec;
         target->target_pressure_tenths = (int)lroundf(pressure_bar * 10.0f);
         target->target_flow_tenths = (int)lroundf(flow_ml_s * 10.0f);
-
-        if (index == 0 && shot_target > 0.0f) {
-            s_constants.live_shot_weight_max_g = clampf_range(
-                shot_target * 1.6f,
-                LIVE_SHOT_WEIGHT_MIN_G,
-                LIVE_SHOT_WEIGHT_MAX_G);
-        }
     }
 
     s_constants.profile_count = max_profiles;
@@ -667,9 +659,6 @@ esp_err_t system_constants_load(void)
     ESP_LOGI(TAG, "System constants step: seed LCD dataset from current profile summary");
     system_constants_seed_lcd_dataset_from_summary();
     ESP_LOGI(TAG, "System constants step result: seed LCD dataset complete");
-    ESP_LOGI(TAG, "System constants step: load SD range overrides");
-    system_constants_try_load_live_shot_overrides_from_sd();
-    ESP_LOGI(TAG, "System constants step result: load SD range overrides complete");
     ESP_LOGI(TAG, "System constants step: load LCD dataset override from TF");
     esp_err_t lcd_dataset_ret = system_constants_try_load_lcd_dataset_from_sd();
     if (lcd_dataset_ret == ESP_OK) {
@@ -677,6 +666,9 @@ esp_err_t system_constants_load(void)
     } else {
         ESP_LOGI(TAG, "System constants step result: no TF dataset override (%s).", esp_err_to_name(lcd_dataset_ret));
     }
+    ESP_LOGI(TAG, "System constants step: load SD range overrides");
+    system_constants_try_load_live_shot_overrides_from_sd();
+    ESP_LOGI(TAG, "System constants step result: load SD range overrides complete");
 
     ESP_LOGI(TAG,
              "Loaded SystemConstants.xml: profiles=%d client=%s compatible=%s",
